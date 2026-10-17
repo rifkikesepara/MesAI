@@ -15,6 +15,7 @@ import { GitFileWatcherService } from './services/git-file-watcher';
 import { ReportService } from './services/report-service';
 import { IntegrationsService } from './services/integrations-service';
 import { SchedulerService } from './services/scheduler-service';
+import { UpdateService } from './services/update-service';
 import { registerIpcHandlers } from './ipc-handlers';
 
 let mainWindow: BrowserWindow | null = null;
@@ -113,6 +114,8 @@ if (!gotLock && !isSmokeVerify && !isUiVerify) {
       tray.setContextMenu(contextMenu);
     };
 
+    const updateService = new UpdateService(() => mainWindow);
+
     registerIpcHandlers({
       getMainWindow: () => mainWindow,
       repo,
@@ -122,6 +125,7 @@ if (!gotLock && !isSmokeVerify && !isUiVerify) {
       reportService,
       integrations,
       scheduler,
+      updateService,
       onTrayUpdate: updateTrayMenu
     });
 
@@ -176,6 +180,12 @@ if (!gotLock && !isSmokeVerify && !isUiVerify) {
     createTray(updateTrayMenu);
     createMainWindow();
     scheduler.startOrReload();
+
+    if (settings.autoCheckUpdatesOnStartup !== false && !isSmokeVerify && !isUiVerify) {
+      setTimeout(() => {
+        void updateService.checkForUpdates();
+      }, 5000);
+    }
 
     if (!settings.trackingPaused && !isUiVerify) {
       void zoomAdapter.pollOnce();

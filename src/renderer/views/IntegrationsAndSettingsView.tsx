@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import type { AppSettings, IntegrationHealth } from '../../shared/types';
+import type { AppSettings, IntegrationHealth, UpdateState } from '../../shared/types';
 import { ZOOM_STATUS_LABELS } from './DashboardAndProjectsView';
 
 export const IntegrationsView: React.FC<{
@@ -336,10 +336,40 @@ export const SettingsView: React.FC<{
   const [form, setForm] = useState<AppSettings | null>(settings);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
+  const [updateState, setUpdateState] = useState<UpdateState | null>(null);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
 
   useEffect(() => {
     setForm(settings);
   }, [settings]);
+
+  useEffect(() => {
+    void window.mesaiApi.getUpdateState().then(setUpdateState);
+    const cleanup = window.mesaiApi.onUpdateStateChanged((state) => {
+      setUpdateState(state);
+    });
+    return () => {
+      cleanup?.();
+    };
+  }, []);
+
+  const handleCheckUpdates = async () => {
+    setCheckingUpdate(true);
+    try {
+      const res = await window.mesaiApi.checkForUpdates();
+      setUpdateState(res);
+    } finally {
+      setCheckingUpdate(false);
+    }
+  };
+
+  const handleDownloadUpdate = async () => {
+    await window.mesaiApi.downloadUpdate();
+  };
+
+  const handleInstallUpdate = async () => {
+    await window.mesaiApi.quitAndInstallUpdate();
+  };
 
   if (!form) {
     return <div className="card">Ayarlar yükleniyor...</div>;
@@ -358,6 +388,7 @@ export const SettingsView: React.FC<{
       aiProvider: form.aiProvider,
       allowRemoteAiSend: form.allowRemoteAiSend,
       autoLaunchOnStartup: form.autoLaunchOnStartup,
+      autoCheckUpdatesOnStartup: form.autoCheckUpdatesOnStartup,
       trackingPaused: form.trackingPaused
     });
     setSavedMsg('Ayarlar kaydedildi ve zamanlayıcılar güncellendi.');
@@ -479,6 +510,15 @@ export const SettingsView: React.FC<{
             />
             Windows açılışında MesAI uygulamasını otomatik başlat
           </label>
+
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={form.autoCheckUpdatesOnStartup ?? true}
+              onChange={(e) => setForm({ ...form, autoCheckUpdatesOnStartup: e.target.checked })}
+            />
+            Uygulama açılışında arka planda yeni sürüm kontrolü yap
+          </label>
         </div>
 
         <div>
@@ -487,6 +527,184 @@ export const SettingsView: React.FC<{
           </button>
         </div>
       </form>
+
+      {/* Sürüm Kontrolü ve Güncelleme Kartı */}
+      <div className="card" style={{ border: '1px solid rgba(99, 102, 241, 0.4)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+          <div>
+            <h3 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '8px', margin: 0 }}>
+              <span>🚀</span>
+              <span>Uygulama Sürümü ve Otomatik Güncellemeler</span>
+              <span className="badge badge-neutral" style={{ fontSize: '12px', fontWeight: 600 }}>
+                v{updateState?.currentVersion || '1.0.0'}
+              </span>
+            </h3>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '13px', margin: '4px 0 0 0' }}>
+              GitHub Releases üzerinden versiyon kontrolü, sürüm notları ve uygulama içi güncelleme.
+            </p>
+          </div>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={handleCheckUpdates}
+            disabled={checkingUpdate || updateState?.status === 'checking' || updateState?.status === 'downloading'}
+          >
+            {checkingUpdate || updateState?.status === 'checking' ? '⏳ Denetleniyor...' : '🔄 Güncellemeleri Denetle'}
+          </button>
+        </div>
+
+        {/* Durum Bilgisi */}
+        {updateState?.status === 'checking' && (
+          <div className="alert-banner" style={{ marginTop: '12px' }}>
+            🔄 GitHub Releases üzerinden yeni sürüm denetleniyor...
+          </div>
+        )}
+
+        {updateState?.status === 'not_available' && (
+          <div className="alert-banner" style={{ marginTop: '12px', background: 'rgba(16, 185, 129, 0.1)', borderColor: 'var(--success)' }}>
+            ✅ Uygulamanız en son sürümde (v{updateState.currentVersion}). Yeni bir güncelleme bulunmuyor.
+          </div>
+        )}
+
+        {updateState?.status === 'available' && updateState.updateInfo && (
+          <div
+            style={{
+              marginTop: '12px',
+              padding: '14px',
+              borderRadius: '8px',
+              background: 'rgba(99, 102, 241, 0.1)',
+              border: '1px solid var(--accent)',
+              display: 'grid',
+              gap: '10px'
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ fontWeight: 600, color: 'var(--accent)', fontSize: '15px' }}>
+                🎉 Yeni Sürüm Mevcut: v{updateState.updateInfo.version}
+              </div>
+              {updateState.updateInfo.releaseDate && (
+                <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                  Yayınlanma: {new Date(updateState.updateInfo.releaseDate).toLocaleDateString('tr-TR')}
+                </div>
+              )}
+            </div>
+
+            {updateState.updateInfo.releaseNotes && (
+              <div style={{ background: 'var(--bg-primary)', padding: '10px', borderRadius: '6px', fontSize: '13px', maxHeight: '160px', overflowY: 'auto' }}>
+                <div style={{ fontWeight: 600, marginBottom: '4px', color: 'var(--text-secondary)' }}>Sürüm Notları:</div>
+                <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontFamily: 'inherit' }}>
+                  {updateState.updateInfo.releaseNotes}
+                </pre>
+              </div>
+            )}
+
+            <div>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={handleDownloadUpdate}
+              >
+                ⬇️ Güncellemeyi İndir (v{updateState.updateInfo.version})
+              </button>
+            </div>
+          </div>
+        )}
+
+        {updateState?.status === 'downloading' && (
+          <div
+            style={{
+              marginTop: '12px',
+              padding: '14px',
+              borderRadius: '8px',
+              background: 'var(--bg-secondary)',
+              border: '1px solid var(--accent)',
+              display: 'grid',
+              gap: '8px'
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+              <span>⬇️ Yeni sürüm indiriliyor...</span>
+              <span style={{ fontWeight: 600 }}>{updateState.progress?.percent ?? 0}%</span>
+            </div>
+            <div style={{ background: 'var(--bg-tertiary)', borderRadius: '6px', height: '10px', overflow: 'hidden' }}>
+              <div
+                style={{
+                  width: `${updateState.progress?.percent ?? 0}%`,
+                  background: 'var(--accent)',
+                  height: '100%',
+                  transition: 'width 0.2s'
+                }}
+              />
+            </div>
+            {updateState.progress && (
+              <div style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'flex', justifyContent: 'space-between' }}>
+                <span>
+                  {(updateState.progress.transferredBytes / 1024 / 1024).toFixed(1)} MB / {(updateState.progress.totalBytes / 1024 / 1024).toFixed(1)} MB
+                </span>
+                <span>
+                  {((updateState.progress.bytesPerSecond || 0) / 1024 / 1024).toFixed(1)} MB/sn
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {updateState?.status === 'downloaded' && (
+          <div
+            style={{
+              marginTop: '12px',
+              padding: '14px',
+              borderRadius: '8px',
+              background: 'rgba(16, 185, 129, 0.1)',
+              border: '1px solid var(--success)',
+              display: 'grid',
+              gap: '10px'
+            }}
+          >
+            <div style={{ fontWeight: 600, color: 'var(--success)', fontSize: '15px' }}>
+              🎉 Güncelleme başarıyla indirildi ve kuruluma hazır!
+            </div>
+            <p style={{ margin: 0, fontSize: '13px', color: 'var(--text-secondary)' }}>
+              Uygulamayı yeniden başlatarak yeni sürüme geçebilirsiniz.
+            </p>
+            <div>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={handleInstallUpdate}
+              >
+                ⚡ Şimdi Yeniden Başlat ve Güncelle
+              </button>
+            </div>
+          </div>
+        )}
+
+        {updateState?.status === 'error' && (
+          <div
+            style={{
+              marginTop: '12px',
+              padding: '12px',
+              borderRadius: '8px',
+              background: 'rgba(239, 68, 68, 0.1)',
+              border: '1px solid var(--danger)',
+              fontSize: '13px'
+            }}
+          >
+            <div style={{ fontWeight: 600, color: 'var(--danger)', marginBottom: '4px' }}>
+              ⚠️ Güncelleme Denetimi Hatası
+            </div>
+            <div style={{ color: 'var(--text-secondary)' }}>
+              {updateState.errorMessage || 'Bilinmeyen bir hata oluştu.'}
+            </div>
+          </div>
+        )}
+
+        <div style={{ marginTop: '10px', fontSize: '11.5px', color: 'var(--text-secondary)' }}>
+          {updateState?.lastCheckedAt
+            ? `Son Denetleme: ${new Date(updateState.lastCheckedAt).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
+            : 'Henüz denetleme yapılmadı.'}
+        </div>
+      </div>
 
       <div className="card">
         <h3 className="card-title">Koruyucu Dosya Filtreleri (Varsayılan Hariç Tutulanlar)</h3>

@@ -9,6 +9,7 @@ import type {
   IntegrationHealth,
   Project,
   SyncState,
+  UpdateState,
   WorkItem
 } from './types';
 
@@ -44,7 +45,12 @@ export const IPC_CHANNELS = {
 
   SETTINGS_GET: 'mesai:settings:get',
   SETTINGS_UPDATE: 'mesai:settings:update',
-  DATA_CLEAR_ALL: 'mesai:data:clearAll'
+  DATA_CLEAR_ALL: 'mesai:data:clearAll',
+
+  UPDATER_GET_STATE: 'mesai:updater:getState',
+  UPDATER_CHECK: 'mesai:updater:check',
+  UPDATER_DOWNLOAD: 'mesai:updater:download',
+  UPDATER_INSTALL: 'mesai:updater:install'
 } as const;
 
 export interface DashboardSummary {
@@ -148,4 +154,11 @@ export interface MesaiApi {
   getSettings(): Promise<AppSettings>;
   updateSettings(partial: Partial<AppSettings>): Promise<AppSettings>;
   clearAllData(): Promise<void>;
+
+  getUpdateState(): Promise<UpdateState>;
+  checkForUpdates(): Promise<UpdateState>;
+  downloadUpdate(): Promise<void>;
+  quitAndInstallUpdate(): Promise<void>;
+  onUpdateStateChanged(callback: (state: UpdateState) => void): () => void;
 }
+

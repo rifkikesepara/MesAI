@@ -15,6 +15,7 @@ import type { MatcherService } from './services/matcher-service';
 import type { ReportService } from './services/report-service';
 import type { IntegrationsService } from './services/integrations-service';
 import type { SchedulerService } from './services/scheduler-service';
+import type { UpdateService } from './services/update-service';
 import { getTodayLocalDate } from './services/timestamp-resolver';
 
 function assertNonEmptyString(val: unknown, fieldName: string): string {
@@ -41,6 +42,7 @@ export function registerIpcHandlers(deps: {
   reportService: ReportService;
   integrations: IntegrationsService;
   scheduler: SchedulerService;
+  updateService: UpdateService;
   onTrayUpdate?: () => void;
 }): void {
   const {
@@ -52,6 +54,7 @@ export function registerIpcHandlers(deps: {
     reportService,
     integrations,
     scheduler,
+    updateService,
     onTrayUpdate
   } = deps;
 
@@ -393,4 +396,21 @@ export function registerIpcHandlers(deps: {
   ipcMain.handle(IPC_CHANNELS.DATA_CLEAR_ALL, async () => {
     repo.clearAllData();
   });
+
+  ipcMain.handle(IPC_CHANNELS.UPDATER_GET_STATE, async () => {
+    return updateService.getState();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.UPDATER_CHECK, async () => {
+    return updateService.checkForUpdates();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.UPDATER_DOWNLOAD, async () => {
+    return updateService.downloadUpdate();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.UPDATER_INSTALL, async () => {
+    return updateService.quitAndInstall();
+  });
 }
+

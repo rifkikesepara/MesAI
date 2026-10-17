@@ -57,7 +57,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   jiraEmail: '',
   jenkinsUrl: '',
   jenkinsUsername: '',
-  reportMaxChars: 1000
+  reportMaxChars: 1000,
+  autoCheckUpdatesOnStartup: true
 };
 
 const IGNORED_JIRA_LIKE_TOKENS = new Set([

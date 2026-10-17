@@ -3,6 +3,7 @@
   "productName": "MesAI",
   "version": "1.0.0",
   "description": "MesAI (DevTrack AI) — Kanıta Dayalı Günlük Çalışma Raporu ve Aktivite Takip Uygulaması",
+  "author": "Rıfkı Kesepara",
   "main": "dist-main/src/main/index.js",
   "scripts": {
     "build:reader": "dotnet build readers/ZoomChatReader/ZoomChatReader.csproj -c Release",
@@ -13,9 +14,15 @@
     "start": "npm run build:main && npm run build:renderer && electron .",
     "test": "npm run build:main && node --test dist-main/tests/*.test.js",
     "pack:dir": "npm run build && electron-builder --dir",
-    "pack:win": "npm run build && electron-builder --win portable"
+    "pack:win": "npm run build && electron-builder --win",
+    "release": "npm run build && electron-builder --win --publish always"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rifkikesepara/MesAI.git"
   },
   "dependencies": {
+    "electron-updater": "^6.8.9",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

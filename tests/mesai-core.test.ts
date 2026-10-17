@@ -12,6 +12,7 @@ import { GeminiCliProvider } from '../src/main/services/ai-provider';
 import { ReportService } from '../src/main/services/report-service';
 import { ZoomReaderAdapter } from '../src/main/services/zoom-adapter';
 import { IntegrationsService } from '../src/main/services/integrations-service';
+import { isNewerVersion, parseSemver } from '../src/main/services/update-service';
 import type { ZoomChatSnapshot } from '../src/shared/types';
 
 function createSampleSnapshot(overrides?: Partial<ZoomChatSnapshot>): ZoomChatSnapshot {
@@ -561,6 +562,42 @@ describe('MesAI Core Verification Suite', () => {
 
     db.close();
   });
+
+  it('9. Version comparison, update detection, and autoCheckUpdatesOnStartup setting persistence', () => {
+    // 1. Semver parsing
+    assert.deepEqual(parseSemver('1.0.0'), [1, 0, 0]);
+    assert.deepEqual(parseSemver('v1.2.34-beta.1'), [1, 2, 34]);
+    assert.deepEqual(parseSemver('v2.0'), [2, 0, 0]);
+
+    // 2. Newer version detection
+    assert.equal(isNewerVersion('v1.0.1', '1.0.0'), true);
+    assert.equal(isNewerVersion('1.1.0', '1.0.9'), true);
+    assert.equal(isNewerVersion('2.0.0', '1.99.99'), true);
+    assert.equal(isNewerVersion('v1.0.0', '1.0.0'), false);
+    assert.equal(isNewerVersion('0.9.9', '1.0.0'), false);
+    assert.equal(isNewerVersion('v1.0.0', 'v1.0.1'), false);
+
+    // 3. Settings persistence in SQLite
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mesai-updater-test-'));
+    const db = new MesaiDatabase(path.join(tmpDir, 'test.sqlite'));
+    const repo = new MesaiRepository(db);
+
+    const initialSettings = repo.getSettings();
+    assert.equal(
+      initialSettings.autoCheckUpdatesOnStartup,
+      true,
+      'autoCheckUpdatesOnStartup should default to true'
+    );
+
+    const updated = repo.updateSettings({ autoCheckUpdatesOnStartup: false });
+    assert.equal(updated.autoCheckUpdatesOnStartup, false);
+
+    const reloaded = repo.getSettings();
+    assert.equal(reloaded.autoCheckUpdatesOnStartup, false);
+
+    db.close();
+  });
 });
+
 
 

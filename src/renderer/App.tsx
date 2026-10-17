@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import type { DashboardSummary } from '../shared/ipc-channels';
-import type { AppSettings, Evidence, Project } from '../shared/types';
+import type { AppSettings, Evidence, Project, UpdateState } from '../shared/types';
 import {
   DashboardView,
   ProjectsView,
@@ -17,6 +17,7 @@ export const App: React.FC = () => {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [updateState, setUpdateState] = useState<UpdateState | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [pollingZoom, setPollingZoom] = useState<boolean>(false);
   const [pollingGit, setPollingGit] = useState<boolean>(false);
@@ -46,10 +47,20 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     void refreshCoreData();
+    void window.mesaiApi.getUpdateState().then(setUpdateState);
+    const unsub = window.mesaiApi.onUpdateStateChanged((state) => {
+      setUpdateState(state);
+      if (state.status === 'available') {
+        showToast(`🚀 Yeni sürüm mevcut: v${state.updateInfo?.version}`);
+      }
+    });
     const interval = setInterval(() => {
       void refreshCoreData();
     }, 15_000);
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      unsub?.();
+    };
   }, []);
 
   const handlePollZoomNow = async () => {
@@ -154,10 +165,26 @@ export const App: React.FC = () => {
 
         <div className="sidebar-footer">
           <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)' }}>
-            Yerel Veritabanı: SQLite (WAL)
+            ⚡ MesAI v{updateState?.currentVersion || '1.0.0'}
           </div>
-          <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)' }}>
-            Gizlilik: Varsayılan Yerel Kurallı
+          {updateState?.status === 'available' && updateState.updateInfo && (
+            <button
+              className="btn btn-sm"
+              style={{
+                background: 'var(--accent)',
+                color: '#fff',
+                width: '100%',
+                marginTop: '6px',
+                fontSize: '11.5px',
+                padding: '4px 8px'
+              }}
+              onClick={() => setActiveTab('settings')}
+            >
+              🚀 Yeni Sürüm (v{updateState.updateInfo.version})
+            </button>
+          )}
+          <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px' }}>
+            Yerel Veritabanı: SQLite (WAL)
           </div>
         </div>
       </aside>
@@ -170,6 +197,16 @@ export const App: React.FC = () => {
               {isPaused ? '⏸ Takip Duraklatıldı' : '● Takip Aktif'}
             </span>
             <span className={`badge ${zoomBadge.badge}`}>Zoom: {zoomBadge.text}</span>
+            {updateState?.status === 'available' && updateState.updateInfo && (
+              <span
+                className="badge badge-info"
+                style={{ cursor: 'pointer', background: 'var(--accent)', color: '#fff' }}
+                onClick={() => setActiveTab('settings')}
+                title="Güncellemeyi görüntülemek için tıklayın"
+              >
+                🚀 v{updateState.updateInfo.version} Mevcut
+              </span>
+            )}
             {toastMessage && (
               <span className="badge badge-info" style={{ fontWeight: 500 }}>
                 {toastMessage}

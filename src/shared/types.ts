@@ -253,6 +253,7 @@ export interface AppSettings {
   jenkinsUrl: string;
   jenkinsUsername: string;
   reportMaxChars?: number;
+  autoCheckUpdatesOnStartup?: boolean;
 }
 
 export interface AiPreviewPayload {
@@ -307,3 +308,37 @@ export interface IntegrationHealth {
     lastError: string | null;
   };
 }
+
+export type UpdateCheckStatus =
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'not_available'
+  | 'downloading'
+  | 'downloaded'
+  | 'error';
+
+export interface UpdateInfo {
+  version: string;
+  releaseDate?: string;
+  releaseNotes?: string;
+  releaseName?: string;
+  downloadUrl?: string;
+}
+
+export interface UpdateProgress {
+  percent: number;
+  transferredBytes: number;
+  totalBytes: number;
+  bytesPerSecond: number;
+}
+
+export interface UpdateState {
+  status: UpdateCheckStatus;
+  currentVersion: string;
+  updateInfo: UpdateInfo | null;
+  progress: UpdateProgress | null;
+  errorMessage: string | null;
+  lastCheckedAt: string | null;
+}
+

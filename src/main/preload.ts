@@ -34,7 +34,21 @@ const mesaiApi: MesaiApi = {
 
   getSettings: () => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_GET),
   updateSettings: (partial) => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_UPDATE, partial),
-  clearAllData: () => ipcRenderer.invoke(IPC_CHANNELS.DATA_CLEAR_ALL)
+  clearAllData: () => ipcRenderer.invoke(IPC_CHANNELS.DATA_CLEAR_ALL),
+
+  getUpdateState: () => ipcRenderer.invoke(IPC_CHANNELS.UPDATER_GET_STATE),
+  checkForUpdates: () => ipcRenderer.invoke(IPC_CHANNELS.UPDATER_CHECK),
+  downloadUpdate: () => ipcRenderer.invoke(IPC_CHANNELS.UPDATER_DOWNLOAD),
+  quitAndInstallUpdate: () => ipcRenderer.invoke(IPC_CHANNELS.UPDATER_INSTALL),
+  onUpdateStateChanged: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, state: unknown) => {
+      callback(state as any);
+    };
+    ipcRenderer.on('mesai:updater:stateChanged', handler);
+    return () => {
+      ipcRenderer.removeListener('mesai:updater:stateChanged', handler);
+    };
+  }
 };
 
 contextBridge.exposeInMainWorld('mesaiApi', mesaiApi);
