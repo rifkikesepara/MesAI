@@ -16,6 +16,7 @@ import type { ReportService } from './services/report-service';
 import type { IntegrationsService } from './services/integrations-service';
 import type { SchedulerService } from './services/scheduler-service';
 import type { UpdateService } from './services/update-service';
+import { CliInstallerService, type CliTargetProvider } from './services/cli-installer-service';
 import { getTodayLocalDate } from './services/timestamp-resolver';
 
 function assertNonEmptyString(val: unknown, fieldName: string): string {
@@ -413,6 +414,22 @@ export function registerIpcHandlers(deps: {
       throw new Error('Geçersiz AI sağlayıcısı.');
     }
     return integrations.fetchAiModels(obj);
+  });
+
+  const cliInstaller = new CliInstallerService();
+
+  ipcMain.handle(IPC_CHANNELS.AI_INSTALL_CLI, async (_e, provider: unknown) => {
+    if (!['gemini', 'openai', 'anthropic', 'custom'].includes(provider as string)) {
+      throw new Error('Geçersiz AI sağlayıcısı.');
+    }
+    return cliInstaller.installCli(provider as CliTargetProvider);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.AI_AUTH_CLI, async (_e, provider: unknown) => {
+    if (!['gemini', 'openai', 'anthropic', 'custom'].includes(provider as string)) {
+      throw new Error('Geçersiz AI sağlayıcısı.');
+    }
+    return cliInstaller.launchCliAuth(provider as CliTargetProvider);
   });
 
   ipcMain.handle(IPC_CHANNELS.SETTINGS_GET, async () => {

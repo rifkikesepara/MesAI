@@ -34,6 +34,10 @@ const mesaiApi: MesaiApi = {
   saveAiApiKey: (input) => ipcRenderer.invoke(IPC_CHANNELS.AI_SAVE_KEY, input),
   testAiConnection: (provider) => ipcRenderer.invoke(IPC_CHANNELS.AI_TEST_CONNECTION, provider),
   fetchAiModels: (input) => ipcRenderer.invoke(IPC_CHANNELS.AI_FETCH_MODELS, input),
+  installCli: (provider: 'gemini' | 'openai' | 'anthropic' | 'custom') =>
+    ipcRenderer.invoke(IPC_CHANNELS.AI_INSTALL_CLI, provider),
+  authCli: (provider: 'gemini' | 'openai' | 'anthropic' | 'custom') =>
+    ipcRenderer.invoke(IPC_CHANNELS.AI_AUTH_CLI, provider),
 
   getSettings: () => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_GET),
   updateSettings: (partial) => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_UPDATE, partial),

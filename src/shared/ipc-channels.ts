@@ -48,6 +48,8 @@ export const IPC_CHANNELS = {
   AI_SAVE_KEY: 'mesai:ai:saveKey',
   AI_TEST_CONNECTION: 'mesai:ai:testConnection',
   AI_FETCH_MODELS: 'mesai:ai:fetchModels',
+  AI_INSTALL_CLI: 'mesai:ai:installCli',
+  AI_AUTH_CLI: 'mesai:ai:authCli',
 
   SETTINGS_GET: 'mesai:settings:get',
   SETTINGS_UPDATE: 'mesai:settings:update',
@@ -176,6 +178,8 @@ export interface MesaiApi {
     apiKey?: string;
     customBaseUrl?: string;
   }): Promise<{ ok: boolean; models: string[]; error?: string }>;
+  installCli(provider: 'gemini' | 'openai' | 'anthropic' | 'custom'): Promise<{ ok: boolean; message: string; output?: string }>;
+  authCli(provider: 'gemini' | 'openai' | 'anthropic' | 'custom'): Promise<{ ok: boolean; message: string }>;
 
   getSettings(): Promise<AppSettings>;
   updateSettings(partial: Partial<AppSettings>): Promise<AppSettings>;
