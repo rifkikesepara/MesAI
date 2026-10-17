@@ -56,12 +56,19 @@ export const App: React.FC = () => {
         showToast(`🚀 Yeni sürüm mevcut: v${state.updateInfo?.version}`);
       }
     });
+    const unsubTracking = window.mesaiApi.onTrackingStateChanged?.((newPaused) => {
+      setSettings((prev) => (prev ? { ...prev, trackingPaused: newPaused } : null));
+      setSummary((prev) => (prev ? { ...prev, trackingPaused: newPaused } : null));
+      showToast(newPaused ? '⏸ Takip duraklatıldı (Görev Çubuğu)' : '● Takip aktif (Görev Çubuğu)');
+      void refreshCoreData();
+    });
     const interval = setInterval(() => {
       void refreshCoreData();
     }, 15_000);
     return () => {
       clearInterval(interval);
       unsub?.();
+      unsubTracking?.();
     };
   }, []);
 

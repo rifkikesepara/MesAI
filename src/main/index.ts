@@ -17,10 +17,13 @@ import { ReportService } from './services/report-service';
 import { IntegrationsService } from './services/integrations-service';
 import { SchedulerService } from './services/scheduler-service';
 import { UpdateService } from './services/update-service';
+import { TaskbarService } from './services/taskbar-service';
 import { registerIpcHandlers } from './ipc-handlers';
+import { IPC_CHANNELS } from '../shared/ipc-channels';
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
+let taskbarService: TaskbarService | null = null;
 let isQuitting = false;
 
 let database: MesaiDatabase | null = null;
@@ -90,7 +93,7 @@ if (!gotLock && !isSmokeVerify && !isUiVerify) {
           click: () => {
             repo.updateSettings({ trackingPaused: !settings.trackingPaused });
             scheduler?.startOrReload();
-            updateTrayMenu();
+            updateAllTrackingIndicators();
           }
         },
         {
@@ -115,6 +118,24 @@ if (!gotLock && !isSmokeVerify && !isUiVerify) {
       tray.setContextMenu(contextMenu);
     };
 
+    taskbarService = new TaskbarService(
+      () => mainWindow,
+      repo,
+      scheduler,
+      zoomAdapter,
+      gitWatcher,
+      updateTrayMenu
+    );
+
+    const updateAllTrackingIndicators = () => {
+      const current = repo.getSettings();
+      updateTrayMenu();
+      taskbarService?.updateTaskbar(current.trackingPaused);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send(IPC_CHANNELS.TRACKING_STATE_CHANGED, current.trackingPaused);
+      }
+    };
+
     const updateService = new UpdateService(() => mainWindow);
 
     registerIpcHandlers({
@@ -127,7 +148,7 @@ if (!gotLock && !isSmokeVerify && !isUiVerify) {
       integrations,
       scheduler,
       updateService,
-      onTrayUpdate: updateTrayMenu
+      onTrayUpdate: updateAllTrackingIndicators
     });
 
     const settings = repo.getSettings();
@@ -180,6 +201,7 @@ if (!gotLock && !isSmokeVerify && !isUiVerify) {
 
     createTray(updateTrayMenu);
     createMainWindow();
+    taskbarService?.updateTaskbar(settings.trackingPaused);
     scheduler.startOrReload();
 
     if (settings.autoCheckUpdatesOnStartup !== false && !isSmokeVerify && !isUiVerify) {
@@ -290,6 +312,18 @@ function createMainWindow(): void {
     if (!isQuitting && tray) {
       event.preventDefault();
       mainWindow?.hide();
+    }
+  });
+
+  mainWindow.on('show', () => {
+    if (database) {
+      taskbarService?.updateTaskbar(new MesaiRepository(database).getSettings().trackingPaused);
+    }
+  });
+
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (database) {
+      taskbarService?.updateTaskbar(new MesaiRepository(database).getSettings().trackingPaused);
     }
   });
 }
