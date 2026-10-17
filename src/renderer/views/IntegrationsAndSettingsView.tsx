@@ -440,7 +440,7 @@ export const SettingsView: React.FC<{
               <span className="theme-tile-title">Koyu Tema</span>
               {(form.theme || 'system') === 'dark' && <CheckIcon size={16} />}
             </div>
-            <div className="theme-tile-desc">Derin obsidian tonları ve yüksek kontrastlı okuma konforu.</div>
+            <div className="theme-tile-desc">#101010 nötr koyu tonlar ve yüksek kontrastlı okuma konforu.</div>
           </button>
 
           <button

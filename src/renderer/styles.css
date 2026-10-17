@@ -1,16 +1,16 @@
 :root,
 [data-theme="dark"] {
-  --bg-primary: #0b0f19;
-  --bg-secondary: #111827;
-  --bg-surface: #1a2236;
-  --bg-surface-hover: #222d46;
-  --bg-input: #0e1526;
-  --border-color: rgba(255, 255, 255, 0.08);
-  --border-hover: rgba(255, 255, 255, 0.16);
-  --text-primary: #f8fafc;
-  --text-secondary: #94a3b8;
-  --text-muted: #64748b;
-  --text-inverse: #0b0f19;
+  --bg-primary: #101010;
+  --bg-secondary: #161616;
+  --bg-surface: #1e1e1e;
+  --bg-surface-hover: #292929;
+  --bg-input: #141414;
+  --border-color: rgba(255, 255, 255, 0.09);
+  --border-hover: rgba(255, 255, 255, 0.18);
+  --text-primary: #ededed;
+  --text-secondary: #9e9e9e;
+  --text-muted: #666666;
+  --text-inverse: #101010;
   --accent: #6366f1;
   --accent-hover: #4f46e5;
   --accent-subtle: rgba(99, 102, 241, 0.12);
@@ -24,11 +24,11 @@
   --danger-subtle: rgba(239, 68, 68, 0.15);
   --info: #38bdf8;
   --info-subtle: rgba(56, 189, 248, 0.15);
-  --scrollbar-thumb: #28354f;
-  --scrollbar-thumb-hover: #3b4d70;
-  --scrollbar-track: #0b0f19;
-  --shadow-card: 0 4px 20px -2px rgba(0, 0, 0, 0.45);
-  --shadow-dropdown: 0 10px 25px -5px rgba(0, 0, 0, 0.6), 0 8px 10px -6px rgba(0, 0, 0, 0.5);
+  --scrollbar-thumb: #2d2d2d;
+  --scrollbar-thumb-hover: #404040;
+  --scrollbar-track: #101010;
+  --shadow-card: 0 4px 20px -2px rgba(0, 0, 0, 0.65);
+  --shadow-dropdown: 0 10px 25px -5px rgba(0, 0, 0, 0.8), 0 8px 10px -6px rgba(0, 0, 0, 0.7);
 }
 
 [data-theme="light"] {
@@ -466,8 +466,8 @@ body {
 
 .activity-links-box {
   margin-top: 8px;
-  background: rgba(15, 23, 42, 0.75);
-  border: 1px solid rgba(51, 65, 85, 0.85);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 8px 12px;
   display: flex;
@@ -502,7 +502,7 @@ body {
   align-items: center;
   gap: 8px;
   padding: 5px 9px;
-  background: rgba(30, 41, 59, 0.8);
+  background: var(--bg-secondary);
   border: 1px solid var(--border-color);
   border-radius: 6px;
   color: var(--info);
@@ -568,7 +568,7 @@ body {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(2, 6, 23, 0.75);
+  background: rgba(0, 0, 0, 0.78);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -588,7 +588,7 @@ body {
 }
 
 .code-pre {
-  background: #020617;
+  background: #0a0a0a;
   border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 12px;
@@ -598,7 +598,7 @@ body {
   white-space: pre-wrap;
   word-break: break-word;
   overflow-wrap: anywhere;
-  color: #e2e8f0;
+  color: var(--text-primary);
   max-width: 100%;
 }
 
