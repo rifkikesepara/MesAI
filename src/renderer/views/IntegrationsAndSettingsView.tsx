@@ -33,8 +33,11 @@ export const IntegrationsView: React.FC<{
 
   const [openaiKey, setOpenaiKey] = useState('');
   const [openaiModel, setOpenaiModel] = useState('');
+  const [openaiBaseUrl, setOpenaiBaseUrl] = useState('');
   const [openaiModelsList, setOpenaiModelsList] = useState<string[]>([]);
   const [loadingOpenaiModels, setLoadingOpenaiModels] = useState(false);
+  const [showManualOpenaiModel, setShowManualOpenaiModel] = useState(false);
+  const [manualModelInput, setManualModelInput] = useState('');
 
   const [anthropicKey, setAnthropicKey] = useState('');
   const [anthropicModel, setAnthropicModel] = useState('');
@@ -54,16 +57,18 @@ export const IntegrationsView: React.FC<{
   ) => {
     if (provider === 'openai') {
       const keyToUse = keyOverride !== undefined ? keyOverride.trim() : openaiKey.trim();
+      const urlToUse = urlOverride !== undefined ? urlOverride.trim() : openaiBaseUrl.trim();
       setLoadingOpenaiModels(true);
       try {
         const res = await window.mesaiApi.fetchAiModels({
           provider: 'openai',
-          apiKey: keyToUse || undefined
+          apiKey: keyToUse || undefined,
+          customBaseUrl: urlToUse || undefined
         });
         if (res.ok && res.models && res.models.length > 0) {
           setOpenaiModelsList(res.models);
           setOpenaiModel((prev) =>
-            prev && res.models.includes(prev)
+            prev && (res.models.includes(prev) || prev === '6.1sol')
               ? prev
               : res.models.find((m) => m === 'gpt-4o-mini') || res.models[0]
           );
@@ -124,14 +129,13 @@ export const IntegrationsView: React.FC<{
       setJiraUrl(h.jira.url || '');
       setJenkinsUrl(h.jenkins.url || '');
       setOpenaiModel(h.ai.openaiModel || 'gpt-4o-mini');
+      setOpenaiBaseUrl(h.ai.openaiBaseUrl || '');
       setAnthropicModel(h.ai.anthropicModel || 'claude-3-5-sonnet-20241022');
       setCustomBaseUrl(h.ai.customBaseUrl || '');
-      if (h.ai.customConfigured && h.ai.openaiModel) {
-        setCustomModel(h.ai.openaiModel);
-      }
+      setCustomModel(h.ai.customModel || 'gpt-4o-mini');
 
       if (h.ai.openaiConfigured) {
-        void fetchModelsFor('openai');
+        void fetchModelsFor('openai', undefined, h.ai.openaiBaseUrl);
       }
       if (h.ai.anthropicConfigured) {
         void fetchModelsFor('anthropic');
@@ -196,13 +200,14 @@ export const IntegrationsView: React.FC<{
     await loadHealth();
   };
 
-  const handleSaveOpenAi = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSaveOpenAi = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     try {
       await window.mesaiApi.saveAiApiKey({
         provider: 'openai',
         apiKey: openaiKey,
-        model: openaiModel
+        model: openaiModel,
+        customBaseUrl: openaiBaseUrl || undefined
       });
       setOpenaiKey('');
       setFeedback('OpenAI API anahtarı ve model seçimi OS DPAPI ile şifrelenerek kaydedildi.');
@@ -473,45 +478,137 @@ export const IntegrationsView: React.FC<{
 
               <div>
                 <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                  API Base URL (Opsiyonel - Proxy veya Özel Uç Nokta için)
+                </label>
+                <input
+                  className="input"
+                  placeholder="https://api.openai.com/v1 (Varsayılan)"
+                  value={openaiBaseUrl}
+                  onChange={(e) => setOpenaiBaseUrl(e.target.value)}
+                  onBlur={() => {
+                    if (openaiBaseUrl.trim()) {
+                      void fetchModelsFor('openai', undefined, openaiBaseUrl.trim());
+                    }
+                  }}
+                />
+              </div>
+
+              <div>
+                <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
                   Model Seçimi (API'den otomatik çekilen modeller)
                 </label>
-                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                  <select
-                    className="select"
-                    style={{ flex: 1 }}
-                    value={openaiModel}
-                    onChange={(e) => setOpenaiModel(e.target.value)}
-                    disabled={loadingOpenaiModels}
-                  >
-                    {loadingOpenaiModels ? (
-                      <option value="">Modeller API'den çekiliyor...</option>
-                    ) : openaiModelsList.length > 0 ? (
-                      openaiModelsList.map((m) => (
-                        <option key={m} value={m}>
-                          {m}
-                        </option>
-                      ))
-                    ) : (
-                      <>
-                        <option value="gpt-4o-mini">gpt-4o-mini (Varsayılan Hızlı & Ekonomik)</option>
-                        <option value="gpt-4o">gpt-4o (Amiral Gemisi)</option>
-                        <option value="o1-mini">o1-mini (Akıl Yürütme)</option>
-                        <option value="o1-preview">o1-preview</option>
-                      </>
-                    )}
-                  </select>
-                  <button
-                    type="button"
-                    className="btn btn-sm"
-                    title="Modelleri API'den Yenile"
-                    onClick={() => fetchModelsFor('openai')}
-                    disabled={loadingOpenaiModels}
-                    style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-                  >
-                    <RefreshIcon size={12} />
-                    <span>{loadingOpenaiModels ? 'Çekiliyor...' : 'Yenile'}</span>
-                  </button>
-                </div>
+                {showManualOpenaiModel ? (
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <input
+                      className="input"
+                      style={{ flex: 1 }}
+                      placeholder="Örn: 6.1sol, gpt-4o, o3-mini..."
+                      value={manualModelInput}
+                      onChange={(e) => setManualModelInput(e.target.value)}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-primary"
+                      onClick={async () => {
+                        const trimmed = manualModelInput.trim();
+                        if (!trimmed) return;
+                        setOpenaiModel(trimmed);
+                        setShowManualOpenaiModel(false);
+                        try {
+                          await window.mesaiApi.saveAiApiKey({
+                            provider: 'openai',
+                            model: trimmed,
+                            customBaseUrl: openaiBaseUrl || undefined
+                          });
+                          setFeedback(`OpenAI modeli "${trimmed}" olarak kaydedildi.`);
+                          await loadHealth();
+                        } catch {
+                          // non-blocking
+                        }
+                      }}
+                    >
+                      Uygula
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={() => setShowManualOpenaiModel(false)}
+                    >
+                      İptal
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <select
+                      className="select"
+                      style={{ flex: 1 }}
+                      value={openaiModel}
+                      onChange={async (e) => {
+                        const newModel = e.target.value;
+                        setOpenaiModel(newModel);
+                        try {
+                          await window.mesaiApi.saveAiApiKey({
+                            provider: 'openai',
+                            model: newModel,
+                            customBaseUrl: openaiBaseUrl || undefined
+                          });
+                          await loadHealth();
+                        } catch {
+                          // non-blocking
+                        }
+                      }}
+                      disabled={loadingOpenaiModels}
+                    >
+                      {loadingOpenaiModels ? (
+                        <option value="">Modeller API'den çekiliyor...</option>
+                      ) : (
+                        <>
+                          {openaiModel &&
+                            !openaiModelsList.includes(openaiModel) &&
+                            !['gpt-4o-mini', 'gpt-4o', 'o1-mini', 'o1-preview'].includes(openaiModel) && (
+                              <option value={openaiModel}>{openaiModel} (Aktif Seçili Model)</option>
+                            )}
+                          {openaiModelsList.length > 0 ? (
+                            openaiModelsList.map((m) => (
+                              <option key={m} value={m}>
+                                {m}
+                              </option>
+                            ))
+                          ) : (
+                            <>
+                              <option value="gpt-4o-mini">gpt-4o-mini (Varsayılan Hızlı & Ekonomik)</option>
+                              <option value="gpt-4o">gpt-4o (Amiral Gemisi)</option>
+                              <option value="o1-mini">o1-mini (Akıl Yürütme)</option>
+                              <option value="o1-preview">o1-preview</option>
+                            </>
+                          )}
+                        </>
+                      )}
+                    </select>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      title="Modelleri API'den Yenile"
+                      onClick={() => fetchModelsFor('openai', undefined, openaiBaseUrl)}
+                      disabled={loadingOpenaiModels}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                    >
+                      <RefreshIcon size={12} />
+                      <span>{loadingOpenaiModels ? 'Çekiliyor...' : 'Yenile'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      title="Listede olmayan modeli elle yazın (örn: 6.1sol)"
+                      onClick={() => {
+                        setManualModelInput(openaiModel);
+                        setShowManualOpenaiModel(true);
+                      }}
+                    >
+                      Manuel Model
+                    </button>
+                  </div>
+                )}
               </div>
 
               <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
@@ -566,7 +663,19 @@ export const IntegrationsView: React.FC<{
                     className="select"
                     style={{ flex: 1 }}
                     value={anthropicModel}
-                    onChange={(e) => setAnthropicModel(e.target.value)}
+                    onChange={async (e) => {
+                      const newModel = e.target.value;
+                      setAnthropicModel(newModel);
+                      try {
+                        await window.mesaiApi.saveAiApiKey({
+                          provider: 'anthropic',
+                          model: newModel
+                        });
+                        await loadHealth();
+                      } catch {
+                        // non-blocking
+                      }
+                    }}
                     disabled={loadingAnthropicModels}
                   >
                     {loadingAnthropicModels ? (
@@ -663,7 +772,20 @@ export const IntegrationsView: React.FC<{
                       className="select"
                       style={{ flex: 1 }}
                       value={customModel}
-                      onChange={(e) => setCustomModel(e.target.value)}
+                      onChange={async (e) => {
+                        const newModel = e.target.value;
+                        setCustomModel(newModel);
+                        try {
+                          await window.mesaiApi.saveAiApiKey({
+                            provider: 'custom',
+                            model: newModel,
+                            customBaseUrl: customBaseUrl || undefined
+                          });
+                          await loadHealth();
+                        } catch {
+                          // non-blocking
+                        }
+                      }}
                       disabled={loadingCustomModels}
                     >
                       {customModelsList.map((m) => (
@@ -679,6 +801,20 @@ export const IntegrationsView: React.FC<{
                       placeholder="Örn: llama3.1, deepseek-chat, qwen2.5-coder:7b"
                       value={customModel}
                       onChange={(e) => setCustomModel(e.target.value)}
+                      onBlur={async () => {
+                        if (customModel.trim()) {
+                          try {
+                            await window.mesaiApi.saveAiApiKey({
+                              provider: 'custom',
+                              model: customModel.trim(),
+                              customBaseUrl: customBaseUrl || undefined
+                            });
+                            await loadHealth();
+                          } catch {
+                            // non-blocking
+                          }
+                        }
+                      }}
                     />
                   )}
                   <button

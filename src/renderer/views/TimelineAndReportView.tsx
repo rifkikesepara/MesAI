@@ -6,6 +6,7 @@ import type {
   ActivityStatus,
   AiPreviewPayload,
   AIProviderType,
+  AppSettings,
   DailyReport,
   Evidence,
   Project,
@@ -450,6 +451,7 @@ export const DailyReportView: React.FC<{
   const [reportDate, setReportDate] = useState(todayStr);
   const [report, setReport] = useState<DailyReport | null>(null);
   const [provider, setProvider] = useState<AIProviderType>('local_rule');
+  const [settings, setSettings] = useState<AppSettings | null>(null);
   const [maxChars, setMaxChars] = useState<number>(1000);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -469,6 +471,7 @@ export const DailyReportView: React.FC<{
 
   useEffect(() => {
     void window.mesaiApi.getSettings().then((s) => {
+      setSettings(s);
       if (s.reportMaxChars && s.reportMaxChars >= 120) {
         setMaxChars(s.reportMaxChars);
       }
@@ -504,7 +507,7 @@ export const DailyReportView: React.FC<{
     const validMaxChars = Math.max(120, Number(maxChars) || 1000);
 
     if (provider !== 'local_rule') {
-      const preview = await window.mesaiApi.previewAiPayload(reportDate, validMaxChars);
+      const preview = await window.mesaiApi.previewAiPayload(reportDate, validMaxChars, provider);
       setAiPreview(preview);
       return;
     }
@@ -680,9 +683,15 @@ export const DailyReportView: React.FC<{
             >
               <option value="local_rule">Yerel Kurallı Motor (Varsayılan — %100 Çevrimdışı)</option>
               <option value="gemini_cli">Gemini CLI (Veri Önizlemeli)</option>
-              <option value="openai">OpenAI / Codex (GPT-4o / GPT-4o-mini)</option>
-              <option value="anthropic">Anthropic Claude (Claude 3.5)</option>
-              <option value="custom">Özel / Yerel LLM (OpenAI-Uyumlu)</option>
+              <option value="openai">
+                OpenAI / Codex ({settings?.aiOpenaiModel || 'gpt-4o-mini'})
+              </option>
+              <option value="anthropic">
+                Anthropic Claude ({settings?.aiAnthropicModel || 'claude-3-5-sonnet'})
+              </option>
+              <option value="custom">
+                Özel / Yerel LLM ({settings?.aiCustomModel || settings?.aiCustomBaseUrl || 'OpenAI-Uyumlu'})
+              </option>
             </select>
           </div>
 
@@ -1116,10 +1125,10 @@ export const DailyReportView: React.FC<{
               {provider === 'gemini_cli'
                 ? 'Gemini CLI'
                 : provider === 'openai'
-                  ? 'OpenAI / Codex API'
+                  ? `OpenAI (${settings?.aiOpenaiModel || 'gpt-4o-mini'})`
                   : provider === 'anthropic'
-                    ? 'Anthropic Claude API'
-                    : 'Özel LLM API'}{' '}
+                    ? `Anthropic Claude (${settings?.aiAnthropicModel || 'claude-3-5-sonnet'})`
+                    : `Özel LLM (${settings?.aiCustomModel || 'OpenAI-Uyumlu'})`}{' '}
               — Gönderilecek Veri Önizlemesi ve Onayı
             </h3>
             <div className="alert-banner alert-warning">
@@ -1153,10 +1162,10 @@ export const DailyReportView: React.FC<{
                 {provider === 'gemini_cli'
                   ? 'Gemini CLI'
                   : provider === 'openai'
-                    ? 'OpenAI'
+                    ? `OpenAI (${settings?.aiOpenaiModel || 'gpt-4o-mini'})`
                     : provider === 'anthropic'
-                      ? 'Anthropic Claude'
-                      : 'Özel AI'}{' '}
+                      ? `Anthropic Claude (${settings?.aiAnthropicModel || 'claude-3-5-sonnet'})`
+                      : `Özel AI (${settings?.aiCustomModel || 'Özel'})`}{' '}
                 ile Üret
               </button>
             </div>

@@ -121,30 +121,38 @@ export class IntegrationsService {
 
   public saveAiCredential(input: {
     provider: 'openai' | 'anthropic' | 'custom';
-    apiKey: string;
+    apiKey?: string;
     model?: string;
     customBaseUrl?: string;
+    clearKey?: boolean;
   }): void {
     const store = this.readEncryptedStore();
-    const cleanKey = input.apiKey.trim();
+    const cleanKey = input.apiKey?.trim();
     if (cleanKey) {
       store[`${input.provider}_token`] = this.secretProvider.encrypt(cleanKey);
       this.writeEncryptedStore(store);
-    } else if (input.apiKey === '') {
+    } else if (input.clearKey) {
       delete store[`${input.provider}_token`];
       this.writeEncryptedStore(store);
     }
 
-    const updates: Partial<AppSettings> = {};
-    if (input.model !== undefined) {
-      updates.aiModel = input.model.trim();
+    const updates: Partial<AppSettings> = {
+      aiProvider: input.provider
+    };
+    if (input.provider === 'openai') {
+      if (input.model !== undefined) updates.aiOpenaiModel = input.model.trim();
+      if (input.customBaseUrl !== undefined) updates.aiOpenaiBaseUrl = input.customBaseUrl.trim();
+      if (input.model) updates.aiModel = input.model.trim();
+    } else if (input.provider === 'anthropic') {
+      if (input.model !== undefined) updates.aiAnthropicModel = input.model.trim();
+      if (input.model) updates.aiModel = input.model.trim();
+    } else if (input.provider === 'custom') {
+      if (input.model !== undefined) updates.aiCustomModel = input.model.trim();
+      if (input.customBaseUrl !== undefined) updates.aiCustomBaseUrl = input.customBaseUrl.trim();
+      if (input.model) updates.aiModel = input.model.trim();
     }
-    if (input.customBaseUrl !== undefined) {
-      updates.aiCustomBaseUrl = input.customBaseUrl.trim();
-    }
-    if (Object.keys(updates).length > 0) {
-      this.repo.updateSettings(updates);
-    }
+
+    this.repo.updateSettings(updates);
   }
 
   public hasEncryptedAiToken(provider: 'openai' | 'anthropic' | 'custom'): boolean {
@@ -169,20 +177,21 @@ export class IntegrationsService {
       const p = new OpenAiApiProvider({
         providerType: 'openai',
         apiKeyResolver: () => this.getDecryptedAiToken('openai'),
-        model: settings.aiModel
+        model: settings.aiOpenaiModel || settings.aiModel,
+        customBaseUrl: settings.aiOpenaiBaseUrl
       });
       return p.testConnection();
     } else if (provider === 'anthropic') {
       const p = new AnthropicApiProvider({
         apiKeyResolver: () => this.getDecryptedAiToken('anthropic'),
-        model: settings.aiModel
+        model: settings.aiAnthropicModel || settings.aiModel
       });
       return p.testConnection();
     } else {
       const p = new OpenAiApiProvider({
         providerType: 'custom',
         apiKeyResolver: () => this.getDecryptedAiToken('custom'),
-        model: settings.aiModel,
+        model: settings.aiCustomModel || settings.aiModel,
         customBaseUrl: settings.aiCustomBaseUrl
       });
       return p.testConnection();
@@ -195,19 +204,21 @@ export class IntegrationsService {
     customBaseUrl?: string;
   }): Promise<{ ok: boolean; models: string[]; error?: string }> {
     const keyResolver = () => (input.apiKey && input.apiKey.trim() ? input.apiKey.trim() : this.getDecryptedAiToken(input.provider));
+    const settings = this.repo.getSettings();
     if (input.provider === 'openai') {
       const p = new OpenAiApiProvider({
         providerType: 'openai',
-        apiKeyResolver: keyResolver
+        apiKeyResolver: keyResolver,
+        customBaseUrl: input.customBaseUrl ?? settings.aiOpenaiBaseUrl
       });
       return p.fetchAvailableModels();
     } else if (input.provider === 'anthropic') {
       const p = new AnthropicApiProvider({
-        apiKeyResolver: keyResolver
+        apiKeyResolver: keyResolver,
+        model: settings.aiAnthropicModel
       });
       return p.fetchAvailableModels();
     } else {
-      const settings = this.repo.getSettings();
       const p = new OpenAiApiProvider({
         providerType: 'custom',
         apiKeyResolver: keyResolver,
@@ -366,10 +377,12 @@ export class IntegrationsService {
         geminiCliInstalled: geminiHealth.installed,
         geminiCliVersion: geminiHealth.version,
         openaiConfigured,
-        openaiModel: settings.aiModel || 'gpt-4o-mini',
+        openaiModel: settings.aiOpenaiModel || settings.aiModel || 'gpt-4o-mini',
+        openaiBaseUrl: settings.aiOpenaiBaseUrl || '',
         anthropicConfigured,
-        anthropicModel: settings.aiModel || 'claude-3-5-sonnet-20241022',
+        anthropicModel: settings.aiAnthropicModel || settings.aiModel || 'claude-3-5-sonnet-20241022',
         customConfigured,
+        customModel: settings.aiCustomModel || settings.aiModel || '',
         customBaseUrl: settings.aiCustomBaseUrl || '',
         remoteAiAllowed: settings.allowRemoteAiSend,
         lastError: aiSync?.lastError ?? null

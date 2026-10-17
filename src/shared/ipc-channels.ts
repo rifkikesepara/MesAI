@@ -126,7 +126,7 @@ export interface MesaiApi {
   listWorkItems(): Promise<WorkItem[]>;
 
   getDailyReport(reportDate: string): Promise<DailyReport | null>;
-  previewAiPayload(reportDate: string, maxChars?: number): Promise<AiPreviewPayload>;
+  previewAiPayload(reportDate: string, maxChars?: number, providerOverride?: AIProviderType): Promise<AiPreviewPayload>;
   generateDailyReport(input: {
     reportDate: string;
     provider: AIProviderType;

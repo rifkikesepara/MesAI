@@ -253,6 +253,10 @@ export interface AppSettings {
   retentionDays: number;
   aiProvider: AIProviderType;
   aiModel?: string;
+  aiOpenaiModel?: string;
+  aiOpenaiBaseUrl?: string;
+  aiAnthropicModel?: string;
+  aiCustomModel?: string;
   aiCustomBaseUrl?: string;
   allowRemoteAiSend: boolean;
   autoLaunchOnStartup: boolean;
@@ -302,9 +306,11 @@ export interface IntegrationHealth {
     geminiCliVersion: string | null;
     openaiConfigured: boolean;
     openaiModel: string;
+    openaiBaseUrl?: string;
     anthropicConfigured: boolean;
     anthropicModel: string;
     customConfigured: boolean;
+    customModel: string;
     customBaseUrl: string;
     remoteAiAllowed: boolean;
     lastError: string | null;

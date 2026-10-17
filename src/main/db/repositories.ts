@@ -34,6 +34,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
   timezone: 'Europe/Istanbul (+03:00)',
   retentionDays: 90,
   aiProvider: 'local_rule',
+  aiModel: 'gpt-4o-mini',
+  aiOpenaiModel: 'gpt-4o-mini',
+  aiOpenaiBaseUrl: '',
+  aiAnthropicModel: 'claude-3-5-sonnet-20241022',
+  aiCustomModel: '',
+  aiCustomBaseUrl: '',
   allowRemoteAiSend: false,
   autoLaunchOnStartup: false,
   globalExclusions: [
@@ -59,9 +65,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   jenkinsUsername: '',
   reportMaxChars: 1000,
   autoCheckUpdatesOnStartup: true,
-  theme: 'system',
-  aiModel: 'gpt-4o-mini',
-  aiCustomBaseUrl: ''
+  theme: 'system'
 };
 
 const IGNORED_JIRA_LIKE_TOKENS = new Set([

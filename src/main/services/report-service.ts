@@ -111,18 +111,19 @@ export class ReportService {
         return new OpenAiApiProvider({
           providerType: 'openai',
           apiKeyResolver: () => this.aiApiKeyResolver?.('openai') ?? null,
-          model: settings.aiModel
+          model: settings.aiOpenaiModel || settings.aiModel,
+          customBaseUrl: settings.aiOpenaiBaseUrl || undefined
         });
       case 'anthropic':
         return new AnthropicApiProvider({
           apiKeyResolver: () => this.aiApiKeyResolver?.('anthropic') ?? null,
-          model: settings.aiModel
+          model: settings.aiAnthropicModel || settings.aiModel
         });
       case 'custom':
         return new OpenAiApiProvider({
           providerType: 'custom',
           apiKeyResolver: () => this.aiApiKeyResolver?.('custom') ?? null,
-          model: settings.aiModel,
+          model: settings.aiCustomModel || settings.aiModel,
           customBaseUrl: settings.aiCustomBaseUrl
         });
       case 'local_rule':
@@ -179,6 +180,13 @@ export class ReportService {
     const providerBudget = Math.max(120, remainingBudget);
 
     let effectiveProvider: string = input.provider;
+    if (input.provider === 'openai') {
+      effectiveProvider = `openai (${settings.aiOpenaiModel || 'gpt-4o-mini'})`;
+    } else if (input.provider === 'anthropic') {
+      effectiveProvider = `anthropic (${settings.aiAnthropicModel || 'claude-3-5-sonnet'})`;
+    } else if (input.provider === 'custom') {
+      effectiveProvider = `custom (${settings.aiCustomModel || 'custom'})`;
+    }
     let draftItems;
 
     if (input.provider !== 'local_rule') {

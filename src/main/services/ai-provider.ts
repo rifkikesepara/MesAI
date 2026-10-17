@@ -1607,9 +1607,8 @@ export class OpenAiApiProvider implements AIProvider {
       let modelIds = (json.data ?? []).map((m) => m.id).filter((id): id is string => typeof id === 'string');
 
       if (this.name === 'openai') {
-        const chatModels = modelIds.filter((id) =>
-          /gpt-|o1-|o3-|chat|text-davinci|codex/i.test(id) && !/embedding|audio|tts|whisper|dall-e|realtime/i.test(id)
-        );
+        const nonChatRegex = /embedding|audio|tts|whisper|dall-e|moderation|realtime/i;
+        const chatModels = modelIds.filter((id) => !nonChatRegex.test(id));
         if (chatModels.length > 0) {
           modelIds = chatModels;
         }
@@ -1677,7 +1676,18 @@ export class OpenAiApiProvider implements AIProvider {
 
       if (!res.ok) {
         const errText = await res.text().catch(() => '');
-        throw new Error(`OpenAI API Hatası (HTTP ${res.status}): ${errText.slice(0, 300)}`);
+        let detailedMsg = errText.slice(0, 300);
+        try {
+          const parsed = JSON.parse(errText) as { error?: { message?: string; code?: string; type?: string } };
+          if (parsed.error?.code === 'credit_balance_exhausted' || parsed.error?.type === 'insufficient_quota') {
+            detailedMsg = 'OpenAI API kredisi (bakiye) yetersiz. Not: ChatGPT Plus aboneliği API kullanımını kapsamaz; platform.openai.com/settings/organization/billing adresinden API kredisi yüklemeniz veya Özel/Yerel LLM (Ollama vb.) kullanmanız gerekir.';
+          } else if (parsed.error?.message) {
+            detailedMsg = parsed.error.message;
+          }
+        } catch {
+          // keep slice
+        }
+        throw new Error(`OpenAI API Hatası (HTTP ${res.status}): ${detailedMsg}`);
       }
 
       const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
