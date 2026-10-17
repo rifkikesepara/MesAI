@@ -48,6 +48,20 @@ const mesaiApi: MesaiApi = {
     return () => {
       ipcRenderer.removeListener('mesai:updater:stateChanged', handler);
     };
+  },
+
+  minimizeWindow: () => ipcRenderer.invoke(IPC_CHANNELS.WINDOW_MINIMIZE),
+  maximizeWindow: () => ipcRenderer.invoke(IPC_CHANNELS.WINDOW_MAXIMIZE),
+  closeWindow: () => ipcRenderer.invoke(IPC_CHANNELS.WINDOW_CLOSE),
+  isWindowMaximized: () => ipcRenderer.invoke(IPC_CHANNELS.WINDOW_IS_MAXIMIZED),
+  onMaximizeChanged: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, isMaximized: unknown) => {
+      callback(Boolean(isMaximized));
+    };
+    ipcRenderer.on('mesai:window:maximizeChanged', handler);
+    return () => {
+      ipcRenderer.removeListener('mesai:window:maximizeChanged', handler);
+    };
   }
 };
 
