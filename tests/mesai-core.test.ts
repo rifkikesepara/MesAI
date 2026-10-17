@@ -604,6 +604,98 @@ describe('MesAI Core Verification Suite', () => {
 
     db.close();
   });
+
+  it('10. AI integration credentials encryption via secretProvider, OpenAI/Claude/Custom API configuration and health report', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mesai-ai-test-'));
+    const db = new MesaiDatabase(path.join(tmpDir, 'test.sqlite'));
+    const repo = new MesaiRepository(db);
+    const mockSecretProvider = {
+      encrypt: (s: string) => Buffer.from(s, 'utf8').toString('base64'),
+      decrypt: (b: string) => Buffer.from(b, 'base64').toString('utf8')
+    };
+
+    const matcher = new MatcherService(repo);
+    const zoomAdapter = new ZoomReaderAdapter(repo, matcher, { stateDir: tmpDir });
+    const gitWatcher = new GitFileWatcherService(repo, matcher);
+    const reportService = new ReportService(repo);
+
+    const integrations = new IntegrationsService(repo, zoomAdapter, gitWatcher, reportService, {
+      userDataDir: tmpDir,
+      secretProvider: mockSecretProvider
+    });
+
+    // 1. Initial health before configuration
+    let health = await integrations.getHealthSummary();
+    assert.equal(health.ai.openaiConfigured, false);
+    assert.equal(health.ai.anthropicConfigured, false);
+    assert.equal(health.ai.customConfigured, false);
+
+    // 2. Save OpenAI credentials
+    integrations.saveAiCredential({
+      provider: 'openai',
+      apiKey: 'sk-test-openai-12345',
+      model: 'gpt-4o'
+    });
+
+    // Verify API key is NOT stored in plain text in sqlite
+    const rawSqlite = fs.readFileSync(path.join(tmpDir, 'test.sqlite'), 'utf8');
+    assert.ok(!rawSqlite.includes('sk-test-openai-12345'), 'OpenAI API key must never be in plain text in SQLite');
+
+    // Verify key was decrypted properly via secretProvider
+    assert.equal(integrations.getDecryptedAiToken('openai'), 'sk-test-openai-12345');
+
+    // 3. Save Anthropic credentials
+    integrations.saveAiCredential({
+      provider: 'anthropic',
+      apiKey: 'sk-ant-test-99999',
+      model: 'claude-3-5-sonnet-20241022'
+    });
+    assert.equal(integrations.getDecryptedAiToken('anthropic'), 'sk-ant-test-99999');
+
+    // 4. Save Custom endpoint
+    integrations.saveAiCredential({
+      provider: 'custom',
+      apiKey: 'ollama-key',
+      model: 'deepseek-chat',
+      customBaseUrl: 'http://localhost:11434/v1'
+    });
+    assert.equal(integrations.getDecryptedAiToken('custom'), 'ollama-key');
+
+    // 5. Health summary reflects configured state
+    health = await integrations.getHealthSummary();
+    assert.equal(health.ai.openaiConfigured, true);
+    assert.equal(health.ai.anthropicConfigured, true);
+    assert.equal(health.ai.customConfigured, true);
+    assert.equal(health.ai.customBaseUrl, 'http://localhost:11434/v1');
+
+    // 6. Test connection with invalid endpoint / dummy key should return graceful error, not crash
+    const testRes = await integrations.testAiConnection('custom');
+    assert.equal(typeof testRes.ok, 'boolean');
+    assert.equal(typeof testRes.message, 'string');
+
+    // 7. Verify reportService falls back safely to local_rule when remote AI fails
+    repo.updateSettings({ aiProvider: 'openai', allowRemoteAiSend: true });
+    repo.addManualNote({
+      projectId: null,
+      category: 'development',
+      status: 'completed',
+      title: 'AI Entegrasyon Geliştirmesi',
+      summary: 'OpenAI, Anthropic ve Özel LLM entegrasyonu tamamlandı.'
+    });
+
+    const report = await reportService.generateReport({
+      reportDate: '2026-10-17',
+      provider: 'openai',
+      userConfirmedRemoteSend: true
+    });
+
+    // Dummy key will fail remote request and gracefully fall back to local rule
+    assert.ok(report.providerUsed.includes('local_rule'), 'Should fall back to local_rule on remote failure');
+    assert.ok(report.items.length > 0, 'Report items must not be lost on fallback');
+
+    db.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
 });
 
 

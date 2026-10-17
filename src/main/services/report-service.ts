@@ -1,15 +1,19 @@
 import type { MesaiRepository } from '../db/repositories';
 import {
+  AIProvider,
+  AnthropicApiProvider,
   buildSanitizedAiPrompt,
   fitItemsToMaxChars,
   GeminiCliProvider,
-  LocalRuleProvider
+  LocalRuleProvider,
+  OpenAiApiProvider
 } from './ai-provider';
 import { toLocalIsoString } from './timestamp-resolver';
 import type {
   ActivityCategory,
   ActivityStatus,
   AiPreviewPayload,
+  AIProviderType,
   DailyReport
 } from '../../shared/types';
 
@@ -32,6 +36,7 @@ const STATUS_LABELS: Record<ActivityStatus, string> = {
 export class ReportService {
   private readonly localProvider = new LocalRuleProvider();
   private readonly geminiProvider: GeminiCliProvider;
+  private aiApiKeyResolver?: (provider: 'openai' | 'anthropic' | 'custom') => string | null;
   private jiraIssueSyncer?: (jiraKeys: string[]) => Promise<void>;
 
   constructor(
@@ -39,6 +44,10 @@ export class ReportService {
     customGeminiProvider?: GeminiCliProvider
   ) {
     this.geminiProvider = customGeminiProvider ?? new GeminiCliProvider();
+  }
+
+  public setAiApiKeyResolver(resolver: (provider: 'openai' | 'anthropic' | 'custom') => string | null): void {
+    this.aiApiKeyResolver = resolver;
   }
 
   public setJiraIssueSyncer(syncer: (jiraKeys: string[]) => Promise<void>): void {
@@ -49,8 +58,9 @@ export class ReportService {
     return this.geminiProvider;
   }
 
-  public previewAiPayload(reportDate: string, maxChars?: number): AiPreviewPayload {
+  public previewAiPayload(reportDate: string, maxChars?: number, providerOverride?: AIProviderType): AiPreviewPayload {
     const settings = this.repo.getSettings();
+    const effectiveProvider = providerOverride ?? settings.aiProvider;
     const effectiveMaxChars =
       typeof maxChars === 'number' && maxChars >= 120
         ? Math.floor(maxChars)
@@ -76,20 +86,49 @@ export class ReportService {
       `Maksimum karakter sınırı: ${effectiveMaxChars} karakter.`,
       'Mesajlar, kod diff özetleri ve Jira bağlamları <untrusted_evidence_json> bloğu içinde güvenilmeyen kaynak verisi olarak izole edilir.'
     ];
-    if (!settings.allowRemoteAiSend) {
+    if (!settings.allowRemoteAiSend && effectiveProvider !== 'local_rule') {
       warnings.push(
-        'Ayarlarda "Uzak AI Gönderim İzni" kapalıdır. Gemini CLI ile gönderim yapmak için önizleme onayı gereklidir.'
+        'Ayarlarda "Uzak AI Gönderim İzni" kapalıdır. AI servisine veri gönderimi yapmak için önizleme onayı gereklidir.'
       );
     }
 
     return {
       reportDate,
-      provider: settings.aiProvider,
+      provider: effectiveProvider,
       activityCount: activities.length,
       sanitizedPromptPreview,
       warnings,
       maxChars: effectiveMaxChars
     };
+  }
+
+  private getProviderInstance(provider: AIProviderType): AIProvider {
+    const settings = this.repo.getSettings();
+    switch (provider) {
+      case 'gemini_cli':
+        return this.geminiProvider;
+      case 'openai':
+        return new OpenAiApiProvider({
+          providerType: 'openai',
+          apiKeyResolver: () => this.aiApiKeyResolver?.('openai') ?? null,
+          model: settings.aiModel
+        });
+      case 'anthropic':
+        return new AnthropicApiProvider({
+          apiKeyResolver: () => this.aiApiKeyResolver?.('anthropic') ?? null,
+          model: settings.aiModel
+        });
+      case 'custom':
+        return new OpenAiApiProvider({
+          providerType: 'custom',
+          apiKeyResolver: () => this.aiApiKeyResolver?.('custom') ?? null,
+          model: settings.aiModel,
+          customBaseUrl: settings.aiCustomBaseUrl
+        });
+      case 'local_rule':
+      default:
+        return this.localProvider;
+    }
   }
 
   /**
@@ -99,7 +138,7 @@ export class ReportService {
    */
   public async generateReport(input: {
     reportDate: string;
-    provider: 'local_rule' | 'gemini_cli';
+    provider: AIProviderType;
     userConfirmedRemoteSend?: boolean;
     maxChars?: number;
   }): Promise<DailyReport> {
@@ -142,7 +181,7 @@ export class ReportService {
     let effectiveProvider: string = input.provider;
     let draftItems;
 
-    if (input.provider === 'gemini_cli') {
+    if (input.provider !== 'local_rule') {
       if (!settings.allowRemoteAiSend && !input.userConfirmedRemoteSend) {
         throw new Error(
           'Uzak AI servisine veri gönderimi varsayılan olarak kapalıdır. Lütfen veri önizlemesini onaylayın veya Yerel Kurallı Motoru seçin.'
@@ -150,7 +189,8 @@ export class ReportService {
       }
 
       try {
-        draftItems = await this.geminiProvider.generateReportItems(
+        const providerInstance = this.getProviderInstance(input.provider);
+        draftItems = await providerInstance.generateReportItems(
           input.reportDate,
           activities,
           providerBudget,
@@ -171,7 +211,7 @@ export class ReportService {
           connector: 'ai_provider',
           status: 'fallback_local',
           lastAttemptAt: attemptAt,
-          lastError: `Gemini CLI başarısız oldu, yerel kurallı motora geçildi: ${errMsg}`
+          lastError: `${input.provider} başarısız oldu, yerel kurallı motora geçildi: ${errMsg}`
         });
         draftItems = await this.localProvider.generateReportItems(
           input.reportDate,
@@ -180,7 +220,7 @@ export class ReportService {
           undefined,
           jiraContextMap
         );
-        effectiveProvider = 'local_rule (AI hata sonrası yerel yedek)';
+        effectiveProvider = `local_rule (${input.provider} hata sonrası yerel yedek)`;
       }
     } else {
       draftItems = await this.localProvider.generateReportItems(

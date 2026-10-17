@@ -5,6 +5,7 @@ import type {
   ActivityCategory,
   ActivityStatus,
   AiPreviewPayload,
+  AIProviderType,
   DailyReport,
   Evidence,
   Project,
@@ -448,7 +449,7 @@ export const DailyReportView: React.FC<{
   const todayStr = getLocalTodayYmd();
   const [reportDate, setReportDate] = useState(todayStr);
   const [report, setReport] = useState<DailyReport | null>(null);
-  const [provider, setProvider] = useState<'local_rule' | 'gemini_cli'>('local_rule');
+  const [provider, setProvider] = useState<AIProviderType>('local_rule');
   const [maxChars, setMaxChars] = useState<number>(1000);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -502,7 +503,7 @@ export const DailyReportView: React.FC<{
     setStatusBanner(null);
     const validMaxChars = Math.max(120, Number(maxChars) || 1000);
 
-    if (provider === 'gemini_cli') {
+    if (provider !== 'local_rule') {
       const preview = await window.mesaiApi.previewAiPayload(reportDate, validMaxChars);
       setAiPreview(preview);
       return;
@@ -512,7 +513,7 @@ export const DailyReportView: React.FC<{
   };
 
   const executeGenerate = async (
-    selectedProvider: 'local_rule' | 'gemini_cli',
+    selectedProvider: AIProviderType,
     confirmedRemote: boolean
   ) => {
     setAiPreview(null);
@@ -673,12 +674,15 @@ export const DailyReportView: React.FC<{
             </label>
             <select
               className="select"
-              style={{ width: '270px' }}
+              style={{ width: '290px' }}
               value={provider}
-              onChange={(e) => setProvider(e.target.value as 'local_rule' | 'gemini_cli')}
+              onChange={(e) => setProvider(e.target.value as AIProviderType)}
             >
               <option value="local_rule">Yerel Kurallı Motor (Varsayılan — %100 Çevrimdışı)</option>
-              <option value="gemini_cli">Gemini CLI (Veri Önizlemeli & Şema Doğrulamalı)</option>
+              <option value="gemini_cli">Gemini CLI (Veri Önizlemeli)</option>
+              <option value="openai">OpenAI / Codex (GPT-4o / GPT-4o-mini)</option>
+              <option value="anthropic">Anthropic Claude (Claude 3.5)</option>
+              <option value="custom">Özel / Yerel LLM (OpenAI-Uyumlu)</option>
             </select>
           </div>
 
@@ -1108,15 +1112,25 @@ export const DailyReportView: React.FC<{
       {aiPreview && (
         <div className="modal-backdrop">
           <div className="modal-panel">
-            <h3 style={{ marginTop: 0 }}>Gemini CLI — Gönderilecek Veri Önizlemesi ve Onayı</h3>
+            <h3 style={{ marginTop: 0 }}>
+              {provider === 'gemini_cli'
+                ? 'Gemini CLI'
+                : provider === 'openai'
+                  ? 'OpenAI / Codex API'
+                  : provider === 'anthropic'
+                    ? 'Anthropic Claude API'
+                    : 'Özel LLM API'}{' '}
+              — Gönderilecek Veri Önizlemesi ve Onayı
+            </h3>
             <div className="alert-banner alert-warning">
               {aiPreview.warnings.map((w, i) => (
                 <div key={i}>• {w}</div>
               ))}
             </div>
             <p style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
-              Aşağıdaki yapılandırılmış veri ({aiPreview.activityCount} aktivite özeti) Gemini CLI
-              alt sürecine güvenli argüman olarak iletilecektir:
+              Aşağıdaki yapılandırılmış veri ({aiPreview.activityCount} aktivite özeti){' '}
+              {provider === 'gemini_cli' ? 'Gemini CLI sürecine' : 'seçili AI sağlayıcısına'}{' '}
+              güvenli parametre olarak iletilecektir:
             </p>
             <pre className="code-pre" style={{ maxHeight: '300px' }}>
               {aiPreview.sanitizedPromptPreview}
@@ -1133,9 +1147,17 @@ export const DailyReportView: React.FC<{
               </button>
               <button
                 className="btn btn-primary"
-                onClick={() => executeGenerate('gemini_cli', true)}
+                onClick={() => executeGenerate(provider, true)}
               >
-                Onayla ve Gemini CLI ile Üret
+                Onayla ve{' '}
+                {provider === 'gemini_cli'
+                  ? 'Gemini CLI'
+                  : provider === 'openai'
+                    ? 'OpenAI'
+                    : provider === 'anthropic'
+                      ? 'Anthropic Claude'
+                      : 'Özel AI'}{' '}
+                ile Üret
               </button>
             </div>
           </div>

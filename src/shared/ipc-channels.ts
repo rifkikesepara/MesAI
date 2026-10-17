@@ -3,6 +3,7 @@ import type {
   ActivityCategory,
   ActivityStatus,
   AiPreviewPayload,
+  AIProviderType,
   AppSettings,
   DailyReport,
   Evidence,
@@ -43,6 +44,9 @@ export const IPC_CHANNELS = {
   INTEGRATIONS_HEALTH: 'mesai:integrations:health',
   INTEGRATIONS_SAVE_SECRET: 'mesai:integrations:saveSecret',
   INTEGRATIONS_TEST_CONNECTION: 'mesai:integrations:testConnection',
+
+  AI_SAVE_KEY: 'mesai:ai:saveKey',
+  AI_TEST_CONNECTION: 'mesai:ai:testConnection',
 
   SETTINGS_GET: 'mesai:settings:get',
   SETTINGS_UPDATE: 'mesai:settings:update',
@@ -124,7 +128,7 @@ export interface MesaiApi {
   previewAiPayload(reportDate: string, maxChars?: number): Promise<AiPreviewPayload>;
   generateDailyReport(input: {
     reportDate: string;
-    provider: 'local_rule' | 'gemini_cli';
+    provider: AIProviderType;
     userConfirmedRemoteSend?: boolean;
     maxChars?: number;
   }): Promise<DailyReport>;
@@ -157,6 +161,14 @@ export interface MesaiApi {
     token: string;
   }): Promise<void>;
   testIntegrationConnection(service: 'jira' | 'jenkins'): Promise<{ ok: boolean; message: string }>;
+
+  saveAiApiKey(input: {
+    provider: 'openai' | 'anthropic' | 'custom';
+    apiKey: string;
+    model?: string;
+    customBaseUrl?: string;
+  }): Promise<void>;
+  testAiConnection(provider: 'openai' | 'anthropic' | 'custom'): Promise<{ ok: boolean; message: string }>;
 
   getSettings(): Promise<AppSettings>;
   updateSettings(partial: Partial<AppSettings>): Promise<AppSettings>;

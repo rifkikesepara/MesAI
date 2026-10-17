@@ -4,7 +4,8 @@ import type { MesaiRepository } from '../db/repositories';
 import type { ZoomReaderAdapter } from './zoom-adapter';
 import type { GitFileWatcherService } from './git-file-watcher';
 import type { ReportService } from './report-service';
-import type { IntegrationHealth, ZoomReaderStatus } from '../../shared/types';
+import { OpenAiApiProvider, AnthropicApiProvider } from './ai-provider';
+import type { AppSettings, IntegrationHealth, ZoomReaderStatus } from '../../shared/types';
 
 export interface SecretProvider {
   encrypt(plainText: string): string;
@@ -26,6 +27,7 @@ export class IntegrationsService {
     this.secretsFilePath = path.join(dir, 'mesai_credentials.dpapi.json');
     this.secretProvider = options?.secretProvider ?? this.createDefaultSecretProvider();
     this.reportService.setJiraIssueSyncer((keys) => this.syncJiraIssuesIfConfigured(keys));
+    this.reportService.setAiApiKeyResolver((prov) => this.getDecryptedAiToken(prov));
   }
 
   private createDefaultSecretProvider(): SecretProvider {
@@ -114,6 +116,76 @@ export class IntegrationsService {
       return this.secretProvider.decrypt(enc);
     } catch {
       return null;
+    }
+  }
+
+  public saveAiCredential(input: {
+    provider: 'openai' | 'anthropic' | 'custom';
+    apiKey: string;
+    model?: string;
+    customBaseUrl?: string;
+  }): void {
+    const store = this.readEncryptedStore();
+    const cleanKey = input.apiKey.trim();
+    if (cleanKey) {
+      store[`${input.provider}_token`] = this.secretProvider.encrypt(cleanKey);
+      this.writeEncryptedStore(store);
+    } else if (input.apiKey === '') {
+      delete store[`${input.provider}_token`];
+      this.writeEncryptedStore(store);
+    }
+
+    const updates: Partial<AppSettings> = {};
+    if (input.model !== undefined) {
+      updates.aiModel = input.model.trim();
+    }
+    if (input.customBaseUrl !== undefined) {
+      updates.aiCustomBaseUrl = input.customBaseUrl.trim();
+    }
+    if (Object.keys(updates).length > 0) {
+      this.repo.updateSettings(updates);
+    }
+  }
+
+  public hasEncryptedAiToken(provider: 'openai' | 'anthropic' | 'custom'): boolean {
+    const store = this.readEncryptedStore();
+    return Boolean(store[`${provider}_token`]);
+  }
+
+  public getDecryptedAiToken(provider: 'openai' | 'anthropic' | 'custom'): string | null {
+    const store = this.readEncryptedStore();
+    const enc = store[`${provider}_token`];
+    if (!enc) return null;
+    try {
+      return this.secretProvider.decrypt(enc);
+    } catch {
+      return null;
+    }
+  }
+
+  public async testAiConnection(provider: 'openai' | 'anthropic' | 'custom'): Promise<{ ok: boolean; message: string }> {
+    const settings = this.repo.getSettings();
+    if (provider === 'openai') {
+      const p = new OpenAiApiProvider({
+        providerType: 'openai',
+        apiKeyResolver: () => this.getDecryptedAiToken('openai'),
+        model: settings.aiModel
+      });
+      return p.testConnection();
+    } else if (provider === 'anthropic') {
+      const p = new AnthropicApiProvider({
+        apiKeyResolver: () => this.getDecryptedAiToken('anthropic'),
+        model: settings.aiModel
+      });
+      return p.testConnection();
+    } else {
+      const p = new OpenAiApiProvider({
+        providerType: 'custom',
+        apiKeyResolver: () => this.getDecryptedAiToken('custom'),
+        model: settings.aiModel,
+        customBaseUrl: settings.aiCustomBaseUrl
+      });
+      return p.testConnection();
     }
   }
 
@@ -236,6 +308,9 @@ export class IntegrationsService {
 
     const jiraConfigured = Boolean(settings.jiraUrl && settings.jiraEmail && this.hasEncryptedToken('jira'));
     const jenkinsConfigured = Boolean(settings.jenkinsUrl && settings.jenkinsUsername && this.hasEncryptedToken('jenkins'));
+    const openaiConfigured = this.hasEncryptedAiToken('openai');
+    const anthropicConfigured = this.hasEncryptedAiToken('anthropic');
+    const customConfigured = this.hasEncryptedAiToken('custom') || Boolean(settings.aiCustomBaseUrl);
 
     return {
       zoom: {
@@ -262,6 +337,12 @@ export class IntegrationsService {
         localRuleAvailable: true,
         geminiCliInstalled: geminiHealth.installed,
         geminiCliVersion: geminiHealth.version,
+        openaiConfigured,
+        openaiModel: settings.aiModel || 'gpt-4o-mini',
+        anthropicConfigured,
+        anthropicModel: settings.aiModel || 'claude-3-5-sonnet-20241022',
+        customConfigured,
+        customBaseUrl: settings.aiCustomBaseUrl || '',
         remoteAiAllowed: settings.allowRemoteAiSend,
         lastError: aiSync?.lastError ?? null
       },

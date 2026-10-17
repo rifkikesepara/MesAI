@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { Activity, ActivityCategory, ActivityStatus } from '../../shared/types';
+import type { Activity, ActivityCategory, ActivityStatus, AIProviderType } from '../../shared/types';
 
 export interface GeneratedDraftItem {
   workItemId: string | null;
@@ -17,7 +17,7 @@ export interface GeneratedDraftItem {
 }
 
 export interface AIProvider {
-  readonly name: 'local_rule' | 'gemini_cli';
+  readonly name: AIProviderType;
   generateReportItems(
     reportDate: string,
     activities: Activity[],
@@ -1521,5 +1521,249 @@ export class GeminiCliProvider implements AIProvider {
         child.stdin.end();
       }
     });
+  }
+}
+
+/**
+ * OpenAI / Codex / Custom OpenAI-compatible REST API Provider.
+ * Connects directly using standard fetch to OpenAI API or custom local/remote endpoint.
+ */
+export class OpenAiApiProvider implements AIProvider {
+  public readonly name: AIProviderType;
+
+  constructor(
+    private readonly config: {
+      providerType?: 'openai' | 'custom';
+      apiKeyResolver: () => string | null;
+      model?: string;
+      customBaseUrl?: string;
+    }
+  ) {
+    this.name = config.providerType ?? 'openai';
+  }
+
+  public getEffectiveBaseUrl(): string {
+    const raw = this.config.customBaseUrl?.trim();
+    if (raw) return raw.replace(/\/+$/, '');
+    return 'https://api.openai.com/v1';
+  }
+
+  public getEffectiveModel(): string {
+    const m = this.config.model?.trim();
+    if (m) return m;
+    return this.name === 'custom' ? 'default' : 'gpt-4o-mini';
+  }
+
+  public async testConnection(signal?: AbortSignal): Promise<{ ok: boolean; message: string }> {
+    const key = this.config.apiKeyResolver();
+    const isCustom = this.name === 'custom';
+    if (!key && !isCustom) {
+      return { ok: false, message: 'API anahtarı girilmedi.' };
+    }
+    const baseUrl = this.getEffectiveBaseUrl();
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (key) headers['Authorization'] = `Bearer ${key}`;
+
+      const res = await fetch(`${baseUrl}/models`, {
+        method: 'GET',
+        headers,
+        signal: signal ?? AbortSignal.timeout(10_000)
+      });
+
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '');
+        return { ok: false, message: `HTTP ${res.status}: ${txt.slice(0, 160) || res.statusText}` };
+      }
+      return { ok: true, message: `Bağlantı başarılı! (${baseUrl})` };
+    } catch (err) {
+      return { ok: false, message: `Bağlantı hatası: ${(err as Error).message}` };
+    }
+  }
+
+  public async generateReportItems(
+    reportDate: string,
+    rawActivities: Activity[],
+    maxChars = 1000,
+    signal?: AbortSignal,
+    jiraContextMap: Record<string, string> = {}
+  ): Promise<GeneratedDraftItem[]> {
+    const activities = rawActivities.filter(
+      (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
+    );
+    if (activities.length === 0) return [];
+
+    const key = this.config.apiKeyResolver();
+    if (!key && this.name !== 'custom') {
+      throw new Error(
+        'OpenAI API anahtarı yapılandırılmamış. Lütfen Ayarlar > Entegrasyonlar sekmesinden API anahtarını kaydedin.'
+      );
+    }
+
+    const prompt = buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap);
+    const validEvidenceIds = new Set<string>(
+      activities.flatMap((a) => (a.evidences ?? []).map((e) => e.id))
+    );
+
+    const baseUrl = this.getEffectiveBaseUrl();
+    const model = this.getEffectiveModel();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (key) headers['Authorization'] = `Bearer ${key}`;
+
+    const makeRequest = async (useJsonFormat: boolean) => {
+      const body: Record<string, unknown> = {
+        model,
+        messages: [
+          {
+            role: 'system',
+            content:
+              'Sen kurumsal bir Türkçe yazılım mühendisliği rapor asistanısın. Yanıt olarak YALNIZCA geçerli bir JSON döndür.'
+          },
+          { role: 'user', content: prompt }
+        ],
+        temperature: 0.2
+      };
+      if (useJsonFormat) {
+        body['response_format'] = { type: 'json_object' };
+      }
+
+      const res = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: signal ?? AbortSignal.timeout(90_000)
+      });
+
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        throw new Error(`OpenAI API Hatası (HTTP ${res.status}): ${errText.slice(0, 300)}`);
+      }
+
+      const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+      const content = data.choices?.[0]?.message?.content;
+      if (!content) {
+        throw new Error('OpenAI API yanıtında mesaj içeriği bulunamadı.');
+      }
+      return content;
+    };
+
+    let rawOutput: string;
+    try {
+      rawOutput = await makeRequest(true);
+    } catch (err) {
+      if ((err as Error).message.includes('response_format') || this.name === 'custom') {
+        rawOutput = await makeRequest(false);
+      } else {
+        throw err;
+      }
+    }
+
+    return validateAndParseAiReportJson(rawOutput, validEvidenceIds, maxChars);
+  }
+}
+
+/**
+ * Anthropic Claude REST API Provider (e.g. Claude 3.5 Sonnet / Claude 3.5 Haiku).
+ */
+export class AnthropicApiProvider implements AIProvider {
+  public readonly name: AIProviderType = 'anthropic';
+
+  constructor(
+    private readonly config: {
+      apiKeyResolver: () => string | null;
+      model?: string;
+    }
+  ) {}
+
+  public getEffectiveModel(): string {
+    const m = this.config.model?.trim();
+    return m || 'claude-3-5-sonnet-20241022';
+  }
+
+  public async testConnection(signal?: AbortSignal): Promise<{ ok: boolean; message: string }> {
+    const key = this.config.apiKeyResolver();
+    if (!key) {
+      return { ok: false, message: 'Anthropic API anahtarı girilmedi.' };
+    }
+    try {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key': key,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: this.getEffectiveModel(),
+          max_tokens: 10,
+          messages: [{ role: 'user', content: 'ping' }]
+        }),
+        signal: signal ?? AbortSignal.timeout(12_000)
+      });
+
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '');
+        return { ok: false, message: `HTTP ${res.status}: ${txt.slice(0, 160) || res.statusText}` };
+      }
+      return { ok: true, message: 'Anthropic Claude bağlantısı başarılı!' };
+    } catch (err) {
+      return { ok: false, message: `Bağlantı hatası: ${(err as Error).message}` };
+    }
+  }
+
+  public async generateReportItems(
+    reportDate: string,
+    rawActivities: Activity[],
+    maxChars = 1000,
+    signal?: AbortSignal,
+    jiraContextMap: Record<string, string> = {}
+  ): Promise<GeneratedDraftItem[]> {
+    const activities = rawActivities.filter(
+      (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
+    );
+    if (activities.length === 0) return [];
+
+    const key = this.config.apiKeyResolver();
+    if (!key) {
+      throw new Error(
+        'Anthropic Claude API anahtarı yapılandırılmamış. Lütfen Ayarlar > Entegrasyonlar sekmesinden API anahtarını kaydedin.'
+      );
+    }
+
+    const prompt = buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap);
+    const validEvidenceIds = new Set<string>(
+      activities.flatMap((a) => (a.evidences ?? []).map((e) => e.id))
+    );
+
+    const model = this.getEffectiveModel();
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: 4096,
+        system:
+          'Sen kurumsal bir Türkçe yazılım mühendisliği rapor asistanısın. Yanıt olarak YALNIZCA geçerli bir JSON döndür.',
+        messages: [{ role: 'user', content: prompt }]
+      }),
+      signal: signal ?? AbortSignal.timeout(90_000)
+    });
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      throw new Error(`Anthropic Claude API Hatası (HTTP ${res.status}): ${errText.slice(0, 300)}`);
+    }
+
+    const data = (await res.json()) as { content?: Array<{ type: string; text?: string }> };
+    const textBlock = data.content?.find((c) => c.type === 'text');
+    if (!textBlock?.text) {
+      throw new Error('Anthropic API yanıtında metin bloğu bulunamadı.');
+    }
+
+    return validateAndParseAiReportJson(textBlock.text, validEvidenceIds, maxChars);
   }
 }

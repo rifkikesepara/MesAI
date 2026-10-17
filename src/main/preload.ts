@@ -31,6 +31,8 @@ const mesaiApi: MesaiApi = {
   getIntegrationsHealth: () => ipcRenderer.invoke(IPC_CHANNELS.INTEGRATIONS_HEALTH),
   saveIntegrationSecret: (input) => ipcRenderer.invoke(IPC_CHANNELS.INTEGRATIONS_SAVE_SECRET, input),
   testIntegrationConnection: (service) => ipcRenderer.invoke(IPC_CHANNELS.INTEGRATIONS_TEST_CONNECTION, service),
+  saveAiApiKey: (input) => ipcRenderer.invoke(IPC_CHANNELS.AI_SAVE_KEY, input),
+  testAiConnection: (provider) => ipcRenderer.invoke(IPC_CHANNELS.AI_TEST_CONNECTION, provider),
 
   getSettings: () => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_GET),
   updateSettings: (partial) => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_UPDATE, partial),

@@ -29,6 +29,14 @@ export const IntegrationsView: React.FC<{
   const [jenkinsUser, setJenkinsUser] = useState('');
   const [jenkinsToken, setJenkinsToken] = useState('');
 
+  const [openaiKey, setOpenaiKey] = useState('');
+  const [openaiModel, setOpenaiModel] = useState('');
+  const [anthropicKey, setAnthropicKey] = useState('');
+  const [anthropicModel, setAnthropicModel] = useState('');
+  const [customKey, setCustomKey] = useState('');
+  const [customModel, setCustomModel] = useState('');
+  const [customBaseUrl, setCustomBaseUrl] = useState('');
+
   const loadHealth = async () => {
     setLoading(true);
     try {
@@ -36,6 +44,9 @@ export const IntegrationsView: React.FC<{
       setHealth(h);
       setJiraUrl(h.jira.url || '');
       setJenkinsUrl(h.jenkins.url || '');
+      setOpenaiModel(h.ai.openaiModel || 'gpt-4o-mini');
+      setAnthropicModel(h.ai.anthropicModel || 'claude-3-5-sonnet-20241022');
+      setCustomBaseUrl(h.ai.customBaseUrl || '');
     } finally {
       setLoading(false);
     }
@@ -89,6 +100,76 @@ export const IntegrationsView: React.FC<{
   const handleTestJenkins = async () => {
     setFeedback('Jenkins bağlantısı test ediliyor...');
     const res = await window.mesaiApi.testIntegrationConnection('jenkins');
+    setFeedback(res.message);
+    await loadHealth();
+  };
+
+  const handleSaveOpenAi = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      await window.mesaiApi.saveAiApiKey({
+        provider: 'openai',
+        apiKey: openaiKey,
+        model: openaiModel
+      });
+      setOpenaiKey('');
+      setFeedback('OpenAI API anahtarı ve model seçimi OS DPAPI ile şifrelenerek kaydedildi.');
+      await loadHealth();
+    } catch (err) {
+      setFeedback(`Hata: ${(err as Error).message}`);
+    }
+  };
+
+  const handleTestOpenAi = async () => {
+    setFeedback('OpenAI bağlantısı test ediliyor...');
+    const res = await window.mesaiApi.testAiConnection('openai');
+    setFeedback(res.message);
+    await loadHealth();
+  };
+
+  const handleSaveAnthropic = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      await window.mesaiApi.saveAiApiKey({
+        provider: 'anthropic',
+        apiKey: anthropicKey,
+        model: anthropicModel
+      });
+      setAnthropicKey('');
+      setFeedback('Anthropic Claude API anahtarı ve model seçimi OS DPAPI ile şifrelenerek kaydedildi.');
+      await loadHealth();
+    } catch (err) {
+      setFeedback(`Hata: ${(err as Error).message}`);
+    }
+  };
+
+  const handleTestAnthropic = async () => {
+    setFeedback('Anthropic Claude bağlantısı test ediliyor...');
+    const res = await window.mesaiApi.testAiConnection('anthropic');
+    setFeedback(res.message);
+    await loadHealth();
+  };
+
+  const handleSaveCustom = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      await window.mesaiApi.saveAiApiKey({
+        provider: 'custom',
+        apiKey: customKey,
+        model: customModel,
+        customBaseUrl
+      });
+      setCustomKey('');
+      setFeedback('Özel AI API ayarları kaydedildi.');
+      await loadHealth();
+    } catch (err) {
+      setFeedback(`Hata: ${(err as Error).message}`);
+    }
+  };
+
+  const handleTestCustom = async () => {
+    setFeedback('Özel AI API bağlantısı test ediliyor...');
+    const res = await window.mesaiApi.testAiConnection('custom');
     setFeedback(res.message);
     await loadHealth();
   };
@@ -201,19 +282,42 @@ export const IntegrationsView: React.FC<{
         <div className="card-header">
           <h3 className="card-title">3. Raporlama ve AI Sağlayıcı Katmanı</h3>
           <span className="badge badge-success">
-            Aktif: {health.ai.activeProvider === 'local_rule' ? 'Yerel Kurallı Motor' : 'Gemini CLI'}
+            Aktif: {
+              health.ai.activeProvider === 'local_rule'
+                ? 'Yerel Kurallı Motor'
+                : health.ai.activeProvider === 'gemini_cli'
+                  ? 'Gemini CLI'
+                  : health.ai.activeProvider === 'openai'
+                    ? 'OpenAI / Codex'
+                    : health.ai.activeProvider === 'anthropic'
+                      ? 'Anthropic Claude'
+                      : 'Özel / Yerel LLM'
+            }
           </span>
         </div>
         <div style={{ fontSize: '13px', display: 'grid', gap: '6px' }}>
           <div>
-            <strong>Yerel Kurallı Motor (LocalRuleProvider):</strong> Hazır (%100 çevrimdışı, veri dışarı
-            çıkmaz)
+            <strong>Yerel Kurallı Motor (LocalRuleProvider):</strong> Hazır (%100 çevrimdışı, veri dışarı çıkmaz)
           </div>
           <div>
-            <strong>Gemini CLI Durumu:</strong>{' '}
+            <strong>Gemini CLI:</strong>{' '}
             {health.ai.geminiCliInstalled
               ? `Kurulu (Sürüm: ${health.ai.geminiCliVersion})`
               : 'Kurulu değil veya erişilemedi'}
+          </div>
+          <div>
+            <strong>OpenAI / Codex API:</strong>{' '}
+            {health.ai.openaiConfigured ? `Yapılandırıldı (${health.ai.openaiModel})` : 'Yapılandırılmadı'}
+          </div>
+          <div>
+            <strong>Anthropic Claude API:</strong>{' '}
+            {health.ai.anthropicConfigured ? `Yapılandırıldı (${health.ai.anthropicModel})` : 'Yapılandırılmadı'}
+          </div>
+          <div>
+            <strong>Özel / Yerel LLM (OpenAI-Uyumlu):</strong>{' '}
+            {health.ai.customConfigured
+              ? `Yapılandırıldı (${health.ai.customBaseUrl || 'Varsayılan Endpoint'})`
+              : 'Yapılandırılmadı'}
           </div>
           <div>
             <strong>Uzak AI Veri Gönderim İzni:</strong>{' '}
@@ -225,6 +329,140 @@ export const IntegrationsView: React.FC<{
             </div>
           )}
         </div>
+      </div>
+
+      {/* AI API Entegrasyonları (OpenAI, Claude, Custom) */}
+      <div className="grid-2">
+        {/* OpenAI / Codex */}
+        <div className="card">
+          <div className="card-header">
+            <h3 className="card-title">OpenAI / Codex API Entegrasyonu</h3>
+            <span className={`badge ${health.ai.openaiConfigured ? 'badge-success' : 'badge-neutral'}`}>
+              {health.ai.openaiConfigured ? 'Anahtar Kayıtlı' : 'Yapılandırılmadı'}
+            </span>
+          </div>
+          <form onSubmit={handleSaveOpenAi} style={{ display: 'grid', gap: '8px' }}>
+            <div>
+              <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Model</label>
+              <input
+                className="input"
+                placeholder="Örn: gpt-4o-mini, gpt-4o, o1-mini"
+                value={openaiModel}
+                onChange={(e) => setOpenaiModel(e.target.value)}
+              />
+            </div>
+            <div>
+              <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>API Anahtarı (sk-...)</label>
+              <input
+                type="password"
+                className="input"
+                placeholder="OpenAI API Key (DPAPI ile şifrelenir)"
+                value={openaiKey}
+                onChange={(e) => setOpenaiKey(e.target.value)}
+              />
+            </div>
+            <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+              <button type="submit" className="btn btn-sm btn-primary">
+                Şifreli Kaydet
+              </button>
+              <button type="button" className="btn btn-sm" onClick={handleTestOpenAi}>
+                Bağlantı Testi
+              </button>
+            </div>
+          </form>
+        </div>
+
+        {/* Anthropic Claude */}
+        <div className="card">
+          <div className="card-header">
+            <h3 className="card-title">Anthropic Claude API Entegrasyonu</h3>
+            <span className={`badge ${health.ai.anthropicConfigured ? 'badge-success' : 'badge-neutral'}`}>
+              {health.ai.anthropicConfigured ? 'Anahtar Kayıtlı' : 'Yapılandırılmadı'}
+            </span>
+          </div>
+          <form onSubmit={handleSaveAnthropic} style={{ display: 'grid', gap: '8px' }}>
+            <div>
+              <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Model</label>
+              <input
+                className="input"
+                placeholder="Örn: claude-3-5-sonnet-20241022, claude-3-5-haiku-20241022"
+                value={anthropicModel}
+                onChange={(e) => setAnthropicModel(e.target.value)}
+              />
+            </div>
+            <div>
+              <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>API Anahtarı (sk-ant-...)</label>
+              <input
+                type="password"
+                className="input"
+                placeholder="Claude API Key (DPAPI ile şifrelenir)"
+                value={anthropicKey}
+                onChange={(e) => setAnthropicKey(e.target.value)}
+              />
+            </div>
+            <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+              <button type="submit" className="btn btn-sm btn-primary">
+                Şifreli Kaydet
+              </button>
+              <button type="button" className="btn btn-sm" onClick={handleTestAnthropic}>
+                Bağlantı Testi
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      {/* Custom LLM / Ollama / DeepSeek */}
+      <div className="card">
+        <div className="card-header">
+          <h3 className="card-title">Özel / Yerel LLM Entegrasyonu (OpenAI-Uyumlu)</h3>
+          <span className={`badge ${health.ai.customConfigured ? 'badge-success' : 'badge-neutral'}`}>
+            {health.ai.customConfigured ? 'Yapılandırıldı' : 'Yapılandırılmadı'}
+          </span>
+        </div>
+        <p style={{ color: 'var(--text-secondary)', fontSize: '13px', margin: '0 0 10px 0' }}>
+          Ollama (<code>http://localhost:11434/v1</code>), vLLM, LM Studio, DeepSeek veya OpenRouter gibi OpenAI uyumlu uç noktaları bağlayabilirsiniz.
+        </p>
+        <form onSubmit={handleSaveCustom} style={{ display: 'grid', gap: '8px' }}>
+          <div className="grid-2">
+            <div>
+              <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>API Base URL</label>
+              <input
+                className="input"
+                placeholder="Örn: http://localhost:11434/v1 veya https://api.deepseek.com/v1"
+                value={customBaseUrl}
+                onChange={(e) => setCustomBaseUrl(e.target.value)}
+              />
+            </div>
+            <div>
+              <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Model Adı</label>
+              <input
+                className="input"
+                placeholder="Örn: deepseek-chat, qwen2.5-coder:7b, llama3.1"
+                value={customModel}
+                onChange={(e) => setCustomModel(e.target.value)}
+              />
+            </div>
+          </div>
+          <div>
+            <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>API Anahtarı (Yerel Ollama için boş bırakılabilir)</label>
+            <input
+              type="password"
+              className="input"
+              placeholder="API Anahtarı / Token (Varsa DPAPI ile şifrelenir)"
+              value={customKey}
+              onChange={(e) => setCustomKey(e.target.value)}
+            />
+          </div>
+          <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+            <button type="submit" className="btn btn-sm btn-primary">
+              Ayarları Kaydet
+            </button>
+            <button type="button" className="btn btn-sm" onClick={handleTestCustom}>
+              Bağlantı Testi
+            </button>
+          </div>
+        </form>
       </div>
 
       {/* 4. Optional Jira & Jenkins */}
@@ -401,6 +639,8 @@ export const SettingsView: React.FC<{
       timezone: form.timezone,
       retentionDays: Math.max(7, Number(form.retentionDays) || 90),
       aiProvider: form.aiProvider,
+      aiModel: form.aiModel,
+      aiCustomBaseUrl: form.aiCustomBaseUrl,
       allowRemoteAiSend: form.allowRemoteAiSend,
       autoLaunchOnStartup: form.autoLaunchOnStartup,
       autoCheckUpdatesOnStartup: form.autoCheckUpdatesOnStartup,
@@ -558,6 +798,35 @@ export const SettingsView: React.FC<{
               }
             />
           </div>
+
+          <div>
+            <label style={{ fontSize: '12.5px', color: 'var(--text-secondary)' }}>
+              Varsayılan Raporlama AI Sağlayıcısı
+            </label>
+            <select
+              className="select"
+              value={form.aiProvider}
+              onChange={(e) => setForm({ ...form, aiProvider: e.target.value as any })}
+            >
+              <option value="local_rule">Yerel Kurallı Motor (%100 Çevrimdışı — Güvenli)</option>
+              <option value="gemini_cli">Gemini CLI (Komut Satırı)</option>
+              <option value="openai">OpenAI / Codex API</option>
+              <option value="anthropic">Anthropic Claude API</option>
+              <option value="custom">Özel / Yerel LLM (OpenAI-Uyumlu)</option>
+            </select>
+          </div>
+
+          <div>
+            <label style={{ fontSize: '12.5px', color: 'var(--text-secondary)' }}>
+              Aktif AI Model Adı (Opsiyonel)
+            </label>
+            <input
+              className="input"
+              placeholder="Örn: gpt-4o-mini, claude-3-5-sonnet-20241022, deepseek-chat"
+              value={form.aiModel || ''}
+              onChange={(e) => setForm({ ...form, aiModel: e.target.value })}
+            />
+          </div>
         </div>
 
         <div style={{ display: 'grid', gap: '8px', marginTop: '6px' }}>
@@ -576,8 +845,7 @@ export const SettingsView: React.FC<{
               checked={form.allowRemoteAiSend}
               onChange={(e) => setForm({ ...form, allowRemoteAiSend: e.target.checked })}
             />
-            Uzak AI / CLI servisine (Gemini CLI) yapılandırılmış aktivite özeti gönderimine izin ver
-            (Her zaman önizleme ile)
+            Uzak AI servisine (Gemini CLI / OpenAI / Claude / Özel API) yapılandırılmış aktivite özeti gönderimine izin ver (Her zaman önizleme ile)
           </label>
 
           <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>

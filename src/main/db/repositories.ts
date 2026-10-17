@@ -59,7 +59,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   jenkinsUsername: '',
   reportMaxChars: 1000,
   autoCheckUpdatesOnStartup: true,
-  theme: 'system'
+  theme: 'system',
+  aiModel: 'gpt-4o-mini',
+  aiCustomBaseUrl: ''
 };
 
 const IGNORED_JIRA_LIKE_TOKENS = new Set([
