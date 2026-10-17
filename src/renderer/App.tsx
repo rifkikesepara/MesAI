@@ -111,8 +111,12 @@ export const App: React.FC = () => {
       {/* Left Navigation Sidebar */}
       <aside className="sidebar">
         <div className="brand-box">
-          <div className="brand-title">
-            <span>⚡</span>
+          <div className="brand-title" style={{ display: 'flex', alignItems: 'center', gap: '9px' }}>
+            <img
+              src="/icon.png"
+              alt="MesAI Logo"
+              style={{ width: '26px', height: '26px', objectFit: 'contain' }}
+            />
             <span>MesAI</span>
           </div>
           <div className="brand-subtitle">DevTrack AI — Kanıta Dayalı Günlük Raporlama</div>

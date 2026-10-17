@@ -533,7 +533,7 @@ export const SettingsView: React.FC<{
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
           <div>
             <h3 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '8px', margin: 0 }}>
-              <span>🚀</span>
+              <img src="/icon.png" alt="MesAI" style={{ width: '22px', height: '22px', objectFit: 'contain' }} />
               <span>Uygulama Sürümü ve Otomatik Güncellemeler</span>
               <span className="badge badge-neutral" style={{ fontSize: '12px', fontWeight: 600 }}>
                 v{updateState?.currentVersion || '1.0.0'}

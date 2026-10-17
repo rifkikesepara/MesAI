@@ -6,6 +6,7 @@ import {
   Notification,
   Tray
 } from 'electron';
+import fs from 'node:fs';
 import path from 'node:path';
 import { MesaiDatabase } from './db/database';
 import { MesaiRepository } from './db/repositories';
@@ -229,10 +230,12 @@ if (!gotLock && !isSmokeVerify && !isUiVerify) {
 
 function createTray(updateTrayMenu: () => void): void {
   try {
-    // 16x16 indigo icon data URL
-    const iconDataUrl =
-      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAAySURBVDhPY/z//z8DJYCRkZGRgYGBgYFRBqNgFIyCUTAKRsEoGAWjYBSMAhAwMDAwAAAfJwMR60l66AAAAABJRU5ErkJggg==';
-    const image = nativeImage.createFromDataURL(iconDataUrl);
+    const iconPath = path.resolve(__dirname, '../../../assets/tray-icon.png');
+    const image = fs.existsSync(iconPath)
+      ? nativeImage.createFromPath(iconPath)
+      : nativeImage.createFromDataURL(
+          'data:image/png;base64,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'
+        );
     tray = new Tray(image);
     tray.on('double-click', () => {
       if (mainWindow) {
@@ -247,12 +250,14 @@ function createTray(updateTrayMenu: () => void): void {
 }
 
 function createMainWindow(): void {
+  const iconPath = path.resolve(__dirname, '../../../assets/icon.png');
   mainWindow = new BrowserWindow({
     width: 1320,
     height: 860,
     minWidth: 1024,
     minHeight: 680,
     title: 'MesAI — Kanıta Dayalı Günlük Çalışma Raporu',
+    icon: fs.existsSync(iconPath) ? iconPath : undefined,
     backgroundColor: '#0f172a',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),

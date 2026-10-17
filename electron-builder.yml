@@ -5,6 +5,7 @@ directories:
 files:
   - dist-main/**/*
   - dist-renderer/**/*
+  - assets/**/*
   - package.json
 extraResources:
   - from: readers/ZoomChatReader/bin/Release/net10.0-windows
@@ -17,6 +18,7 @@ publish:
   repo: MesAI
   releaseType: release
 win:
+  icon: assets/icon.ico
   target:
     - nsis
     - portable
