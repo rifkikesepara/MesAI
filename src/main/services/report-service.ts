@@ -3,9 +3,12 @@ import {
   AIProvider,
   AnthropicApiProvider,
   buildSanitizedAiPrompt,
+  ClaudeCliProvider,
+  CodexCliProvider,
   fitItemsToMaxChars,
   GeminiCliProvider,
   LocalRuleProvider,
+  OllamaCliProvider,
   OpenAiApiProvider
 } from './ai-provider';
 import { toLocalIsoString } from './timestamp-resolver';
@@ -102,33 +105,76 @@ export class ReportService {
     };
   }
 
-  private getProviderInstance(provider: AIProviderType): AIProvider {
+  private getProviderInstance(provider: AIProviderType): { provider: AIProvider; isCli: boolean } {
     const settings = this.repo.getSettings();
     switch (provider) {
       case 'gemini_cli':
-        return this.geminiProvider;
-      case 'openai':
-        return new OpenAiApiProvider({
-          providerType: 'openai',
-          apiKeyResolver: () => this.aiApiKeyResolver?.('openai') ?? null,
-          model: settings.aiOpenaiModel || settings.aiModel,
-          customBaseUrl: settings.aiOpenaiBaseUrl || undefined
-        });
-      case 'anthropic':
-        return new AnthropicApiProvider({
-          apiKeyResolver: () => this.aiApiKeyResolver?.('anthropic') ?? null,
-          model: settings.aiAnthropicModel || settings.aiModel
-        });
-      case 'custom':
-        return new OpenAiApiProvider({
-          providerType: 'custom',
-          apiKeyResolver: () => this.aiApiKeyResolver?.('custom') ?? null,
-          model: settings.aiCustomModel || settings.aiModel,
-          customBaseUrl: settings.aiCustomBaseUrl
-        });
+        return { provider: this.geminiProvider, isCli: true };
+      case 'openai': {
+        const useCli =
+          settings.aiOpenaiMode === 'cli' ||
+          (settings.aiOpenaiMode !== 'api' &&
+            (!this.aiApiKeyResolver?.('openai') || Boolean(CodexCliProvider.resolveCodexCliPath())));
+        if (useCli && CodexCliProvider.resolveCodexCliPath()) {
+          return {
+            provider: new CodexCliProvider({ model: settings.aiOpenaiModel || settings.aiModel }),
+            isCli: true
+          };
+        }
+        return {
+          provider: new OpenAiApiProvider({
+            providerType: 'openai',
+            apiKeyResolver: () => this.aiApiKeyResolver?.('openai') ?? null,
+            model: settings.aiOpenaiModel || settings.aiModel,
+            customBaseUrl: settings.aiOpenaiBaseUrl || undefined
+          }),
+          isCli: false
+        };
+      }
+      case 'anthropic': {
+        const useCli =
+          settings.aiAnthropicMode === 'cli' ||
+          (settings.aiAnthropicMode !== 'api' &&
+            (!this.aiApiKeyResolver?.('anthropic') && Boolean(ClaudeCliProvider.resolveClaudeCliPath())));
+        if (useCli && ClaudeCliProvider.resolveClaudeCliPath()) {
+          return {
+            provider: new ClaudeCliProvider({ model: settings.aiAnthropicModel || settings.aiModel }),
+            isCli: true
+          };
+        }
+        return {
+          provider: new AnthropicApiProvider({
+            apiKeyResolver: () => this.aiApiKeyResolver?.('anthropic') ?? null,
+            model: settings.aiAnthropicModel || settings.aiModel
+          }),
+          isCli: false
+        };
+      }
+      case 'custom': {
+        const useCli =
+          settings.aiCustomMode === 'cli' ||
+          (settings.aiCustomMode !== 'api' &&
+            !settings.aiCustomBaseUrl &&
+            Boolean(OllamaCliProvider.resolveOllamaCliPath()));
+        if (useCli && OllamaCliProvider.resolveOllamaCliPath()) {
+          return {
+            provider: new OllamaCliProvider({ model: settings.aiCustomModel || settings.aiModel }),
+            isCli: true
+          };
+        }
+        return {
+          provider: new OpenAiApiProvider({
+            providerType: 'custom',
+            apiKeyResolver: () => this.aiApiKeyResolver?.('custom') ?? null,
+            model: settings.aiCustomModel || settings.aiModel,
+            customBaseUrl: settings.aiCustomBaseUrl
+          }),
+          isCli: false
+        };
+      }
       case 'local_rule':
       default:
-        return this.localProvider;
+        return { provider: this.localProvider, isCli: false };
     }
   }
 
@@ -179,25 +225,32 @@ export class ReportService {
     const remainingBudget = Math.max(0, effectiveMaxChars - userEditedChars);
     const providerBudget = Math.max(120, remainingBudget);
 
+    const { provider: providerInstance, isCli } = this.getProviderInstance(input.provider);
+
     let effectiveProvider: string = input.provider;
     if (input.provider === 'openai') {
-      effectiveProvider = `openai (${settings.aiOpenaiModel || 'gpt-4o-mini'})`;
+      effectiveProvider = isCli
+        ? `openai (Codex CLI - ${settings.aiOpenaiModel || 'gpt-6.1-sol'})`
+        : `openai (API - ${settings.aiOpenaiModel || 'gpt-4o-mini'})`;
     } else if (input.provider === 'anthropic') {
-      effectiveProvider = `anthropic (${settings.aiAnthropicModel || 'claude-3-5-sonnet'})`;
+      effectiveProvider = isCli
+        ? `anthropic (Claude CLI - ${settings.aiAnthropicModel || 'claude-3-5-sonnet'})`
+        : `anthropic (API - ${settings.aiAnthropicModel || 'claude-3-5-sonnet'})`;
     } else if (input.provider === 'custom') {
-      effectiveProvider = `custom (${settings.aiCustomModel || 'custom'})`;
+      effectiveProvider = isCli
+        ? `custom (Ollama CLI - ${settings.aiCustomModel || 'llama'})`
+        : `custom (API - ${settings.aiCustomModel || 'custom'})`;
     }
     let draftItems;
 
     if (input.provider !== 'local_rule') {
-      if (!settings.allowRemoteAiSend && !input.userConfirmedRemoteSend) {
+      if (!settings.allowRemoteAiSend && !input.userConfirmedRemoteSend && !isCli) {
         throw new Error(
           'Uzak AI servisine veri gönderimi varsayılan olarak kapalıdır. Lütfen veri önizlemesini onaylayın veya Yerel Kurallı Motoru seçin.'
         );
       }
 
       try {
-        const providerInstance = this.getProviderInstance(input.provider);
         draftItems = await providerInstance.generateReportItems(
           input.reportDate,
           activities,

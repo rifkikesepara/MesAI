@@ -382,9 +382,10 @@ export function registerIpcHandlers(deps: {
     }
     const obj = input as {
       provider: 'openai' | 'anthropic' | 'custom';
-      apiKey: string;
+      apiKey?: string;
       model?: string;
       customBaseUrl?: string;
+      mode?: 'auto' | 'cli' | 'api';
     };
     if (!['openai', 'anthropic', 'custom'].includes(obj.provider)) {
       throw new Error('Geçersiz AI sağlayıcısı.');

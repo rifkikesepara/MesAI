@@ -34,6 +34,7 @@ export const IntegrationsView: React.FC<{
   const [openaiKey, setOpenaiKey] = useState('');
   const [openaiModel, setOpenaiModel] = useState('');
   const [openaiBaseUrl, setOpenaiBaseUrl] = useState('');
+  const [openaiMode, setOpenaiMode] = useState<'auto' | 'cli' | 'api'>('auto');
   const [openaiModelsList, setOpenaiModelsList] = useState<string[]>([]);
   const [loadingOpenaiModels, setLoadingOpenaiModels] = useState(false);
   const [showManualOpenaiModel, setShowManualOpenaiModel] = useState(false);
@@ -41,12 +42,14 @@ export const IntegrationsView: React.FC<{
 
   const [anthropicKey, setAnthropicKey] = useState('');
   const [anthropicModel, setAnthropicModel] = useState('');
+  const [anthropicMode, setAnthropicMode] = useState<'auto' | 'cli' | 'api'>('auto');
   const [anthropicModelsList, setAnthropicModelsList] = useState<string[]>([]);
   const [loadingAnthropicModels, setLoadingAnthropicModels] = useState(false);
 
   const [customKey, setCustomKey] = useState('');
   const [customModel, setCustomModel] = useState('');
   const [customBaseUrl, setCustomBaseUrl] = useState('');
+  const [customMode, setCustomMode] = useState<'auto' | 'cli' | 'api'>('auto');
   const [customModelsList, setCustomModelsList] = useState<string[]>([]);
   const [loadingCustomModels, setLoadingCustomModels] = useState(false);
 
@@ -130,17 +133,20 @@ export const IntegrationsView: React.FC<{
       setJenkinsUrl(h.jenkins.url || '');
       setOpenaiModel(h.ai.openaiModel || 'gpt-4o-mini');
       setOpenaiBaseUrl(h.ai.openaiBaseUrl || '');
+      setOpenaiMode(h.ai.openaiMode || (h.ai.openaiCliInstalled ? 'cli' : 'auto'));
       setAnthropicModel(h.ai.anthropicModel || 'claude-3-5-sonnet-20241022');
+      setAnthropicMode(h.ai.anthropicMode || (h.ai.anthropicCliInstalled ? 'cli' : 'auto'));
       setCustomBaseUrl(h.ai.customBaseUrl || '');
       setCustomModel(h.ai.customModel || 'gpt-4o-mini');
+      setCustomMode(h.ai.customMode || (h.ai.customCliInstalled ? 'cli' : 'auto'));
 
-      if (h.ai.openaiConfigured) {
+      if (h.ai.openaiConfigured || h.ai.openaiCliInstalled) {
         void fetchModelsFor('openai', undefined, h.ai.openaiBaseUrl);
       }
-      if (h.ai.anthropicConfigured) {
+      if (h.ai.anthropicConfigured || h.ai.anthropicCliInstalled) {
         void fetchModelsFor('anthropic');
       }
-      if (h.ai.customConfigured) {
+      if (h.ai.customConfigured || h.ai.customCliInstalled) {
         void fetchModelsFor('custom', undefined, h.ai.customBaseUrl);
       }
     } finally {
@@ -205,12 +211,13 @@ export const IntegrationsView: React.FC<{
     try {
       await window.mesaiApi.saveAiApiKey({
         provider: 'openai',
-        apiKey: openaiKey,
+        apiKey: openaiKey || undefined,
         model: openaiModel,
-        customBaseUrl: openaiBaseUrl || undefined
+        customBaseUrl: openaiBaseUrl || undefined,
+        mode: openaiMode
       });
       setOpenaiKey('');
-      setFeedback('OpenAI API anahtarı ve model seçimi OS DPAPI ile şifrelenerek kaydedildi.');
+      setFeedback('OpenAI ayarları başarıyla kaydedildi.');
       await loadHealth();
     } catch (err) {
       setFeedback(`Hata: ${(err as Error).message}`);
@@ -224,16 +231,17 @@ export const IntegrationsView: React.FC<{
     await loadHealth();
   };
 
-  const handleSaveAnthropic = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSaveAnthropic = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     try {
       await window.mesaiApi.saveAiApiKey({
         provider: 'anthropic',
-        apiKey: anthropicKey,
-        model: anthropicModel
+        apiKey: anthropicKey || undefined,
+        model: anthropicModel,
+        mode: anthropicMode
       });
       setAnthropicKey('');
-      setFeedback('Anthropic Claude API anahtarı ve model seçimi OS DPAPI ile şifrelenerek kaydedildi.');
+      setFeedback('Anthropic Claude ayarları başarıyla kaydedildi.');
       await loadHealth();
     } catch (err) {
       setFeedback(`Hata: ${(err as Error).message}`);
@@ -247,17 +255,18 @@ export const IntegrationsView: React.FC<{
     await loadHealth();
   };
 
-  const handleSaveCustom = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSaveCustom = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     try {
       await window.mesaiApi.saveAiApiKey({
         provider: 'custom',
-        apiKey: customKey,
+        apiKey: customKey || undefined,
         model: customModel,
-        customBaseUrl
+        customBaseUrl,
+        mode: customMode
       });
       setCustomKey('');
-      setFeedback('Özel AI API ayarları kaydedildi.');
+      setFeedback('Özel AI ayarları başarıyla kaydedildi.');
       await loadHealth();
     } catch (err) {
       setFeedback(`Hata: ${(err as Error).message}`);
@@ -447,20 +456,66 @@ export const IntegrationsView: React.FC<{
           {activeAiTab === 'openai' && (
             <form onSubmit={handleSaveOpenAi} style={{ display: 'grid', gap: '10px', background: 'var(--bg-primary)', padding: '12px', borderRadius: '8px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontSize: '12.5px', fontWeight: 600 }}>OpenAI / Codex API</span>
-                <span className={`badge ${health.ai.openaiConfigured ? 'badge-success' : 'badge-neutral'}`}>
-                  {health.ai.openaiConfigured ? `Yapılandırıldı (${health.ai.openaiModel})` : 'Yapılandırılmadı'}
+                <span style={{ fontSize: '12.5px', fontWeight: 600 }}>OpenAI / Codex</span>
+                <span className={`badge ${health.ai.openaiConfigured || health.ai.openaiCliInstalled ? 'badge-success' : 'badge-neutral'}`}>
+                  {health.ai.openaiCliInstalled && openaiMode !== 'api'
+                    ? `Yerel Codex CLI Aktif (${health.ai.openaiModel})`
+                    : health.ai.openaiConfigured
+                      ? `API Yapılandırıldı (${health.ai.openaiModel})`
+                      : 'Yapılandırılmadı'}
                 </span>
+              </div>
+
+              {health.ai.openaiCliInstalled && (
+                <div style={{ background: 'var(--bg-tertiary)', borderLeft: '3px solid #10b981', padding: '8px 12px', borderRadius: '4px', fontSize: '12px' }}>
+                  <strong>✓ Yerel Codex CLI Bulundu:</strong> {health.ai.openaiCliVersion} — <em>API Key zorunlu değildir, yerel ChatGPT/Codex oturumunuz kullanılır.</em>
+                </div>
+              )}
+
+              <div>
+                <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Çalışma Modu</label>
+                <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+                  <button
+                    type="button"
+                    className={`btn btn-sm ${openaiMode !== 'api' ? 'btn-primary' : ''}`}
+                    onClick={async () => {
+                      setOpenaiMode('cli');
+                      await window.mesaiApi.saveAiApiKey({ provider: 'openai', mode: 'cli', model: openaiModel });
+                      await loadHealth();
+                    }}
+                  >
+                    Yerel CLI (API Key Gerekmez)
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn btn-sm ${openaiMode === 'api' ? 'btn-primary' : ''}`}
+                    onClick={async () => {
+                      setOpenaiMode('api');
+                      await window.mesaiApi.saveAiApiKey({ provider: 'openai', mode: 'api', model: openaiModel });
+                      await loadHealth();
+                    }}
+                  >
+                    Uzak API (API Key İle)
+                  </button>
+                </div>
               </div>
 
               <div>
                 <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-                  API Anahtarı (Giriş yapıldığında modeller otomatik çekilir)
+                  {openaiMode !== 'api'
+                    ? 'API Anahtarı (Yerel CLI modunda boş bırakılabilir)'
+                    : 'API Anahtarı (Giriş yapıldığında modeller otomatik çekilir)'}
                 </label>
                 <input
                   type="password"
                   className="input"
-                  placeholder={health.ai.openaiConfigured ? 'Yeni anahtar girmek için yazın (mevcut anahtar DPAPI ile şifreli kayıtlı)' : 'OpenAI API Key (sk-...)'}
+                  placeholder={
+                    openaiMode !== 'api' && health.ai.openaiCliInstalled
+                      ? 'Yerel Codex CLI oturumu kullanılacak (API anahtarı gerekmez)'
+                      : health.ai.openaiConfigured
+                        ? 'Yeni anahtar girmek için yazın (mevcut anahtar DPAPI ile şifreli kayıtlı)'
+                        : 'OpenAI API Key (sk-...)'
+                  }
                   value={openaiKey}
                   onChange={(e) => {
                     setOpenaiKey(e.target.value);
@@ -625,20 +680,66 @@ export const IntegrationsView: React.FC<{
           {activeAiTab === 'anthropic' && (
             <form onSubmit={handleSaveAnthropic} style={{ display: 'grid', gap: '10px', background: 'var(--bg-primary)', padding: '12px', borderRadius: '8px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontSize: '12.5px', fontWeight: 600 }}>Anthropic Claude API</span>
-                <span className={`badge ${health.ai.anthropicConfigured ? 'badge-success' : 'badge-neutral'}`}>
-                  {health.ai.anthropicConfigured ? `Yapılandırıldı (${health.ai.anthropicModel})` : 'Yapılandırılmadı'}
+                <span style={{ fontSize: '12.5px', fontWeight: 600 }}>Anthropic Claude</span>
+                <span className={`badge ${health.ai.anthropicConfigured || health.ai.anthropicCliInstalled ? 'badge-success' : 'badge-neutral'}`}>
+                  {health.ai.anthropicCliInstalled && anthropicMode !== 'api'
+                    ? `Yerel Claude CLI Aktif (${health.ai.anthropicModel})`
+                    : health.ai.anthropicConfigured
+                      ? `API Yapılandırıldı (${health.ai.anthropicModel})`
+                      : 'Yapılandırılmadı'}
                 </span>
+              </div>
+
+              {health.ai.anthropicCliInstalled && (
+                <div style={{ background: 'var(--bg-tertiary)', borderLeft: '3px solid #10b981', padding: '8px 12px', borderRadius: '4px', fontSize: '12px' }}>
+                  <strong>✓ Yerel Claude Code CLI Bulundu:</strong> {health.ai.anthropicCliVersion} — <em>API Key zorunlu değildir, yerel Claude oturumunuz kullanılır.</em>
+                </div>
+              )}
+
+              <div>
+                <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Çalışma Modu</label>
+                <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+                  <button
+                    type="button"
+                    className={`btn btn-sm ${anthropicMode !== 'api' ? 'btn-primary' : ''}`}
+                    onClick={async () => {
+                      setAnthropicMode('cli');
+                      await window.mesaiApi.saveAiApiKey({ provider: 'anthropic', mode: 'cli', model: anthropicModel });
+                      await loadHealth();
+                    }}
+                  >
+                    Yerel CLI (API Key Gerekmez)
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn btn-sm ${anthropicMode === 'api' ? 'btn-primary' : ''}`}
+                    onClick={async () => {
+                      setAnthropicMode('api');
+                      await window.mesaiApi.saveAiApiKey({ provider: 'anthropic', mode: 'api', model: anthropicModel });
+                      await loadHealth();
+                    }}
+                  >
+                    Uzak API (API Key İle)
+                  </button>
+                </div>
               </div>
 
               <div>
                 <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-                  API Anahtarı (Giriş yapıldığında modeller otomatik çekilir)
+                  {anthropicMode !== 'api'
+                    ? 'API Anahtarı (Yerel CLI modunda boş bırakılabilir)'
+                    : 'API Anahtarı (Giriş yapıldığında modeller otomatik çekilir)'}
                 </label>
                 <input
                   type="password"
                   className="input"
-                  placeholder={health.ai.anthropicConfigured ? 'Yeni anahtar girmek için yazın (mevcut anahtar DPAPI ile şifreli kayıtlı)' : 'Claude API Key (sk-ant-...)'}
+                  placeholder={
+                    anthropicMode !== 'api' && health.ai.anthropicCliInstalled
+                      ? 'Yerel Claude Code CLI oturumu kullanılacak (API anahtarı gerekmez)'
+                      : health.ai.anthropicConfigured
+                        ? 'Yeni anahtar girmek için yazın (mevcut anahtar DPAPI ile şifreli kayıtlı)'
+                        : 'Claude API Key (sk-ant-...)'
+                  }
                   value={anthropicKey}
                   onChange={(e) => {
                     setAnthropicKey(e.target.value);
@@ -723,9 +824,47 @@ export const IntegrationsView: React.FC<{
             <form onSubmit={handleSaveCustom} style={{ display: 'grid', gap: '10px', background: 'var(--bg-primary)', padding: '12px', borderRadius: '8px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span style={{ fontSize: '12.5px', fontWeight: 600 }}>Özel / Yerel LLM (Ollama, vLLM, DeepSeek, OpenRouter)</span>
-                <span className={`badge ${health.ai.customConfigured ? 'badge-success' : 'badge-neutral'}`}>
-                  {health.ai.customConfigured ? 'Yapılandırıldı' : 'Yapılandırılmadı'}
+                <span className={`badge ${health.ai.customConfigured || health.ai.customCliInstalled ? 'badge-success' : 'badge-neutral'}`}>
+                  {health.ai.customCliInstalled && customMode !== 'api'
+                    ? `Yerel Ollama CLI Aktif (${health.ai.customModel || 'llama3.2'})`
+                    : health.ai.customConfigured
+                      ? 'Yapılandırıldı'
+                      : 'Yapılandırılmadı'}
                 </span>
+              </div>
+
+              {health.ai.customCliInstalled && (
+                <div style={{ background: 'var(--bg-tertiary)', borderLeft: '3px solid #10b981', padding: '8px 12px', borderRadius: '4px', fontSize: '12px' }}>
+                  <strong>✓ Yerel Ollama CLI Bulundu:</strong> {health.ai.customCliVersion} — <em>API Key veya URL gerektirmez; yerel model doğrudan çalıştırılır.</em>
+                </div>
+              )}
+
+              <div>
+                <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Çalışma Modu</label>
+                <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+                  <button
+                    type="button"
+                    className={`btn btn-sm ${customMode !== 'api' ? 'btn-primary' : ''}`}
+                    onClick={async () => {
+                      setCustomMode('cli');
+                      await window.mesaiApi.saveAiApiKey({ provider: 'custom', mode: 'cli', model: customModel, customBaseUrl });
+                      await loadHealth();
+                    }}
+                  >
+                    Yerel Ollama CLI (API Key Gerekmez)
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn btn-sm ${customMode === 'api' ? 'btn-primary' : ''}`}
+                    onClick={async () => {
+                      setCustomMode('api');
+                      await window.mesaiApi.saveAiApiKey({ provider: 'custom', mode: 'api', model: customModel, customBaseUrl });
+                      await loadHealth();
+                    }}
+                  >
+                    HTTP API Uç Noktası
+                  </button>
+                </div>
               </div>
 
               <div className="grid-2">

@@ -37,9 +37,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
   aiModel: 'gpt-4o-mini',
   aiOpenaiModel: 'gpt-4o-mini',
   aiOpenaiBaseUrl: '',
+  aiOpenaiMode: 'auto',
   aiAnthropicModel: 'claude-3-5-sonnet-20241022',
+  aiAnthropicMode: 'auto',
   aiCustomModel: '',
   aiCustomBaseUrl: '',
+  aiCustomMode: 'auto',
   allowRemoteAiSend: false,
   autoLaunchOnStartup: false,
   globalExclusions: [

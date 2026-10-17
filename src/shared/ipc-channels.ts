@@ -165,9 +165,10 @@ export interface MesaiApi {
 
   saveAiApiKey(input: {
     provider: 'openai' | 'anthropic' | 'custom';
-    apiKey: string;
+    apiKey?: string;
     model?: string;
     customBaseUrl?: string;
+    mode?: 'auto' | 'cli' | 'api';
   }): Promise<void>;
   testAiConnection(provider: 'openai' | 'anthropic' | 'custom'): Promise<{ ok: boolean; message: string }>;
   fetchAiModels(input: {

@@ -4,7 +4,13 @@ import type { MesaiRepository } from '../db/repositories';
 import type { ZoomReaderAdapter } from './zoom-adapter';
 import type { GitFileWatcherService } from './git-file-watcher';
 import type { ReportService } from './report-service';
-import { OpenAiApiProvider, AnthropicApiProvider } from './ai-provider';
+import {
+  OpenAiApiProvider,
+  AnthropicApiProvider,
+  CodexCliProvider,
+  ClaudeCliProvider,
+  OllamaCliProvider
+} from './ai-provider';
 import type { AppSettings, IntegrationHealth, ZoomReaderStatus } from '../../shared/types';
 
 export interface SecretProvider {
@@ -125,6 +131,7 @@ export class IntegrationsService {
     model?: string;
     customBaseUrl?: string;
     clearKey?: boolean;
+    mode?: 'auto' | 'cli' | 'api';
   }): void {
     const store = this.readEncryptedStore();
     const cleanKey = input.apiKey?.trim();
@@ -142,13 +149,16 @@ export class IntegrationsService {
     if (input.provider === 'openai') {
       if (input.model !== undefined) updates.aiOpenaiModel = input.model.trim();
       if (input.customBaseUrl !== undefined) updates.aiOpenaiBaseUrl = input.customBaseUrl.trim();
+      if (input.mode !== undefined) updates.aiOpenaiMode = input.mode;
       if (input.model) updates.aiModel = input.model.trim();
     } else if (input.provider === 'anthropic') {
       if (input.model !== undefined) updates.aiAnthropicModel = input.model.trim();
+      if (input.mode !== undefined) updates.aiAnthropicMode = input.mode;
       if (input.model) updates.aiModel = input.model.trim();
     } else if (input.provider === 'custom') {
       if (input.model !== undefined) updates.aiCustomModel = input.model.trim();
       if (input.customBaseUrl !== undefined) updates.aiCustomBaseUrl = input.customBaseUrl.trim();
+      if (input.mode !== undefined) updates.aiCustomMode = input.mode;
       if (input.model) updates.aiModel = input.model.trim();
     }
 
@@ -173,24 +183,56 @@ export class IntegrationsService {
 
   public async testAiConnection(provider: 'openai' | 'anthropic' | 'custom'): Promise<{ ok: boolean; message: string }> {
     const settings = this.repo.getSettings();
+    const token = this.getDecryptedAiToken(provider);
+
     if (provider === 'openai') {
+      const isCliMode =
+        settings.aiOpenaiMode === 'cli' ||
+        (settings.aiOpenaiMode !== 'api' && (!token || Boolean(CodexCliProvider.resolveCodexCliPath())));
+      if (isCliMode && CodexCliProvider.resolveCodexCliPath()) {
+        const codex = new CodexCliProvider({ model: settings.aiOpenaiModel });
+        const h = await codex.checkHealth();
+        if (h.installed) {
+          return { ok: true, message: `Yerel OpenAI / Codex CLI hazır (${h.version}). API anahtarı gerekmez.` };
+        }
+      }
       const p = new OpenAiApiProvider({
         providerType: 'openai',
-        apiKeyResolver: () => this.getDecryptedAiToken('openai'),
+        apiKeyResolver: () => token,
         model: settings.aiOpenaiModel || settings.aiModel,
         customBaseUrl: settings.aiOpenaiBaseUrl
       });
       return p.testConnection();
     } else if (provider === 'anthropic') {
+      const isCliMode =
+        settings.aiAnthropicMode === 'cli' ||
+        (settings.aiAnthropicMode !== 'api' && (!token && Boolean(ClaudeCliProvider.resolveClaudeCliPath())));
+      if (isCliMode && ClaudeCliProvider.resolveClaudeCliPath()) {
+        const claude = new ClaudeCliProvider({ model: settings.aiAnthropicModel });
+        const h = await claude.checkHealth();
+        if (h.installed) {
+          return { ok: true, message: `Yerel Claude Code CLI hazır (${h.version}). API anahtarı gerekmez.` };
+        }
+      }
       const p = new AnthropicApiProvider({
-        apiKeyResolver: () => this.getDecryptedAiToken('anthropic'),
+        apiKeyResolver: () => token,
         model: settings.aiAnthropicModel || settings.aiModel
       });
       return p.testConnection();
     } else {
+      const isCliMode =
+        settings.aiCustomMode === 'cli' ||
+        (settings.aiCustomMode !== 'api' && (!settings.aiCustomBaseUrl && Boolean(OllamaCliProvider.resolveOllamaCliPath())));
+      if (isCliMode && OllamaCliProvider.resolveOllamaCliPath()) {
+        const ollama = new OllamaCliProvider({ model: settings.aiCustomModel });
+        const h = await ollama.checkHealth();
+        if (h.installed) {
+          return { ok: true, message: `Yerel Ollama CLI hazır (${h.version}). API anahtarı gerekmez.` };
+        }
+      }
       const p = new OpenAiApiProvider({
         providerType: 'custom',
-        apiKeyResolver: () => this.getDecryptedAiToken('custom'),
+        apiKeyResolver: () => token,
         model: settings.aiCustomModel || settings.aiModel,
         customBaseUrl: settings.aiCustomBaseUrl
       });
@@ -206,6 +248,16 @@ export class IntegrationsService {
     const keyResolver = () => (input.apiKey && input.apiKey.trim() ? input.apiKey.trim() : this.getDecryptedAiToken(input.provider));
     const settings = this.repo.getSettings();
     if (input.provider === 'openai') {
+      const token = this.getDecryptedAiToken('openai');
+      const isCli =
+        settings.aiOpenaiMode === 'cli' ||
+        (settings.aiOpenaiMode !== 'api' && (!token || Boolean(CodexCliProvider.resolveCodexCliPath())));
+      if (isCli && CodexCliProvider.resolveCodexCliPath() && !input.apiKey?.trim()) {
+        return {
+          ok: true,
+          models: ['gpt-6.1-sol', '6.1sol', 'gpt-4o', 'gpt-4o-mini', 'o3-mini', 'o1-mini', 'o1-preview']
+        };
+      }
       const p = new OpenAiApiProvider({
         providerType: 'openai',
         apiKeyResolver: keyResolver,
@@ -213,12 +265,31 @@ export class IntegrationsService {
       });
       return p.fetchAvailableModels();
     } else if (input.provider === 'anthropic') {
+      const token = this.getDecryptedAiToken('anthropic');
+      const isCli =
+        settings.aiAnthropicMode === 'cli' ||
+        (settings.aiAnthropicMode !== 'api' && (!token && Boolean(ClaudeCliProvider.resolveClaudeCliPath())));
+      if (isCli && ClaudeCliProvider.resolveClaudeCliPath() && !input.apiKey?.trim()) {
+        return {
+          ok: true,
+          models: ['claude-3-7-sonnet', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229']
+        };
+      }
       const p = new AnthropicApiProvider({
         apiKeyResolver: keyResolver,
         model: settings.aiAnthropicModel
       });
       return p.fetchAvailableModels();
     } else {
+      const isCli =
+        settings.aiCustomMode === 'cli' ||
+        (settings.aiCustomMode !== 'api' && !settings.aiCustomBaseUrl && Boolean(OllamaCliProvider.resolveOllamaCliPath()));
+      if (isCli && OllamaCliProvider.resolveOllamaCliPath() && !input.customBaseUrl?.trim()) {
+        return {
+          ok: true,
+          models: ['llama3.2', 'llama3.1', 'deepseek-r1', 'qwen2.5-coder:7b', 'mistral', 'phi4']
+        };
+      }
       const p = new OpenAiApiProvider({
         providerType: 'custom',
         apiKeyResolver: keyResolver,
@@ -343,6 +414,9 @@ export class IntegrationsService {
     const exeExists = fs.existsSync(exePath);
     const gitVersion = await this.gitWatcher.getGitVersion();
     const geminiHealth = await this.reportService.getGeminiProvider().checkHealth();
+    const codexHealth = await new CodexCliProvider().checkHealth();
+    const claudeHealth = await new ClaudeCliProvider().checkHealth();
+    const ollamaHealth = await new OllamaCliProvider().checkHealth();
     const enabledProjects = this.repo.listProjects().filter((p) => p.enabled).length;
 
     const jiraConfigured = Boolean(settings.jiraUrl && settings.jiraEmail && this.hasEncryptedToken('jira'));
@@ -379,11 +453,20 @@ export class IntegrationsService {
         openaiConfigured,
         openaiModel: settings.aiOpenaiModel || settings.aiModel || 'gpt-4o-mini',
         openaiBaseUrl: settings.aiOpenaiBaseUrl || '',
+        openaiCliInstalled: codexHealth.installed,
+        openaiCliVersion: codexHealth.version,
+        openaiMode: settings.aiOpenaiMode || 'auto',
         anthropicConfigured,
         anthropicModel: settings.aiAnthropicModel || settings.aiModel || 'claude-3-5-sonnet-20241022',
+        anthropicCliInstalled: claudeHealth.installed,
+        anthropicCliVersion: claudeHealth.version,
+        anthropicMode: settings.aiAnthropicMode || 'auto',
         customConfigured,
         customModel: settings.aiCustomModel || settings.aiModel || '',
         customBaseUrl: settings.aiCustomBaseUrl || '',
+        customCliInstalled: ollamaHealth.installed,
+        customCliVersion: ollamaHealth.version,
+        customMode: settings.aiCustomMode || 'auto',
         remoteAiAllowed: settings.allowRemoteAiSend,
         lastError: aiSync?.lastError ?? null
       },

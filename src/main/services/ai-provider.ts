@@ -1307,13 +1307,14 @@ export class GeminiCliProvider implements AIProvider {
   ) {}
 
   private resolveAgyCliPath(): string | null {
-    const candidate = path.join(
-      os.homedir(),
-      '.gemini',
-      'bin',
-      process.platform === 'win32' ? 'agy.exe' : 'agy'
-    );
-    return fs.existsSync(candidate) ? candidate : null;
+    const candidates = [
+      path.join(os.homedir(), '.gemini', 'bin', process.platform === 'win32' ? 'agy.exe' : 'agy'),
+      path.join(process.env.LOCALAPPDATA || '', 'agy', 'bin', process.platform === 'win32' ? 'agy.exe' : 'agy')
+    ];
+    for (const c of candidates) {
+      if (fs.existsSync(c)) return c;
+    }
+    return null;
   }
 
   public async checkHealth(): Promise<{ installed: boolean; version: string | null; error?: string }> {
@@ -1520,6 +1521,389 @@ export class GeminiCliProvider implements AIProvider {
         child.stdin.write(stdinInput, 'utf8');
         child.stdin.end();
       }
+    });
+  }
+}
+
+/**
+ * Local OpenAI Codex CLI Provider (codex.exe / openai CLI).
+ * Executes local Codex session non-interactively with zero API keys required.
+ */
+export class CodexCliProvider implements AIProvider {
+  public readonly name = 'openai' as const;
+
+  constructor(
+    private readonly config: {
+      model?: string;
+      customRunner?: (prompt: string, signal?: AbortSignal) => Promise<string>;
+    } = {}
+  ) {}
+
+  public static resolveCodexCliPath(): string | null {
+    const localAppData = process.env.LOCALAPPDATA || '';
+    const extraPaths = [
+      path.join(localAppData, 'Programs', 'OpenAI', 'Codex', 'bin', process.platform === 'win32' ? 'codex.exe' : 'codex'),
+      path.join(process.env.APPDATA || '', 'npm', process.platform === 'win32' ? 'codex.cmd' : 'codex')
+    ];
+    for (const p of extraPaths) {
+      if (p && fs.existsSync(p)) return p;
+    }
+    const envPath = process.env.PATH || '';
+    const names = process.platform === 'win32' ? ['codex.exe', 'codex.cmd', 'codex'] : ['codex'];
+    for (const dir of envPath.split(path.delimiter)) {
+      for (const name of names) {
+        const full = path.join(dir, name);
+        if (fs.existsSync(full)) return full;
+      }
+    }
+    return null;
+  }
+
+  public async checkHealth(): Promise<{ installed: boolean; version: string | null; error?: string }> {
+    const codexPath = CodexCliProvider.resolveCodexCliPath();
+    if (!codexPath) {
+      return { installed: false, version: null, error: 'Codex CLI bulunamadı.' };
+    }
+    const isCmd = process.platform === 'win32' && codexPath.toLowerCase().endsWith('.cmd');
+    return new Promise((resolve) => {
+      try {
+        execFile(codexPath, ['--version'], { timeout: 10_000, windowsHide: true, shell: isCmd }, (err, stdout) => {
+          if (err) {
+            resolve({ installed: false, version: null, error: err.message });
+          } else {
+            resolve({ installed: true, version: stdout.trim() || 'Codex CLI' });
+          }
+        });
+      } catch (err) {
+        resolve({ installed: false, version: null, error: (err as Error).message });
+      }
+    });
+  }
+
+  public getEffectiveModel(): string | undefined {
+    const m = this.config.model?.trim();
+    if (!m) return undefined;
+    if (m === '6.1sol') return 'gpt-6.1-sol';
+    return m;
+  }
+
+  public async generateReportItems(
+    reportDate: string,
+    rawActivities: Activity[],
+    maxChars = 1000,
+    signal?: AbortSignal,
+    jiraContextMap: Record<string, string> = {}
+  ): Promise<GeneratedDraftItem[]> {
+    const activities = rawActivities.filter(
+      (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
+    );
+    if (activities.length === 0) return [];
+
+    const prompt = buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap);
+    const validEvidenceIds = new Set<string>(
+      activities.flatMap((a) => (a.evidences ?? []).map((e) => e.id))
+    );
+
+    const rawOutput = this.config.customRunner
+      ? await this.config.customRunner(prompt, signal)
+      : await this.runCodexPrompt(prompt, 75_000, signal);
+
+    return validateAndParseAiReportJson(rawOutput, validEvidenceIds, maxChars);
+  }
+
+  private runCodexPrompt(prompt: string, timeoutMs: number, signal?: AbortSignal): Promise<string> {
+    const codexPath = CodexCliProvider.resolveCodexCliPath();
+    if (!codexPath) {
+      throw new Error('Yerel Codex CLI (codex.exe) bulunamadı. Lütfen Codex CLI kurun veya API Key kullanın.');
+    }
+
+    const effectiveModel = this.getEffectiveModel();
+    const args = [
+      'exec',
+      '--skip-git-repo-check',
+      '--ephemeral',
+      '--dangerously-bypass-approvals-and-sandbox',
+      ...(effectiveModel ? ['-m', effectiveModel] : []),
+      prompt
+    ];
+    const isCmd = process.platform === 'win32' && codexPath.toLowerCase().endsWith('.cmd');
+
+    return new Promise((resolve, reject) => {
+      try {
+        const child = execFile(
+          codexPath,
+          args,
+          {
+            cwd: os.tmpdir(),
+            timeout: timeoutMs,
+            maxBuffer: 8 * 1024 * 1024,
+            windowsHide: true,
+            shell: isCmd,
+            signal
+          },
+          (error, stdout, stderr) => {
+            if (error) {
+              const cleanStderr = (stderr || '')
+                .split(/\r?\n/)
+                .map((l) => l.trim())
+                .filter((l) => l && !l.startsWith('Reading additional input') && !l.startsWith('warning:'))
+                .slice(0, 3)
+                .join(' | ');
+              reject(new Error(`Codex CLI hatası: ${(cleanStderr || error.message).slice(0, 300)}`));
+              return;
+            }
+            resolve(stdout);
+          }
+        );
+        child.stdin?.end();
+      } catch (err) {
+        reject(new Error(`Codex CLI çalıştırma hatası: ${(err as Error).message}`));
+      }
+    });
+  }
+}
+
+/**
+ * Local Claude Code CLI Provider (claude.cmd / claude.exe).
+ * Executes local Claude session non-interactively with zero API keys required.
+ */
+export class ClaudeCliProvider implements AIProvider {
+  public readonly name = 'anthropic' as const;
+
+  constructor(
+    private readonly config: {
+      model?: string;
+      customRunner?: (prompt: string, signal?: AbortSignal) => Promise<string>;
+    } = {}
+  ) {}
+
+  public static resolveClaudeCliPath(): string | null {
+    const extraPaths = [
+      path.join(process.env.APPDATA || '', 'npm', process.platform === 'win32' ? 'claude.cmd' : 'claude'),
+      path.join(process.env.APPDATA || '', 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe'),
+      path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Claude', 'claude.exe')
+    ];
+    for (const p of extraPaths) {
+      if (p && fs.existsSync(p)) return p;
+    }
+    const envPath = process.env.PATH || '';
+    const names = process.platform === 'win32' ? ['claude.cmd', 'claude.exe', 'claude'] : ['claude'];
+    for (const dir of envPath.split(path.delimiter)) {
+      for (const name of names) {
+        const full = path.join(dir, name);
+        if (fs.existsSync(full)) return full;
+      }
+    }
+    return null;
+  }
+
+  public async checkHealth(): Promise<{ installed: boolean; version: string | null; error?: string }> {
+    const claudePath = ClaudeCliProvider.resolveClaudeCliPath();
+    if (!claudePath) {
+      return { installed: false, version: null, error: 'Claude Code CLI bulunamadı.' };
+    }
+    const isCmd = process.platform === 'win32' && claudePath.toLowerCase().endsWith('.cmd');
+    return new Promise((resolve) => {
+      try {
+        execFile(
+          claudePath,
+          ['--version'],
+          { timeout: 10_000, windowsHide: true, shell: isCmd },
+          (err, stdout) => {
+            if (err) {
+              resolve({ installed: false, version: null, error: err.message });
+            } else {
+              resolve({ installed: true, version: stdout.trim() || 'Claude Code CLI' });
+            }
+          }
+        );
+      } catch (err) {
+        resolve({ installed: false, version: null, error: (err as Error).message });
+      }
+    });
+  }
+
+  public async generateReportItems(
+    reportDate: string,
+    rawActivities: Activity[],
+    maxChars = 1000,
+    signal?: AbortSignal,
+    jiraContextMap: Record<string, string> = {}
+  ): Promise<GeneratedDraftItem[]> {
+    const activities = rawActivities.filter(
+      (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
+    );
+    if (activities.length === 0) return [];
+
+    const prompt = buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap);
+    const validEvidenceIds = new Set<string>(
+      activities.flatMap((a) => (a.evidences ?? []).map((e) => e.id))
+    );
+
+    const rawOutput = this.config.customRunner
+      ? await this.config.customRunner(prompt, signal)
+      : await this.runClaudePrompt(prompt, 75_000, signal);
+
+    return validateAndParseAiReportJson(rawOutput, validEvidenceIds, maxChars);
+  }
+
+  private runClaudePrompt(prompt: string, timeoutMs: number, signal?: AbortSignal): Promise<string> {
+    const claudePath = ClaudeCliProvider.resolveClaudeCliPath();
+    if (!claudePath) {
+      throw new Error('Yerel Claude Code CLI bulunamadı. Lütfen Claude CLI kurun veya API Key kullanın.');
+    }
+
+    const args = ['-p', prompt, '--permission-mode', 'non-interactive', '--tools', ''];
+    const isCmd = process.platform === 'win32' && claudePath.toLowerCase().endsWith('.cmd');
+
+    return new Promise((resolve, reject) => {
+      try {
+        const child = execFile(
+          claudePath,
+          args,
+          {
+            cwd: os.tmpdir(),
+            timeout: timeoutMs,
+            maxBuffer: 8 * 1024 * 1024,
+            windowsHide: true,
+            shell: isCmd,
+            signal
+          },
+          (error, stdout, stderr) => {
+            if (error) {
+              const cleanStderr = (stderr || '')
+                .split(/\r?\n/)
+                .map((l) => l.trim())
+                .filter((l) => l && !l.startsWith('warning:'))
+                .slice(0, 3)
+                .join(' | ');
+              reject(new Error(`Claude Code CLI hatası: ${(cleanStderr || error.message).slice(0, 300)}`));
+              return;
+            }
+            resolve(stdout);
+          }
+        );
+        child.stdin?.end();
+      } catch (err) {
+        reject(new Error(`Claude Code CLI çalıştırma hatası: ${(err as Error).message}`));
+      }
+    });
+  }
+}
+
+/**
+ * Local Ollama CLI Provider (ollama.exe / ollama).
+ * Executes local Ollama models non-interactively with zero API keys required.
+ */
+export class OllamaCliProvider implements AIProvider {
+  public readonly name = 'custom' as const;
+
+  constructor(
+    private readonly config: {
+      model?: string;
+      customRunner?: (prompt: string, signal?: AbortSignal) => Promise<string>;
+    } = {}
+  ) {}
+
+  public static resolveOllamaCliPath(): string | null {
+    const localAppData = process.env.LOCALAPPDATA || '';
+    const extraPaths = [
+      path.join(localAppData, 'Programs', 'Ollama', process.platform === 'win32' ? 'ollama.exe' : 'ollama')
+    ];
+    for (const p of extraPaths) {
+      if (p && fs.existsSync(p)) return p;
+    }
+    const envPath = process.env.PATH || '';
+    const names = process.platform === 'win32' ? ['ollama.exe', 'ollama'] : ['ollama'];
+    for (const dir of envPath.split(path.delimiter)) {
+      for (const name of names) {
+        const full = path.join(dir, name);
+        if (fs.existsSync(full)) return full;
+      }
+    }
+    return null;
+  }
+
+  public async checkHealth(): Promise<{ installed: boolean; version: string | null; error?: string }> {
+    const ollamaPath = OllamaCliProvider.resolveOllamaCliPath();
+    if (!ollamaPath) {
+      return { installed: false, version: null, error: 'Ollama CLI bulunamadı.' };
+    }
+    const isCmd = process.platform === 'win32' && (ollamaPath.toLowerCase().endsWith('.cmd') || ollamaPath.toLowerCase().endsWith('.bat'));
+    return new Promise((resolve) => {
+      try {
+        execFile(ollamaPath, ['--version'], { timeout: 10_000, windowsHide: true, shell: isCmd }, (err, stdout) => {
+          if (err) {
+            resolve({ installed: false, version: null, error: err.message });
+          } else {
+            resolve({ installed: true, version: stdout.trim() || 'Ollama CLI' });
+          }
+        });
+      } catch (err) {
+        resolve({ installed: false, version: null, error: (err as Error).message });
+      }
+    });
+  }
+
+  public async generateReportItems(
+    reportDate: string,
+    rawActivities: Activity[],
+    maxChars = 1000,
+    signal?: AbortSignal,
+    jiraContextMap: Record<string, string> = {}
+  ): Promise<GeneratedDraftItem[]> {
+    const activities = rawActivities.filter(
+      (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
+    );
+    if (activities.length === 0) return [];
+
+    const prompt = buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap);
+    const validEvidenceIds = new Set<string>(
+      activities.flatMap((a) => (a.evidences ?? []).map((e) => e.id))
+    );
+
+    const rawOutput = this.config.customRunner
+      ? await this.config.customRunner(prompt, signal)
+      : await this.runOllamaPrompt(prompt, 90_000, signal);
+
+    return validateAndParseAiReportJson(rawOutput, validEvidenceIds, maxChars);
+  }
+
+  private runOllamaPrompt(prompt: string, timeoutMs: number, signal?: AbortSignal): Promise<string> {
+    const ollamaPath = OllamaCliProvider.resolveOllamaCliPath();
+    if (!ollamaPath) {
+      throw new Error('Yerel Ollama CLI bulunamadı. Lütfen Ollama kurun veya API uç noktası belirtin.');
+    }
+
+    const model = this.config.model?.trim() || 'llama3.2';
+    const args = ['run', model, prompt];
+
+    return new Promise((resolve, reject) => {
+      const child = execFile(
+        ollamaPath,
+        args,
+        {
+          cwd: os.tmpdir(),
+          timeout: timeoutMs,
+          maxBuffer: 8 * 1024 * 1024,
+          windowsHide: true,
+          signal
+        },
+        (error, stdout, stderr) => {
+          if (error) {
+            const cleanStderr = (stderr || '')
+              .split(/\r?\n/)
+              .map((l) => l.trim())
+              .filter((l) => l && !l.startsWith('pulling'))
+              .slice(0, 3)
+              .join(' | ');
+            reject(new Error(`Ollama CLI hatası: ${(cleanStderr || error.message).slice(0, 300)}`));
+            return;
+          }
+          resolve(stdout);
+        }
+      );
+      child.stdin?.end();
     });
   }
 }

@@ -684,13 +684,13 @@ export const DailyReportView: React.FC<{
               <option value="local_rule">Yerel Kurallı Motor (Varsayılan — %100 Çevrimdışı)</option>
               <option value="gemini_cli">Gemini CLI (Veri Önizlemeli)</option>
               <option value="openai">
-                OpenAI / Codex ({settings?.aiOpenaiModel || 'gpt-4o-mini'})
+                OpenAI / Codex ({settings?.aiOpenaiMode === 'api' ? 'API' : 'Yerel Codex CLI'} — {settings?.aiOpenaiModel || 'gpt-6.1-sol'})
               </option>
               <option value="anthropic">
-                Anthropic Claude ({settings?.aiAnthropicModel || 'claude-3-5-sonnet'})
+                Anthropic Claude ({settings?.aiAnthropicMode === 'api' ? 'API' : 'Yerel Claude CLI'} — {settings?.aiAnthropicModel || 'claude-3-5-sonnet'})
               </option>
               <option value="custom">
-                Özel / Yerel LLM ({settings?.aiCustomModel || settings?.aiCustomBaseUrl || 'OpenAI-Uyumlu'})
+                Özel / Yerel LLM ({settings?.aiCustomMode === 'api' ? 'API' : 'Ollama CLI'} — {settings?.aiCustomModel || settings?.aiCustomBaseUrl || 'Yerel'})
               </option>
             </select>
           </div>
@@ -1125,10 +1125,10 @@ export const DailyReportView: React.FC<{
               {provider === 'gemini_cli'
                 ? 'Gemini CLI'
                 : provider === 'openai'
-                  ? `OpenAI (${settings?.aiOpenaiModel || 'gpt-4o-mini'})`
+                  ? `OpenAI (${settings?.aiOpenaiMode === 'api' ? 'API' : 'Yerel Codex CLI'} — ${settings?.aiOpenaiModel || 'gpt-6.1-sol'})`
                   : provider === 'anthropic'
-                    ? `Anthropic Claude (${settings?.aiAnthropicModel || 'claude-3-5-sonnet'})`
-                    : `Özel LLM (${settings?.aiCustomModel || 'OpenAI-Uyumlu'})`}{' '}
+                    ? `Anthropic Claude (${settings?.aiAnthropicMode === 'api' ? 'API' : 'Yerel Claude CLI'} — ${settings?.aiAnthropicModel || 'claude-3-5-sonnet'})`
+                    : `Özel LLM (${settings?.aiCustomMode === 'api' ? 'API' : 'Ollama CLI'} — ${settings?.aiCustomModel || 'Yerel'})`}{' '}
               — Gönderilecek Veri Önizlemesi ve Onayı
             </h3>
             <div className="alert-banner alert-warning">
@@ -1138,7 +1138,11 @@ export const DailyReportView: React.FC<{
             </div>
             <p style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
               Aşağıdaki yapılandırılmış veri ({aiPreview.activityCount} aktivite özeti){' '}
-              {provider === 'gemini_cli' ? 'Gemini CLI sürecine' : 'seçili AI sağlayıcısına'}{' '}
+              {provider === 'gemini_cli'
+                ? 'Gemini CLI sürecine'
+                : provider === 'openai' && settings?.aiOpenaiMode !== 'api'
+                  ? 'yerel Codex CLI sürecine (API anahtarı kullanılmaz)'
+                  : 'seçili AI sağlayıcısına'}{' '}
               güvenli parametre olarak iletilecektir:
             </p>
             <pre className="code-pre" style={{ maxHeight: '300px' }}>
@@ -1162,10 +1166,10 @@ export const DailyReportView: React.FC<{
                 {provider === 'gemini_cli'
                   ? 'Gemini CLI'
                   : provider === 'openai'
-                    ? `OpenAI (${settings?.aiOpenaiModel || 'gpt-4o-mini'})`
+                    ? `OpenAI (${settings?.aiOpenaiMode === 'api' ? 'API' : 'Codex CLI'})`
                     : provider === 'anthropic'
-                      ? `Anthropic Claude (${settings?.aiAnthropicModel || 'claude-3-5-sonnet'})`
-                      : `Özel AI (${settings?.aiCustomModel || 'Özel'})`}{' '}
+                      ? `Anthropic Claude (${settings?.aiAnthropicMode === 'api' ? 'API' : 'Claude CLI'})`
+                      : `Özel AI (${settings?.aiCustomMode === 'api' ? 'API' : 'Ollama CLI'})`}{' '}
                 ile Üret
               </button>
             </div>
