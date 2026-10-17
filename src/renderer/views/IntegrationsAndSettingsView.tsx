@@ -29,7 +29,21 @@ export const IntegrationsView: React.FC<{
   const [jenkinsUser, setJenkinsUser] = useState('');
   const [jenkinsToken, setJenkinsToken] = useState('');
 
-  const [activeAiTab, setActiveAiTab] = useState<'openai' | 'anthropic' | 'custom'>('openai');
+  const [activeAiTab, setActiveAiTab] = useState<'gemini' | 'openai' | 'anthropic' | 'custom'>('gemini');
+
+  const [geminiModel, setGeminiModel] = useState('');
+  const [geminiModelsList, setGeminiModelsList] = useState<string[]>([
+    'gemini-4-argon-medium',
+    'gemini-4-argon-high',
+    'gemini-4-argon-low',
+    'gemini-3.8-flash-high',
+    'gemini-3.8-flash-medium',
+    'gemini-3.8-flash-low',
+    'claude-sonnet-5-5-medium',
+    'claude-opus-5-5-medium',
+    'gpt-oss-120b-medium'
+  ]);
+  const [loadingGeminiModels, setLoadingGeminiModels] = useState(false);
 
   const [openaiKey, setOpenaiKey] = useState('');
   const [openaiModel, setOpenaiModel] = useState('');
@@ -407,12 +421,6 @@ export const IntegrationsView: React.FC<{
             <strong>Yerel Kurallı Motor (LocalRuleProvider):</strong> Hazır (%100 çevrimdışı, veri dışarı çıkmaz)
           </div>
           <div>
-            <strong>Antigravity / Gemini CLI:</strong>{' '}
-            {health.ai.geminiCliInstalled
-              ? `Kurulu (${health.ai.geminiCliVersion})`
-              : 'Kurulu değil veya CLI bulunamadı'}
-          </div>
-          <div>
             <strong>Uzak AI Veri Gönderim İzni:</strong>{' '}
             {health.ai.remoteAiAllowed ? 'Açık (Her zaman önizleme ile)' : 'Kapalı (Varsayılan Güvenli Mod)'}
           </div>
@@ -427,7 +435,14 @@ export const IntegrationsView: React.FC<{
         <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '12px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px', marginBottom: '12px' }}>
             <span style={{ fontSize: '13px', fontWeight: 600 }}>API Entegrasyonu ve Model Yapılandırması:</span>
-            <div style={{ display: 'flex', gap: '6px' }}>
+            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                className={`btn btn-sm ${activeAiTab === 'gemini' ? 'btn-primary' : ''}`}
+                onClick={() => setActiveAiTab('gemini')}
+              >
+                Antigravity / Gemini {health.ai.geminiCliInstalled && '✓'}
+              </button>
               <button
                 type="button"
                 className={`btn btn-sm ${activeAiTab === 'openai' ? 'btn-primary' : ''}`}
@@ -453,6 +468,77 @@ export const IntegrationsView: React.FC<{
           </div>
 
           {/* Active Tab Panel */}
+          {activeAiTab === 'gemini' && (
+            <div style={{ display: 'grid', gap: '10px', background: 'var(--bg-primary)', padding: '12px', borderRadius: '8px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '12.5px', fontWeight: 600 }}>Antigravity / Gemini CLI (agy)</span>
+                <span className={`badge ${health.ai.geminiCliInstalled ? 'badge-success' : 'badge-danger'}`}>
+                  {health.ai.geminiCliInstalled
+                    ? `Kurulu (${health.ai.geminiCliVersion})`
+                    : 'Kurulu Değil'}
+                </span>
+              </div>
+
+              {health.ai.geminiCliInstalled ? (
+                <div style={{ background: 'var(--bg-tertiary)', borderLeft: '3px solid #10b981', padding: '10px 12px', borderRadius: '4px', fontSize: '12px', display: 'grid', gap: '4px' }}>
+                  <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+                    ✓ Antigravity CLI Ortamda Hazır
+                  </div>
+                  <div style={{ color: 'var(--text-secondary)' }}>
+                    Sistemde <code>agy.exe</code> ({health.ai.geminiCliVersion}) tespit edildi. API anahtarı girmenize gerek yoktur; oturum terminal üzerinden doğrudan çalışır.
+                  </div>
+                </div>
+              ) : (
+                <div style={{ background: 'var(--bg-tertiary)', borderLeft: '3px solid #ef4444', padding: '10px 12px', borderRadius: '4px', fontSize: '12px', display: 'grid', gap: '4px' }}>
+                  <div style={{ fontWeight: 600, color: '#ef4444' }}>
+                    ✕ Antigravity CLI Bulunamadı
+                  </div>
+                  <div style={{ color: 'var(--text-secondary)' }}>
+                    Antigravity CLI (agy) veya Gemini CLI bilgisayarınızda tespit edilemedi.
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                  Kullanılabilir Antigravity Modelleri
+                </label>
+                <select
+                  className="select"
+                  style={{ width: '100%' }}
+                  value={geminiModel || geminiModelsList[0]}
+                  onChange={(e) => setGeminiModel(e.target.value)}
+                >
+                  {geminiModelsList.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+                <span style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px', display: 'block' }}>
+                  Antigravity CLI (agy) model parametresi ve print modu ile tam uyumlu çalışır.
+                </span>
+              </div>
+
+              <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-primary"
+                  onClick={async () => {
+                    setFeedback('Antigravity CLI bağlantısı test ediliyor...');
+                    await loadHealth();
+                    if (health.ai.geminiCliInstalled) {
+                      setFeedback(`Antigravity CLI hazır ve çalışıyor (${health.ai.geminiCliVersion}).`);
+                    } else {
+                      setFeedback('Antigravity CLI bulunamadı.');
+                    }
+                  }}
+                >
+                  Durumu Denetle / Test Et
+                </button>
+              </div>
+            </div>
+          )}
           {activeAiTab === 'openai' && (
             <form onSubmit={handleSaveOpenAi} style={{ display: 'grid', gap: '10px', background: 'var(--bg-primary)', padding: '12px', borderRadius: '8px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
