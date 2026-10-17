@@ -18,7 +18,8 @@ import {
   ExternalLinkIcon,
   DownloadIcon,
   MessageSquareIcon,
-  GitCommitIcon
+  GitCommitIcon,
+  CloseIcon
 } from './Icons';
 
 interface CustomMenuBarProps {
@@ -121,17 +122,17 @@ export const CustomMenuBar: React.FC<CustomMenuBarProps> = ({
               {openMenu === 'file' && (
                 <div className="dropdown-menu">
                   <button type="button" className="dropdown-btn" onClick={() => handleAction(() => onNavigateTab('report'))}>
-                    <span>📝</span> <span>Günlük Raporu Gör / Dışa Aktar</span>
+                    <ReportIcon size={14} /> <span>Günlük Raporu Gör / Dışa Aktar</span>
                   </button>
                   <button type="button" className="dropdown-btn" onClick={() => handleAction(() => onNavigateTab('projects'))}>
-                    <span>📁</span> <span>Projeler & Çalışma Alanları</span>
+                    <ProjectsIcon size={14} /> <span>Projeler & Çalışma Alanları</span>
                   </button>
                   <button type="button" className="dropdown-btn" onClick={() => handleAction(() => onNavigateTab('settings'))}>
-                    <span>⚙️</span> <span>Uygulama Ayarları</span>
+                    <SettingsIcon size={14} /> <span>Uygulama Ayarları</span>
                   </button>
                   <div className="dropdown-divider" />
                   <button type="button" className="dropdown-btn dropdown-btn-danger" onClick={handleClose}>
-                    <span>🚪</span> <span>Pencereyi Kapat</span> <span className="shortcut-hint">Alt+F4</span>
+                    <CloseIcon size={14} /> <span>Pencereyi Kapat</span> <span className="shortcut-hint">Alt+F4</span>
                   </button>
                 </div>
               )}

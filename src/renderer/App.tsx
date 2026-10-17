@@ -226,6 +226,9 @@ export const App: React.FC = () => {
             <IntegrationsIcon size={16} />
             <span>Entegrasyonlar</span>
           </button>
+        </nav>
+
+        <div className="sidebar-nav-bottom">
           <button
             className={`nav-btn ${activeTab === 'settings' ? 'active' : ''}`}
             onClick={() => setActiveTab('settings')}
@@ -233,7 +236,7 @@ export const App: React.FC = () => {
             <SettingsIcon size={16} />
             <span>Ayarlar</span>
           </button>
-        </nav>
+        </div>
 
         <div className="sidebar-footer">
           <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)' }}>
