@@ -10,7 +10,11 @@ import {
   CheckIcon,
   SunIcon,
   MoonIcon,
-  LaptopIcon
+  LaptopIcon,
+  AntigravityIcon,
+  OpenAiIcon,
+  AnthropicIcon,
+  OllamaIcon
 } from '../components/Icons';
 
 export const IntegrationsView: React.FC<{
@@ -440,29 +444,41 @@ export const IntegrationsView: React.FC<{
                 type="button"
                 className={`btn btn-sm ${activeAiTab === 'gemini' ? 'btn-primary' : ''}`}
                 onClick={() => setActiveAiTab('gemini')}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
               >
-                Antigravity / Gemini {health.ai.geminiCliInstalled && '✓'}
+                <AntigravityIcon size={14} />
+                <span>Antigravity / Gemini</span>
+                {health.ai.geminiCliInstalled && <span style={{ opacity: 0.9 }}>✓</span>}
               </button>
               <button
                 type="button"
                 className={`btn btn-sm ${activeAiTab === 'openai' ? 'btn-primary' : ''}`}
                 onClick={() => setActiveAiTab('openai')}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
               >
-                OpenAI / Codex {health.ai.openaiConfigured && '✓'}
+                <OpenAiIcon size={14} />
+                <span>OpenAI / Codex</span>
+                {health.ai.openaiConfigured && <span style={{ opacity: 0.9 }}>✓</span>}
               </button>
               <button
                 type="button"
                 className={`btn btn-sm ${activeAiTab === 'anthropic' ? 'btn-primary' : ''}`}
                 onClick={() => setActiveAiTab('anthropic')}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
               >
-                Anthropic Claude {health.ai.anthropicConfigured && '✓'}
+                <AnthropicIcon size={14} />
+                <span>Anthropic Claude</span>
+                {health.ai.anthropicConfigured && <span style={{ opacity: 0.9 }}>✓</span>}
               </button>
               <button
                 type="button"
                 className={`btn btn-sm ${activeAiTab === 'custom' ? 'btn-primary' : ''}`}
                 onClick={() => setActiveAiTab('custom')}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
               >
-                Özel LLM / Ollama {health.ai.customConfigured && '✓'}
+                <OllamaIcon size={14} />
+                <span>Özel LLM / Ollama</span>
+                {health.ai.customConfigured && <span style={{ opacity: 0.9 }}>✓</span>}
               </button>
             </div>
           </div>
