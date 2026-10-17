@@ -169,7 +169,7 @@ export const App: React.FC = () => {
 
         <div className="sidebar-footer">
           <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)' }}>
-            ⚡ MesAI v{updateState?.currentVersion || '1.0.0'}
+            ⚡ MesAI v{updateState?.currentVersion || '1.0.1'}
           </div>
           {updateState?.status === 'available' && updateState.updateInfo && (
             <button

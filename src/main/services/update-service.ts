@@ -25,7 +25,7 @@ export class UpdateService {
   private isDownloading = false;
 
   constructor(private readonly getMainWindow: () => BrowserWindow | null) {
-    const currentVersion = app ? app.getVersion() : '1.0.0';
+    const currentVersion = app ? app.getVersion() : '1.0.1';
     this.state = {
       status: 'idle',
       currentVersion,
