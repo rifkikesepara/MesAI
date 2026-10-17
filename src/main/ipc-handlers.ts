@@ -412,5 +412,32 @@ export function registerIpcHandlers(deps: {
   ipcMain.handle(IPC_CHANNELS.UPDATER_INSTALL, async () => {
     return updateService.quitAndInstall();
   });
+
+  ipcMain.handle(IPC_CHANNELS.WINDOW_MINIMIZE, async () => {
+    const win = getMainWindow();
+    if (win && !win.isDestroyed()) win.minimize();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.WINDOW_MAXIMIZE, async () => {
+    const win = getMainWindow();
+    if (!win || win.isDestroyed()) return false;
+    if (win.isMaximized()) {
+      win.unmaximize();
+      return false;
+    } else {
+      win.maximize();
+      return true;
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.WINDOW_CLOSE, async () => {
+    const win = getMainWindow();
+    if (win && !win.isDestroyed()) win.close();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.WINDOW_IS_MAXIMIZED, async () => {
+    const win = getMainWindow();
+    return win && !win.isDestroyed() ? win.isMaximized() : false;
+  });
 }
 

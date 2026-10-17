@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import type { AppSettings, IntegrationHealth, UpdateState } from '../../shared/types';
 import { ZOOM_STATUS_LABELS } from './DashboardAndProjectsView';
+import { MESAI_ICON_DATA_URL } from '../assets/logo';
 
 export const IntegrationsView: React.FC<{
   onPollZoom: () => Promise<void>;
@@ -533,10 +534,10 @@ export const SettingsView: React.FC<{
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
           <div>
             <h3 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '8px', margin: 0 }}>
-              <img src="/icon.png" alt="MesAI" style={{ width: '22px', height: '22px', objectFit: 'contain' }} />
+              <img src={MESAI_ICON_DATA_URL} alt="MesAI" style={{ width: '22px', height: '22px', objectFit: 'contain' }} />
               <span>Uygulama Sürümü ve Otomatik Güncellemeler</span>
               <span className="badge badge-neutral" style={{ fontSize: '12px', fontWeight: 600 }}>
-                v{updateState?.currentVersion || '1.0.1'}
+                {updateState?.currentVersion ? `v${updateState.currentVersion}` : ''}
               </span>
             </h3>
             <p style={{ color: 'var(--text-secondary)', fontSize: '13px', margin: '4px 0 0 0' }}>

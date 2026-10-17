@@ -258,6 +258,8 @@ function createMainWindow(): void {
     minHeight: 680,
     title: 'MesAI — Kanıta Dayalı Günlük Çalışma Raporu',
     icon: fs.existsSync(iconPath) ? iconPath : undefined,
+    frame: false,
+    titleBarStyle: 'hidden',
     backgroundColor: '#0f172a',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -268,6 +270,13 @@ function createMainWindow(): void {
   });
 
   mainWindow.setMenuBarVisibility(false);
+
+  mainWindow.on('maximize', () => {
+    mainWindow?.webContents.send('mesai:window:maximizeChanged', true);
+  });
+  mainWindow.on('unmaximize', () => {
+    mainWindow?.webContents.send('mesai:window:maximizeChanged', false);
+  });
 
   const devServerUrl = process.env.VITE_DEV_SERVER_URL;
   if (devServerUrl) {

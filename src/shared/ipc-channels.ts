@@ -50,7 +50,12 @@ export const IPC_CHANNELS = {
   UPDATER_GET_STATE: 'mesai:updater:getState',
   UPDATER_CHECK: 'mesai:updater:check',
   UPDATER_DOWNLOAD: 'mesai:updater:download',
-  UPDATER_INSTALL: 'mesai:updater:install'
+  UPDATER_INSTALL: 'mesai:updater:install',
+
+  WINDOW_MINIMIZE: 'mesai:window:minimize',
+  WINDOW_MAXIMIZE: 'mesai:window:maximize',
+  WINDOW_CLOSE: 'mesai:window:close',
+  WINDOW_IS_MAXIMIZED: 'mesai:window:isMaximized'
 } as const;
 
 export interface DashboardSummary {
@@ -160,5 +165,11 @@ export interface MesaiApi {
   downloadUpdate(): Promise<void>;
   quitAndInstallUpdate(): Promise<void>;
   onUpdateStateChanged(callback: (state: UpdateState) => void): () => void;
+
+  minimizeWindow(): Promise<void>;
+  maximizeWindow(): Promise<boolean>;
+  closeWindow(): Promise<void>;
+  isWindowMaximized(): Promise<boolean>;
+  onMaximizeChanged(callback: (isMaximized: boolean) => void): () => void;
 }
 

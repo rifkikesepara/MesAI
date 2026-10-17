@@ -9,6 +9,8 @@ import {
 } from './views/DashboardAndProjectsView';
 import { DailyReportView, TimelineView } from './views/TimelineAndReportView';
 import { IntegrationsView, SettingsView } from './views/IntegrationsAndSettingsView';
+import { CustomMenuBar } from './components/CustomMenuBar';
+import { MESAI_ICON_DATA_URL } from './assets/logo';
 
 type TabKey = 'dashboard' | 'projects' | 'timeline' | 'report' | 'integrations' | 'settings';
 
@@ -107,20 +109,30 @@ export const App: React.FC = () => {
   const zoomBadge = ZOOM_STATUS_LABELS[zoomSync?.status ?? 'idle'] ?? ZOOM_STATUS_LABELS.idle;
 
   return (
-    <div className="app-shell">
-      {/* Left Navigation Sidebar */}
-      <aside className="sidebar">
-        <div className="brand-box">
-          <div className="brand-title" style={{ display: 'flex', alignItems: 'center', gap: '9px' }}>
-            <img
-              src="/icon.png"
-              alt="MesAI Logo"
-              style={{ width: '26px', height: '26px', objectFit: 'contain' }}
-            />
-            <span>MesAI</span>
+    <div className="window-frame">
+      <CustomMenuBar
+        activeTab={activeTab}
+        onNavigateTab={(tab) => setActiveTab(tab)}
+        isPaused={isPaused}
+        onTogglePaused={handleTogglePaused}
+        onPollZoom={handlePollZoomNow}
+        onPollGit={handlePollGitNow}
+        updateState={updateState}
+      />
+      <div className="app-shell">
+        {/* Left Navigation Sidebar */}
+        <aside className="sidebar">
+          <div className="brand-box">
+            <div className="brand-title" style={{ display: 'flex', alignItems: 'center', gap: '9px' }}>
+              <img
+                src={MESAI_ICON_DATA_URL}
+                alt="MesAI Logo"
+                style={{ width: '26px', height: '26px', objectFit: 'contain' }}
+              />
+              <span>MesAI</span>
+            </div>
+            <div className="brand-subtitle">DevTrack AI — Kanıta Dayalı Günlük Raporlama</div>
           </div>
-          <div className="brand-subtitle">DevTrack AI — Kanıta Dayalı Günlük Raporlama</div>
-        </div>
 
         <nav className="nav-list">
           <button
@@ -169,7 +181,7 @@ export const App: React.FC = () => {
 
         <div className="sidebar-footer">
           <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)' }}>
-            ⚡ MesAI v{updateState?.currentVersion || '1.0.1'}
+            ⚡ MesAI {updateState?.currentVersion ? `v${updateState.currentVersion}` : ''}
           </div>
           {updateState?.status === 'available' && updateState.updateInfo && (
             <button
@@ -399,6 +411,7 @@ export const App: React.FC = () => {
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 };
