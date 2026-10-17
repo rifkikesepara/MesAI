@@ -12,7 +12,7 @@
     "build": "npm run build:reader && npm run build:main && npm run build:renderer",
     "dev:renderer": "vite --port 5173",
     "start": "npm run build:main && npm run build:renderer && electron .",
-    "test": "npm run build:main && node --test dist-main/tests/*.test.js",
+    "test": "npm run build:reader && npm run build:main && node --test dist-main/tests/*.test.js",
     "pack:dir": "npm run build && electron-builder --dir",
     "pack:win": "npm run build && electron-builder --win",
     "release": "npm run build && electron-builder --win --publish always"

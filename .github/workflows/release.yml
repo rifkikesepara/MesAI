@@ -42,11 +42,11 @@ jobs:
       - name: Install Dependencies
         run: npm ci
 
-      - name: Run Verification Test Suite
-        run: npm test
-
       - name: Build Application (ZoomChatReader + Vite + Main)
         run: npm run build
+
+      - name: Run Verification Test Suite
+        run: npm test
 
       - name: Publish Production Release to GitHub
         env:

@@ -372,7 +372,14 @@ describe('MesAI Core Verification Suite', () => {
     const matcher = new MatcherService(repo);
     const adapter = new ZoomReaderAdapter(repo, matcher, { stateDir: tmpDir });
 
-    const exePath = adapter.resolveExecutablePath();
+    let exePath = adapter.resolveExecutablePath();
+    if (!fs.existsSync(exePath)) {
+      const { execSync } = await import('node:child_process');
+      execSync('dotnet build readers/ZoomChatReader/ZoomChatReader.csproj -c Release', {
+        stdio: 'pipe'
+      });
+      exePath = adapter.resolveExecutablePath();
+    }
     assert.ok(fs.existsSync(exePath), `ZoomChatReader.exe must exist at ${exePath}`);
 
     // Trigger two concurrent polls simultaneously; one must execute and the other must be blocked by the single-flight lock
