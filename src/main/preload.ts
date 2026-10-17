@@ -62,7 +62,17 @@ const mesaiApi: MesaiApi = {
     return () => {
       ipcRenderer.removeListener('mesai:window:maximizeChanged', handler);
     };
-  }
+  },
+  onTrackingStateChanged: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, isPaused: unknown) => {
+      callback(Boolean(isPaused));
+    };
+    ipcRenderer.on(IPC_CHANNELS.TRACKING_STATE_CHANGED, handler);
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.TRACKING_STATE_CHANGED, handler);
+    };
+  },
+  openExternalUrl: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.OPEN_EXTERNAL_URL, url)
 };
 
 contextBridge.exposeInMainWorld('mesaiApi', mesaiApi);

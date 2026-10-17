@@ -58,7 +58,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   jenkinsUrl: '',
   jenkinsUsername: '',
   reportMaxChars: 1000,
-  autoCheckUpdatesOnStartup: true
+  autoCheckUpdatesOnStartup: true,
+  theme: 'system'
 };
 
 const IGNORED_JIRA_LIKE_TOKENS = new Set([

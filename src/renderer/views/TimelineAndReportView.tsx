@@ -11,6 +11,18 @@ import type {
   ReportItem
 } from '../../shared/types';
 import { CATEGORY_LABELS, SOURCE_LABELS, STATUS_LABELS } from './DashboardAndProjectsView';
+import {
+  PlusIcon,
+  SearchIcon,
+  CheckIcon,
+  CloseIcon,
+  CopyIcon,
+  SparklesIcon,
+  RefreshIcon,
+  DownloadIcon,
+  TrashIcon,
+  ExternalLinkIcon
+} from '../components/Icons';
 
 export const TimelineView: React.FC<{
   projects: Project[];
@@ -86,8 +98,13 @@ export const TimelineView: React.FC<{
       <div className="card">
         <div className="card-header">
           <h3 className="card-title">Aktivite Akışı (Timeline) & Kanıt Filtreleri</h3>
-          <button className="btn btn-primary btn-sm" onClick={() => setShowNoteForm(!showNoteForm)}>
-            {showNoteForm ? 'Kapat' : '➕ Hızlı Toplantı / Teknik Not Ekle'}
+          <button
+            className="btn btn-primary btn-sm"
+            onClick={() => setShowNoteForm(!showNoteForm)}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+          >
+            {showNoteForm ? <CloseIcon size={14} /> : <PlusIcon size={14} />}
+            <span>{showNoteForm ? 'Kapat' : 'Hızlı Toplantı / Teknik Not Ekle'}</span>
           </button>
         </div>
 
@@ -231,8 +248,13 @@ export const TimelineView: React.FC<{
               onChange={(e) => setFilter({ ...filter, search: e.target.value })}
               onKeyDown={(e) => e.key === 'Enter' && loadActivities()}
             />
-            <button className="btn btn-sm" onClick={loadActivities}>
-              Ara
+            <button
+              className="btn btn-sm"
+              onClick={loadActivities}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+            >
+              <SearchIcon size={13} />
+              <span>Ara</span>
             </button>
           </div>
         </div>
@@ -320,7 +342,9 @@ export const TimelineView: React.FC<{
                           className="activity-link-item"
                           title={url}
                         >
-                          <span className="activity-link-icon">↗</span>
+                          <span className="activity-link-icon">
+                            <ExternalLinkIcon size={12} />
+                          </span>
                           <span className="activity-link-text">{url}</span>
                         </a>
                       ))}
@@ -363,16 +387,20 @@ export const TimelineView: React.FC<{
                           <button
                             className="btn btn-sm btn-success"
                             onClick={() => handleLinkDecision(lnk.id, 'accepted', lnk.projectId)}
+                            style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
                           >
-                            ✓ Kabul Et
+                            <CheckIcon size={12} />
+                            <span>Kabul Et</span>
                           </button>
                         )}
                         {lnk.userStatus !== 'rejected' && (
                           <button
                             className="btn btn-sm btn-danger"
                             onClick={() => handleLinkDecision(lnk.id, 'rejected', lnk.projectId)}
+                            style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
                           >
-                            ✕ Ayır
+                            <CloseIcon size={12} />
+                            <span>Ayır</span>
                           </button>
                         )}
                       </div>
@@ -389,8 +417,10 @@ export const TimelineView: React.FC<{
                       key={ev.id}
                       className="btn btn-sm"
                       onClick={() => onInspectEvidence(ev)}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
                     >
-                      🔍 Kanıtı Aç ({ev.sourceType} — {ev.rawTimestampText})
+                      <SearchIcon size={13} />
+                      <span>Kanıtı Aç ({ev.sourceType} — {ev.rawTimestampText})</span>
                     </button>
                   ))}
                 </div>
@@ -653,12 +683,25 @@ export const DailyReportView: React.FC<{
           </div>
 
           <div style={{ marginTop: '18px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-            <button className="btn btn-primary" onClick={handleGenerateClick} disabled={loading}>
-              {loading
-                ? 'Üretiliyor...'
-                : report
-                  ? '🔄 Raporu Yeniden Üret'
-                  : '✨ Günlük Rapor Taslağı Oluştur'}
+            <button
+              className="btn btn-primary"
+              onClick={handleGenerateClick}
+              disabled={loading}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+            >
+              {loading ? (
+                'Üretiliyor...'
+              ) : report ? (
+                <>
+                  <RefreshIcon size={14} />
+                  <span>Raporu Yeniden Üret</span>
+                </>
+              ) : (
+                <>
+                  <SparklesIcon size={14} />
+                  <span>Günlük Rapor Taslağı Oluştur</span>
+                </>
+              )}
             </button>
 
             {report && (
@@ -667,20 +710,42 @@ export const DailyReportView: React.FC<{
                   className="btn btn-success"
                   onClick={handleApprove}
                   disabled={report.status === 'approved'}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
                 >
-                  ✓ Raporu Onayla
+                  <CheckIcon size={14} />
+                  <span>Raporu Onayla</span>
                 </button>
-                <button className="btn" onClick={handleCopySummaryClipboard}>
-                  📋 Rapor Özetini Kopyala
+                <button
+                  className="btn"
+                  onClick={handleCopySummaryClipboard}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                >
+                  <CopyIcon size={14} />
+                  <span>Rapor Özetini Kopyala</span>
                 </button>
-                <button className="btn" onClick={() => handleExport('md')}>
-                  ⬇️ Markdown (.md)
+                <button
+                  className="btn"
+                  onClick={() => handleExport('md')}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                >
+                  <DownloadIcon size={14} />
+                  <span>Markdown (.md)</span>
                 </button>
-                <button className="btn" onClick={() => handleExport('txt')}>
-                  ⬇️ Metin (.txt)
+                <button
+                  className="btn"
+                  onClick={() => handleExport('txt')}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                >
+                  <DownloadIcon size={14} />
+                  <span>Metin (.txt)</span>
                 </button>
-                <button className="btn" onClick={() => handleExport('csv')}>
-                  ⬇️ Timesheet (.csv)
+                <button
+                  className="btn"
+                  onClick={() => handleExport('csv')}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                >
+                  <DownloadIcon size={14} />
+                  <span>Timesheet (.csv)</span>
                 </button>
               </>
             )}
@@ -725,8 +790,10 @@ export const DailyReportView: React.FC<{
                 className="btn btn-primary btn-sm"
                 onClick={handleCopySummaryClipboard}
                 disabled={!formattedBulletSummary}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
               >
-                📋 Özeti Kopyala
+                <CopyIcon size={13} />
+                <span>Özeti Kopyala</span>
               </button>
             </div>
 
@@ -764,8 +831,10 @@ export const DailyReportView: React.FC<{
                 className="btn btn-sm"
                 onClick={handleCopyJiraKeysClipboard}
                 disabled={extractedJiraKeys.length === 0}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
               >
-                📋 Jira No Kopyala
+                <CopyIcon size={13} />
+                <span>Jira No Kopyala</span>
               </button>
             </div>
 
@@ -1017,8 +1086,13 @@ export const DailyReportView: React.FC<{
                 value={newItemText}
                 onChange={(e) => setNewItemText(e.target.value)}
               />
-              <button type="submit" className="btn btn-primary">
-                ➕ Madde Ekle
+              <button
+                type="submit"
+                className="btn btn-primary"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+              >
+                <PlusIcon size={14} />
+                <span>Madde Ekle</span>
               </button>
             </div>
           </form>

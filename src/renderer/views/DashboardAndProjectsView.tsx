@@ -1,6 +1,13 @@
 import React, { useState } from 'react';
 import type { DashboardSummary } from '../../shared/ipc-channels';
 import type { Evidence, Project } from '../../shared/types';
+import {
+  ProjectsIcon,
+  SearchIcon,
+  SettingsIcon,
+  ActivityIcon,
+  ReportIcon
+} from '../components/Icons';
 
 export const SOURCE_LABELS: Record<string, string> = {
   zoom_chat: 'Zoom Sohbet',
@@ -175,11 +182,21 @@ export const DashboardView: React.FC<{
         <div className="card-header">
           <h3 className="card-title">Son Toplanan Aktiviteler</h3>
           <div style={{ display: 'flex', gap: '8px' }}>
-            <button className="btn btn-sm" onClick={() => onOpenTab('timeline')}>
-              Tüm Akışı Gör
+            <button
+              className="btn btn-sm"
+              onClick={() => onOpenTab('timeline')}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+            >
+              <ActivityIcon size={14} />
+              <span>Tüm Akışı Gör</span>
             </button>
-            <button className="btn btn-sm btn-primary" onClick={() => onOpenTab('report')}>
-              Günlük Rapor Üret
+            <button
+              className="btn btn-sm btn-primary"
+              onClick={() => onOpenTab('report')}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+            >
+              <ReportIcon size={14} />
+              <span>Günlük Rapor Üret</span>
             </button>
           </div>
         </div>
@@ -212,8 +229,10 @@ export const DashboardView: React.FC<{
                   <button
                     className="btn btn-sm"
                     onClick={() => onInspectEvidence(act.evidences![0])}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
                   >
-                    🔍 Kaynak Kanıtı İncele ({act.evidences.length})
+                    <SearchIcon size={13} />
+                    <span>Kaynak Kanıtı İncele ({act.evidences.length})</span>
                   </button>
                 </div>
               )}
@@ -313,11 +332,22 @@ export const ProjectsView: React.FC<{
             onChange={(e) => setRootInput(e.target.value)}
             placeholder="Örn: C:\Repos"
           />
-          <button className="btn" onClick={handleBrowse}>
-            📂 Klasör Seç
+          <button
+            className="btn"
+            onClick={handleBrowse}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+          >
+            <ProjectsIcon size={14} />
+            <span>Klasör Seç</span>
           </button>
-          <button className="btn btn-primary" onClick={handleScan} disabled={scanning}>
-            {scanning ? 'Taranıyor...' : '🔍 Git Projelerini Keşfet'}
+          <button
+            className="btn btn-primary"
+            onClick={handleScan}
+            disabled={scanning}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+          >
+            <SearchIcon size={14} />
+            <span>{scanning ? 'Taranıyor...' : 'Git Projelerini Keşfet'}</span>
           </button>
         </div>
       </div>
@@ -366,8 +396,13 @@ export const ProjectsView: React.FC<{
                   >
                     {p.enabled ? 'İzlemeyi Kapat' : 'İzlemeyi Aç'}
                   </button>
-                  <button className="btn btn-sm" onClick={() => startEdit(p)}>
-                    ⚙️ Eşleştirme & Filtre
+                  <button
+                    className="btn btn-sm"
+                    onClick={() => startEdit(p)}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                  >
+                    <SettingsIcon size={13} />
+                    <span>Eşleştirme & Filtre</span>
                   </button>
                 </div>
               </div>

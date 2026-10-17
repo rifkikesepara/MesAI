@@ -1,6 +1,26 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { MESAI_ICON_DATA_URL } from '../assets/logo';
 import type { UpdateState } from '../../shared/types';
+import {
+  DashboardIcon,
+  ProjectsIcon,
+  ActivityIcon,
+  ReportIcon,
+  IntegrationsIcon,
+  SettingsIcon,
+  PlayIcon,
+  PauseIcon,
+  RefreshIcon,
+  SunIcon,
+  MoonIcon,
+  LaptopIcon,
+  CheckIcon,
+  ExternalLinkIcon,
+  DownloadIcon,
+  MessageSquareIcon,
+  GitCommitIcon,
+  CloseIcon
+} from './Icons';
 
 interface CustomMenuBarProps {
   activeTab: string;
@@ -10,6 +30,8 @@ interface CustomMenuBarProps {
   onPollZoom: () => void;
   onPollGit: () => void;
   updateState: UpdateState | null;
+  currentTheme: 'light' | 'dark' | 'system';
+  onSetTheme: (theme: 'light' | 'dark' | 'system') => void;
 }
 
 export const CustomMenuBar: React.FC<CustomMenuBarProps> = ({
@@ -18,12 +40,50 @@ export const CustomMenuBar: React.FC<CustomMenuBarProps> = ({
   onTogglePaused,
   onPollZoom,
   onPollGit,
-  updateState
+  updateState,
+  currentTheme,
+  onSetTheme
 }) => {
   const [openMenu, setOpenMenu] = useState<'file' | 'view' | 'tracking' | 'help' | null>(null);
   const [isMaximized, setIsMaximized] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
+  const [showFeedback, setShowFeedback] = useState(false);
+  const [feedbackType, setFeedbackType] = useState<'bug' | 'feature' | 'feedback'>('bug');
+  const [feedbackTitle, setFeedbackTitle] = useState('');
+  const [feedbackDesc, setFeedbackDesc] = useState('');
+  const [includeDiagnostics, setIncludeDiagnostics] = useState(true);
   const menuBarRef = useRef<HTMLDivElement>(null);
+
+  const handleSendFeedback = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!feedbackTitle.trim()) return;
+
+    const tag = feedbackType === 'bug' ? 'bug' : feedbackType === 'feature' ? 'enhancement' : 'feedback';
+    const titlePrefix = feedbackType === 'bug' ? '[Bug]' : feedbackType === 'feature' ? '[Feature]' : '[Feedback]';
+    const finalTitle = `${titlePrefix} ${feedbackTitle.trim()}`;
+
+    const diagSection = includeDiagnostics
+      ? `\n\n### Ortam & Sistem Bilgileri\n- **MesAI Sürümü:** v${updateState?.currentVersion || '1.0.1'}\n- **İşletim Sistemi:** Windows (${navigator.userAgent})\n- **Aktif Tema:** ${currentTheme}\n- **Oluşturulma Zamanı:** ${new Date().toISOString()}`
+      : '';
+
+    const finalBody = `### Açıklama\n${feedbackDesc.trim() || 'Açıklama belirtilmedi.'}${diagSection}\n\n---\n*Bu bildirim MesAI masaüstü uygulamasından doğrudan gönderilmiştir.*`;
+
+    const issueUrl = `https://github.com/rifkikesepara/MesAI/issues/new?title=${encodeURIComponent(finalTitle)}&body=${encodeURIComponent(finalBody)}&labels=${encodeURIComponent(tag)}`;
+
+    try {
+      if (window.mesaiApi.openExternalUrl) {
+        await window.mesaiApi.openExternalUrl(issueUrl);
+      } else {
+        window.open(issueUrl, '_blank');
+      }
+    } catch {
+      window.open(issueUrl, '_blank');
+    }
+
+    setFeedbackTitle('');
+    setFeedbackDesc('');
+    setShowFeedback(false);
+  };
 
   useEffect(() => {
     void window.mesaiApi.isWindowMaximized().then(setIsMaximized);
@@ -98,17 +158,17 @@ export const CustomMenuBar: React.FC<CustomMenuBarProps> = ({
               {openMenu === 'file' && (
                 <div className="dropdown-menu">
                   <button type="button" className="dropdown-btn" onClick={() => handleAction(() => onNavigateTab('report'))}>
-                    <span>📝</span> <span>Günlük Raporu Gör / Dışa Aktar</span>
+                    <ReportIcon size={14} /> <span>Günlük Raporu Gör / Dışa Aktar</span>
                   </button>
                   <button type="button" className="dropdown-btn" onClick={() => handleAction(() => onNavigateTab('projects'))}>
-                    <span>📁</span> <span>Projeler & Çalışma Alanları</span>
+                    <ProjectsIcon size={14} /> <span>Projeler & Çalışma Alanları</span>
                   </button>
                   <button type="button" className="dropdown-btn" onClick={() => handleAction(() => onNavigateTab('settings'))}>
-                    <span>⚙️</span> <span>Uygulama Ayarları</span>
+                    <SettingsIcon size={14} /> <span>Uygulama Ayarları</span>
                   </button>
                   <div className="dropdown-divider" />
                   <button type="button" className="dropdown-btn dropdown-btn-danger" onClick={handleClose}>
-                    <span>🚪</span> <span>Pencereyi Kapat</span> <span className="shortcut-hint">Alt+F4</span>
+                    <CloseIcon size={14} /> <span>Pencereyi Kapat</span> <span className="shortcut-hint">Alt+F4</span>
                   </button>
                 </div>
               )}
@@ -127,22 +187,35 @@ export const CustomMenuBar: React.FC<CustomMenuBarProps> = ({
               {openMenu === 'view' && (
                 <div className="dropdown-menu">
                   <button type="button" className="dropdown-btn" onClick={() => handleAction(() => onNavigateTab('dashboard'))}>
-                    <span>📊</span> <span>Gösterge Paneli</span>
+                    <DashboardIcon size={14} /> <span>Gösterge Paneli</span>
                   </button>
                   <button type="button" className="dropdown-btn" onClick={() => handleAction(() => onNavigateTab('timeline'))}>
-                    <span>🕒</span> <span>Aktivite Akışı</span>
+                    <ActivityIcon size={14} /> <span>Aktivite Akışı</span>
                   </button>
                   <button type="button" className="dropdown-btn" onClick={() => handleAction(() => onNavigateTab('report'))}>
-                    <span>📝</span> <span>Günlük Rapor</span>
+                    <ReportIcon size={14} /> <span>Günlük Rapor</span>
                   </button>
                   <button type="button" className="dropdown-btn" onClick={() => handleAction(() => onNavigateTab('projects'))}>
-                    <span>📁</span> <span>Projeler</span>
+                    <ProjectsIcon size={14} /> <span>Projeler</span>
                   </button>
                   <button type="button" className="dropdown-btn" onClick={() => handleAction(() => onNavigateTab('integrations'))}>
-                    <span>🔌</span> <span>Entegrasyonlar</span>
+                    <IntegrationsIcon size={14} /> <span>Entegrasyonlar</span>
                   </button>
                   <button type="button" className="dropdown-btn" onClick={() => handleAction(() => onNavigateTab('settings'))}>
-                    <span>⚙️</span> <span>Ayarlar</span>
+                    <SettingsIcon size={14} /> <span>Ayarlar</span>
+                  </button>
+                  <div className="dropdown-divider" />
+                  <button type="button" className="dropdown-btn" onClick={() => handleAction(() => onSetTheme('dark'))}>
+                    <MoonIcon size={14} /> <span>Koyu Tema (Dark)</span>
+                    {currentTheme === 'dark' && <span className="shortcut-hint"><CheckIcon size={12} /></span>}
+                  </button>
+                  <button type="button" className="dropdown-btn" onClick={() => handleAction(() => onSetTheme('light'))}>
+                    <SunIcon size={14} /> <span>Açık Tema (Light)</span>
+                    {currentTheme === 'light' && <span className="shortcut-hint"><CheckIcon size={12} /></span>}
+                  </button>
+                  <button type="button" className="dropdown-btn" onClick={() => handleAction(() => onSetTheme('system'))}>
+                    <LaptopIcon size={14} /> <span>Sistem Teması (System)</span>
+                    {currentTheme === 'system' && <span className="shortcut-hint"><CheckIcon size={12} /></span>}
                   </button>
                 </div>
               )}
@@ -161,14 +234,14 @@ export const CustomMenuBar: React.FC<CustomMenuBarProps> = ({
               {openMenu === 'tracking' && (
                 <div className="dropdown-menu">
                   <button type="button" className="dropdown-btn" onClick={() => handleAction(onPollZoom)}>
-                    <span>💬</span> <span>Şimdi Zoom Oku</span>
+                    <MessageSquareIcon size={14} /> <span>Şimdi Zoom Oku</span>
                   </button>
                   <button type="button" className="dropdown-btn" onClick={() => handleAction(onPollGit)}>
-                    <span>🌿</span> <span>Şimdi Git & Dosyaları Tara</span>
+                    <GitCommitIcon size={14} /> <span>Şimdi Git & Dosyaları Tara</span>
                   </button>
                   <div className="dropdown-divider" />
                   <button type="button" className="dropdown-btn" onClick={() => handleAction(onTogglePaused)}>
-                    <span>{isPaused ? '▶' : '⏸'}</span>
+                    {isPaused ? <PlayIcon size={14} /> : <PauseIcon size={14} />}
                     <span>{isPaused ? 'Takibi Devam Ettir' : 'Takibi Duraklat'}</span>
                   </button>
                 </div>
@@ -192,7 +265,7 @@ export const CustomMenuBar: React.FC<CustomMenuBarProps> = ({
                     className="dropdown-btn"
                     onClick={() => handleAction(() => onNavigateTab('settings'))}
                   >
-                    <span>🔄</span> <span>Güncellemeleri Denetle</span>
+                    <DownloadIcon size={14} /> <span>Güncellemeleri Denetle</span>
                   </button>
                   <button
                     type="button"
@@ -203,11 +276,18 @@ export const CustomMenuBar: React.FC<CustomMenuBarProps> = ({
                       })
                     }
                   >
-                    <span>🌐</span> <span>GitHub Deposu</span>
+                    <ExternalLinkIcon size={14} /> <span>GitHub Deposu</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="dropdown-btn"
+                    onClick={() => handleAction(() => setShowFeedback(true))}
+                  >
+                    <MessageSquareIcon size={14} /> <span>Geri Bildirim / Issue Aç</span>
                   </button>
                   <div className="dropdown-divider" />
                   <button type="button" className="dropdown-btn" onClick={() => handleAction(() => setShowAbout(true))}>
-                    <span>ℹ️</span> <span>MesAI Hakkında</span>
+                    <SettingsIcon size={14} /> <span>MesAI Hakkında</span>
                   </button>
                 </div>
               )}
@@ -220,7 +300,7 @@ export const CustomMenuBar: React.FC<CustomMenuBarProps> = ({
           <span className="titlebar-doc-title">MesAI — Kanıta Dayalı Günlük Çalışma Raporu</span>
         </div>
 
-        {/* Right Section: Status Indicator & Window Controls */}
+        {/* Right Section: Status Indicator, Feedback, Theme Switcher & Window Controls */}
         <div className="titlebar-right">
           {updateState?.status === 'available' && (
             <button
@@ -229,7 +309,7 @@ export const CustomMenuBar: React.FC<CustomMenuBarProps> = ({
               onClick={() => onNavigateTab('settings')}
               title="Yeni sürüm mevcut!"
             >
-              🚀 v{updateState.updateInfo?.version}
+              v{updateState.updateInfo?.version}
             </button>
           )}
 
@@ -240,6 +320,42 @@ export const CustomMenuBar: React.FC<CustomMenuBarProps> = ({
           >
             <span>{isPaused ? '⏸ Duraklatıldı' : '● Takip Aktif'}</span>
           </div>
+
+          <button
+            type="button"
+            className="win-btn"
+            style={{
+              width: 'auto',
+              height: '28px',
+              padding: '0 8px',
+              borderRadius: '4px',
+              color: 'var(--text-secondary)',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '5px',
+              fontSize: '12px'
+            }}
+            onClick={() => setShowFeedback(true)}
+            title="Geri bildirim veya hata bildir (GitHub Issues)"
+          >
+            <MessageSquareIcon size={13} />
+            <span>Geri Bildirim</span>
+          </button>
+
+          <button
+            type="button"
+            className="win-btn"
+            style={{ width: '32px', height: '28px', borderRadius: '4px', color: 'var(--text-secondary)' }}
+            onClick={() => {
+              const next = currentTheme === 'dark' ? 'light' : currentTheme === 'light' ? 'system' : 'dark';
+              onSetTheme(next);
+            }}
+            title={`Tema: ${currentTheme === 'dark' ? 'Koyu' : currentTheme === 'light' ? 'Açık' : 'Sistem'}. Değiştirmek için tıklayın.`}
+          >
+            {currentTheme === 'dark' && <MoonIcon size={14} />}
+            {currentTheme === 'light' && <SunIcon size={14} />}
+            {currentTheme === 'system' && <LaptopIcon size={14} />}
+          </button>
 
           <div className="window-controls">
             <button
@@ -307,6 +423,122 @@ export const CustomMenuBar: React.FC<CustomMenuBarProps> = ({
             <button type="button" className="btn btn-primary" onClick={() => setShowAbout(false)} style={{ width: '100%' }}>
               Tamam
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Geri Bildirim (GitHub Issue) Modal */}
+      {showFeedback && (
+        <div className="modal-backdrop" onClick={() => setShowFeedback(false)}>
+          <div
+            className="modal-panel"
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: '580px' }}
+          >
+            <div className="card-header" style={{ marginBottom: '14px' }}>
+              <h3 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <MessageSquareIcon size={18} />
+                <span>Geri Bildirim & Hata Bildirimi</span>
+              </h3>
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() => setShowFeedback(false)}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+              >
+                <CloseIcon size={13} />
+                <span>Kapat</span>
+              </button>
+            </div>
+
+            <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: '0 0 16px 0' }}>
+              Geri bildiriminiz veya hata raporunuz doğrudan <strong>rifkikesepara/MesAI</strong> GitHub deposunda bir Issue olarak açılacaktır.
+            </p>
+
+            <form onSubmit={handleSendFeedback} style={{ display: 'grid', gap: '14px' }}>
+              <div>
+                <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '6px' }}>
+                  Bildirim Türü
+                </label>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button
+                    type="button"
+                    className={`btn btn-sm ${feedbackType === 'bug' ? 'btn-danger' : ''}`}
+                    onClick={() => setFeedbackType('bug')}
+                    style={{ flex: 1, justifyContent: 'center' }}
+                  >
+                    Hata (Bug)
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn btn-sm ${feedbackType === 'feature' ? 'btn-primary' : ''}`}
+                    onClick={() => setFeedbackType('feature')}
+                    style={{ flex: 1, justifyContent: 'center' }}
+                  >
+                    Özellik İsteği
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn btn-sm ${feedbackType === 'feedback' ? 'btn-success' : ''}`}
+                    onClick={() => setFeedbackType('feedback')}
+                    style={{ flex: 1, justifyContent: 'center' }}
+                  >
+                    Genel Görüş
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>
+                  Konu / Başlık
+                </label>
+                <input
+                  className="input"
+                  placeholder="Örn: Günlük raporda Zoom mesajları çözümlenemiyor"
+                  value={feedbackTitle}
+                  onChange={(e) => setFeedbackTitle(e.target.value)}
+                  required
+                  autoFocus
+                />
+              </div>
+
+              <div>
+                <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>
+                  Açıklama ve Detaylar
+                </label>
+                <textarea
+                  className="textarea"
+                  style={{ minHeight: '110px' }}
+                  placeholder="Karşılaştığınız hata adımları, beklenen davranış veya önerilen geliştirme..."
+                  value={feedbackDesc}
+                  onChange={(e) => setFeedbackDesc(e.target.value)}
+                  required
+                />
+              </div>
+
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12.5px', cursor: 'pointer', color: 'var(--text-secondary)' }}>
+                <input
+                  type="checkbox"
+                  checked={includeDiagnostics}
+                  onChange={(e) => setIncludeDiagnostics(e.target.checked)}
+                />
+                <span>Sürüm (v{updateState?.currentVersion || '1.0.1'}), Windows ve tema bilgilerini rapora iliştir</span>
+              </label>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '6px' }}>
+                <button type="button" className="btn" onClick={() => setShowFeedback(false)}>
+                  Vazgeç
+                </button>
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                >
+                  <ExternalLinkIcon size={14} />
+                  <span>GitHub'da Issue Aç</span>
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

@@ -18,6 +18,7 @@ export const IPC_CHANNELS = {
   ZOOM_POLL_NOW: 'mesai:zoom:pollNow',
   GIT_POLL_NOW: 'mesai:git:pollNow',
   TRACKING_SET_PAUSED: 'mesai:tracking:setPaused',
+  TRACKING_STATE_CHANGED: 'mesai:tracking:stateChanged',
 
   PROJECTS_LIST: 'mesai:projects:list',
   PROJECTS_SCAN_ROOT: 'mesai:projects:scanRoot',
@@ -55,7 +56,8 @@ export const IPC_CHANNELS = {
   WINDOW_MINIMIZE: 'mesai:window:minimize',
   WINDOW_MAXIMIZE: 'mesai:window:maximize',
   WINDOW_CLOSE: 'mesai:window:close',
-  WINDOW_IS_MAXIMIZED: 'mesai:window:isMaximized'
+  WINDOW_IS_MAXIMIZED: 'mesai:window:isMaximized',
+  OPEN_EXTERNAL_URL: 'mesai:openExternalUrl'
 } as const;
 
 export interface DashboardSummary {
@@ -171,5 +173,7 @@ export interface MesaiApi {
   closeWindow(): Promise<void>;
   isWindowMaximized(): Promise<boolean>;
   onMaximizeChanged(callback: (isMaximized: boolean) => void): () => void;
+  onTrackingStateChanged(callback: (isPaused: boolean) => void): () => void;
+  openExternalUrl(url: string): Promise<void>;
 }
 
