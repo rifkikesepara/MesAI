@@ -5,6 +5,7 @@ import {
   nativeImage,
   type NativeImage,
   Notification,
+  shell,
   Tray
 } from 'electron';
 import fs from 'node:fs';
@@ -313,6 +314,13 @@ function createMainWindow(): void {
   });
 
   mainWindow.setMenuBarVisibility(false);
+
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) {
+      void shell.openExternal(url);
+    }
+    return { action: 'deny' };
+  });
 
   mainWindow.on('maximize', () => {
     mainWindow?.webContents.send('mesai:window:maximizeChanged', true);

@@ -71,7 +71,8 @@ const mesaiApi: MesaiApi = {
     return () => {
       ipcRenderer.removeListener(IPC_CHANNELS.TRACKING_STATE_CHANGED, handler);
     };
-  }
+  },
+  openExternalUrl: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.OPEN_EXTERNAL_URL, url)
 };
 
 contextBridge.exposeInMainWorld('mesaiApi', mesaiApi);

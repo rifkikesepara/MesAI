@@ -1,4 +1,4 @@
-import { app, dialog, ipcMain, type BrowserWindow } from 'electron';
+import { app, dialog, ipcMain, shell, type BrowserWindow } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -438,6 +438,12 @@ export function registerIpcHandlers(deps: {
   ipcMain.handle(IPC_CHANNELS.WINDOW_IS_MAXIMIZED, async () => {
     const win = getMainWindow();
     return win && !win.isDestroyed() ? win.isMaximized() : false;
+  });
+
+  ipcMain.handle(IPC_CHANNELS.OPEN_EXTERNAL_URL, async (_event, url: unknown) => {
+    if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
+      await shell.openExternal(url);
+    }
   });
 }
 
