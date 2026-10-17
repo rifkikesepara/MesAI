@@ -537,7 +537,7 @@ export const SettingsView: React.FC<{
               <img src={MESAI_ICON_DATA_URL} alt="MesAI" style={{ width: '22px', height: '22px', objectFit: 'contain' }} />
               <span>Uygulama Sürümü ve Otomatik Güncellemeler</span>
               <span className="badge badge-neutral" style={{ fontSize: '12px', fontWeight: 600 }}>
-                v{updateState?.currentVersion || '1.0.1'}
+                {updateState?.currentVersion ? `v${updateState.currentVersion}` : ''}
               </span>
             </h3>
             <p style={{ color: 'var(--text-secondary)', fontSize: '13px', margin: '4px 0 0 0' }}>

@@ -6,6 +6,9 @@
   "author": "Rıfkı Kesepara",
   "main": "dist-main/src/main/index.js",
   "scripts": {
+    "version:sync": "node scripts/sync-version.js",
+    "prebuild": "node scripts/sync-version.js",
+    "prestart": "node scripts/sync-version.js",
     "build:reader": "dotnet build readers/ZoomChatReader/ZoomChatReader.csproj -c Release",
     "build:main": "tsc -p tsconfig.main.json",
     "build:renderer": "vite build",

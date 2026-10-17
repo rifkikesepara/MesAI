@@ -296,7 +296,7 @@ export const CustomMenuBar: React.FC<CustomMenuBarProps> = ({
             />
             <h3 style={{ margin: '0 0 4px 0', fontSize: '18px' }}>MesAI (DevTrack AI)</h3>
             <div style={{ fontSize: '13px', color: 'var(--accent)', fontWeight: 600, marginBottom: '10px' }}>
-              Versiyon {updateState?.currentVersion || '1.0.1'}
+              {updateState?.currentVersion ? `Versiyon v${updateState.currentVersion}` : 'MesAI'}
             </div>
             <p style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.5, margin: '0 0 16px 0' }}>
               Windows üzerinde gün içindeki Zoom görüşmeleri, Git commit’leri ve dosya aktivitelerini toplayarak kurumsal Türkçe günlük çalışma raporu üreten masaüstü asistanı.
