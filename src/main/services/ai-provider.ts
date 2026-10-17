@@ -1319,16 +1319,33 @@ export class GeminiCliProvider implements AIProvider {
 
   public async checkHealth(): Promise<{ installed: boolean; version: string | null; error?: string }> {
     const agyPath = this.resolveAgyCliPath();
+    // 1. Prefer local Antigravity CLI (agy.exe) if present
+    if (agyPath) {
+      const ver = await new Promise<string | null>((res) => {
+        execFile(agyPath, ['--version'], { timeout: 10_000, windowsHide: true }, (err, stdout) => {
+          if (err || !stdout.trim()) res(null);
+          else res(stdout.trim());
+        });
+      });
+      if (ver) {
+        return {
+          installed: true,
+          version: `Antigravity CLI (agy v${ver})`
+        };
+      }
+    }
+
+    // 2. Fallback to Gemini CLI npm bundle
     try {
       const out = await this.invokeGeminiNodeCli(['--version'], 12_000);
       const ver = out.trim();
       return {
         installed: true,
-        version: agyPath ? `${ver} (Terminal CLI aktif)` : ver
+        version: agyPath ? `${ver} (Antigravity CLI aktif)` : `Gemini CLI (v${ver})`
       };
     } catch (err) {
       if (agyPath) {
-        return { installed: true, version: 'Gemini Terminal CLI (agy)' };
+        return { installed: true, version: 'Antigravity CLI (agy)' };
       }
       return { installed: false, version: null, error: (err as Error).message };
     }
@@ -1368,8 +1385,8 @@ export class GeminiCliProvider implements AIProvider {
       process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY
     );
 
-    // If GEMINI_API_KEY is not set and ~/.gemini/bin/agy.exe is installed, use agy.exe directly
-    if (!hasExplicitGeminiApiKey && agyPath) {
+    // If Antigravity CLI (agy.exe) is installed, prefer it for zero API key execution
+    if (agyPath && !hasExplicitGeminiApiKey) {
       return this.invokeAgyCli(agyPath, prompt, timeoutMs, signal);
     }
 
@@ -1398,14 +1415,14 @@ export class GeminiCliProvider implements AIProvider {
 
   private invokeAgyCli(
     agyExecutable: string,
-    stdinPrompt: string,
+    prompt: string,
     timeoutMs: number,
     signal?: AbortSignal
   ): Promise<string> {
     return new Promise((resolve, reject) => {
       const child = execFile(
         agyExecutable,
-        ['--disable-slash-commands', '--effort', 'low'],
+        ['-p', prompt, '--disable-slash-commands', '--effort', 'low'],
         {
           cwd: os.tmpdir(),
           timeout: timeoutMs,
@@ -1423,7 +1440,7 @@ export class GeminiCliProvider implements AIProvider {
               .join(' | ');
             reject(
               new Error(
-                `Gemini Terminal CLI hatası: ${(cleanStderr || error.message).slice(0, 260)}`
+                `Antigravity CLI (agy) hatası: ${(cleanStderr || error.message).slice(0, 260)}`
               )
             );
             return;
@@ -1431,14 +1448,7 @@ export class GeminiCliProvider implements AIProvider {
           resolve(stdout);
         }
       );
-
-      if (child.stdin) {
-        child.stdin.on('error', () => {
-          // ignore EPIPE
-        });
-        child.stdin.write(stdinPrompt, 'utf8');
-        child.stdin.end();
-      }
+      child.stdin?.end();
     });
   }
 

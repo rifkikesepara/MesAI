@@ -682,7 +682,7 @@ export const DailyReportView: React.FC<{
               onChange={(e) => setProvider(e.target.value as AIProviderType)}
             >
               <option value="local_rule">Yerel Kurallı Motor (Varsayılan — %100 Çevrimdışı)</option>
-              <option value="gemini_cli">Gemini CLI (Veri Önizlemeli)</option>
+              <option value="gemini_cli">Antigravity / Gemini CLI (agy — Veri Önizlemeli)</option>
               <option value="openai">
                 OpenAI / Codex ({settings?.aiOpenaiMode === 'api' ? 'API' : 'Yerel Codex CLI'} — {settings?.aiOpenaiModel || 'gpt-6.1-sol'})
               </option>

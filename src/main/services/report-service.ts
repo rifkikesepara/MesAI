@@ -228,7 +228,9 @@ export class ReportService {
     const { provider: providerInstance, isCli } = this.getProviderInstance(input.provider);
 
     let effectiveProvider: string = input.provider;
-    if (input.provider === 'openai') {
+    if (input.provider === 'gemini_cli') {
+      effectiveProvider = 'gemini_cli (Antigravity CLI / agy)';
+    } else if (input.provider === 'openai') {
       effectiveProvider = isCli
         ? `openai (Codex CLI - ${settings.aiOpenaiModel || 'gpt-6.1-sol'})`
         : `openai (API - ${settings.aiOpenaiModel || 'gpt-4o-mini'})`;

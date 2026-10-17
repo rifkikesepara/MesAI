@@ -392,7 +392,7 @@ export const IntegrationsView: React.FC<{
               health.ai.activeProvider === 'local_rule'
                 ? 'Yerel Kurallı Motor'
                 : health.ai.activeProvider === 'gemini_cli'
-                  ? 'Gemini CLI'
+                  ? 'Antigravity / Gemini CLI'
                   : health.ai.activeProvider === 'openai'
                     ? 'OpenAI / Codex'
                     : health.ai.activeProvider === 'anthropic'
@@ -407,9 +407,9 @@ export const IntegrationsView: React.FC<{
             <strong>Yerel Kurallı Motor (LocalRuleProvider):</strong> Hazır (%100 çevrimdışı, veri dışarı çıkmaz)
           </div>
           <div>
-            <strong>Gemini CLI:</strong>{' '}
+            <strong>Antigravity / Gemini CLI:</strong>{' '}
             {health.ai.geminiCliInstalled
-              ? `Kurulu (Sürüm: ${health.ai.geminiCliVersion})`
+              ? `Kurulu (${health.ai.geminiCliVersion})`
               : 'Kurulu değil veya CLI bulunamadı'}
           </div>
           <div>
@@ -1327,7 +1327,7 @@ export const SettingsView: React.FC<{
               onChange={(e) => setForm({ ...form, aiProvider: e.target.value as any })}
             >
               <option value="local_rule">Yerel Kurallı Motor (%100 Çevrimdışı — Güvenli)</option>
-              <option value="gemini_cli">Gemini CLI (Komut Satırı)</option>
+              <option value="gemini_cli">Antigravity / Gemini CLI (agy)</option>
               <option value="openai">OpenAI / Codex API</option>
               <option value="anthropic">Anthropic Claude API</option>
               <option value="custom">Özel / Yerel LLM (OpenAI-Uyumlu)</option>
@@ -1363,7 +1363,7 @@ export const SettingsView: React.FC<{
               checked={form.allowRemoteAiSend}
               onChange={(e) => setForm({ ...form, allowRemoteAiSend: e.target.checked })}
             />
-            Uzak AI servisine (Gemini CLI / OpenAI / Claude / Özel API) yapılandırılmış aktivite özeti gönderimine izin ver (Her zaman önizleme ile)
+            Uzak AI servisine (Antigravity CLI / OpenAI / Claude / Özel API) yapılandırılmış aktivite özeti gönderimine izin ver (Her zaman önizleme ile)
           </label>
 
           <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
