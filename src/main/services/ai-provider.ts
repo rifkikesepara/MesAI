@@ -1581,6 +1581,47 @@ export class OpenAiApiProvider implements AIProvider {
     }
   }
 
+  public async fetchAvailableModels(signal?: AbortSignal): Promise<{ ok: boolean; models: string[]; error?: string }> {
+    const key = this.config.apiKeyResolver();
+    const isCustom = this.name === 'custom';
+    if (!key && !isCustom) {
+      return { ok: false, models: [], error: 'API anahtarı girilmedi.' };
+    }
+    const baseUrl = this.getEffectiveBaseUrl();
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (key) headers['Authorization'] = `Bearer ${key}`;
+
+      const res = await fetch(`${baseUrl}/models`, {
+        method: 'GET',
+        headers,
+        signal: signal ?? AbortSignal.timeout(10_000)
+      });
+
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '');
+        return { ok: false, models: [], error: `HTTP ${res.status}: ${txt.slice(0, 160) || res.statusText}` };
+      }
+
+      const json = (await res.json()) as { data?: Array<{ id?: string }> };
+      let modelIds = (json.data ?? []).map((m) => m.id).filter((id): id is string => typeof id === 'string');
+
+      if (this.name === 'openai') {
+        const chatModels = modelIds.filter((id) =>
+          /gpt-|o1-|o3-|chat|text-davinci|codex/i.test(id) && !/embedding|audio|tts|whisper|dall-e|realtime/i.test(id)
+        );
+        if (chatModels.length > 0) {
+          modelIds = chatModels;
+        }
+      }
+      modelIds.sort();
+
+      return { ok: true, models: modelIds };
+    } catch (err) {
+      return { ok: false, models: [], error: (err as Error).message };
+    }
+  }
+
   public async generateReportItems(
     reportDate: string,
     rawActivities: Activity[],
@@ -1708,6 +1749,42 @@ export class AnthropicApiProvider implements AIProvider {
       return { ok: true, message: 'Anthropic Claude bağlantısı başarılı!' };
     } catch (err) {
       return { ok: false, message: `Bağlantı hatası: ${(err as Error).message}` };
+    }
+  }
+
+  public async fetchAvailableModels(signal?: AbortSignal): Promise<{ ok: boolean; models: string[]; error?: string }> {
+    const key = this.config.apiKeyResolver();
+    if (!key) {
+      return { ok: false, models: [], error: 'Anthropic API anahtarı girilmedi.' };
+    }
+    const knownModels = [
+      'claude-3-5-sonnet-20241022',
+      'claude-3-5-haiku-20241022',
+      'claude-3-opus-20240229',
+      'claude-3-sonnet-20240229',
+      'claude-3-haiku-20240307'
+    ];
+    try {
+      const res = await fetch('https://api.anthropic.com/v1/models', {
+        method: 'GET',
+        headers: {
+          'x-api-key': key,
+          'anthropic-version': '2023-06-01'
+        },
+        signal: signal ?? AbortSignal.timeout(10_000)
+      });
+
+      if (res.ok) {
+        const json = (await res.json()) as { data?: Array<{ id?: string }> };
+        const fetched = (json.data ?? []).map((m) => m.id).filter((id): id is string => typeof id === 'string');
+        if (fetched.length > 0) {
+          fetched.sort();
+          return { ok: true, models: fetched };
+        }
+      }
+      return { ok: true, models: knownModels };
+    } catch {
+      return { ok: true, models: knownModels };
     }
   }
 

@@ -399,6 +399,21 @@ export function registerIpcHandlers(deps: {
     return integrations.testAiConnection(provider);
   });
 
+  ipcMain.handle(IPC_CHANNELS.AI_FETCH_MODELS, async (_e, input: unknown) => {
+    if (!input || typeof input !== 'object') {
+      throw new Error('Geçersiz istek.');
+    }
+    const obj = input as {
+      provider: 'openai' | 'anthropic' | 'custom';
+      apiKey?: string;
+      customBaseUrl?: string;
+    };
+    if (!['openai', 'anthropic', 'custom'].includes(obj.provider)) {
+      throw new Error('Geçersiz AI sağlayıcısı.');
+    }
+    return integrations.fetchAiModels(obj);
+  });
+
   ipcMain.handle(IPC_CHANNELS.SETTINGS_GET, async () => {
     return repo.getSettings();
   });

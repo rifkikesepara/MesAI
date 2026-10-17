@@ -29,13 +29,92 @@ export const IntegrationsView: React.FC<{
   const [jenkinsUser, setJenkinsUser] = useState('');
   const [jenkinsToken, setJenkinsToken] = useState('');
 
+  const [activeAiTab, setActiveAiTab] = useState<'openai' | 'anthropic' | 'custom'>('openai');
+
   const [openaiKey, setOpenaiKey] = useState('');
   const [openaiModel, setOpenaiModel] = useState('');
+  const [openaiModelsList, setOpenaiModelsList] = useState<string[]>([]);
+  const [loadingOpenaiModels, setLoadingOpenaiModels] = useState(false);
+
   const [anthropicKey, setAnthropicKey] = useState('');
   const [anthropicModel, setAnthropicModel] = useState('');
+  const [anthropicModelsList, setAnthropicModelsList] = useState<string[]>([]);
+  const [loadingAnthropicModels, setLoadingAnthropicModels] = useState(false);
+
   const [customKey, setCustomKey] = useState('');
   const [customModel, setCustomModel] = useState('');
   const [customBaseUrl, setCustomBaseUrl] = useState('');
+  const [customModelsList, setCustomModelsList] = useState<string[]>([]);
+  const [loadingCustomModels, setLoadingCustomModels] = useState(false);
+
+  const fetchModelsFor = async (
+    provider: 'openai' | 'anthropic' | 'custom',
+    keyOverride?: string,
+    urlOverride?: string
+  ) => {
+    if (provider === 'openai') {
+      const keyToUse = keyOverride !== undefined ? keyOverride.trim() : openaiKey.trim();
+      setLoadingOpenaiModels(true);
+      try {
+        const res = await window.mesaiApi.fetchAiModels({
+          provider: 'openai',
+          apiKey: keyToUse || undefined
+        });
+        if (res.ok && res.models && res.models.length > 0) {
+          setOpenaiModelsList(res.models);
+          setOpenaiModel((prev) =>
+            prev && res.models.includes(prev)
+              ? prev
+              : res.models.find((m) => m === 'gpt-4o-mini') || res.models[0]
+          );
+        }
+      } catch {
+        // non-blocking
+      } finally {
+        setLoadingOpenaiModels(false);
+      }
+    } else if (provider === 'anthropic') {
+      const keyToUse = keyOverride !== undefined ? keyOverride.trim() : anthropicKey.trim();
+      setLoadingAnthropicModels(true);
+      try {
+        const res = await window.mesaiApi.fetchAiModels({
+          provider: 'anthropic',
+          apiKey: keyToUse || undefined
+        });
+        if (res.ok && res.models && res.models.length > 0) {
+          setAnthropicModelsList(res.models);
+          setAnthropicModel((prev) =>
+            prev && res.models.includes(prev)
+              ? prev
+              : res.models.find((m) => m.includes('sonnet')) || res.models[0]
+          );
+        }
+      } catch {
+        // non-blocking
+      } finally {
+        setLoadingAnthropicModels(false);
+      }
+    } else if (provider === 'custom') {
+      const keyToUse = keyOverride !== undefined ? keyOverride.trim() : customKey.trim();
+      const urlToUse = urlOverride !== undefined ? urlOverride.trim() : customBaseUrl.trim();
+      setLoadingCustomModels(true);
+      try {
+        const res = await window.mesaiApi.fetchAiModels({
+          provider: 'custom',
+          apiKey: keyToUse || undefined,
+          customBaseUrl: urlToUse || undefined
+        });
+        if (res.ok && res.models && res.models.length > 0) {
+          setCustomModelsList(res.models);
+          setCustomModel((prev) => (prev && res.models.includes(prev) ? prev : res.models[0]));
+        }
+      } catch {
+        // non-blocking
+      } finally {
+        setLoadingCustomModels(false);
+      }
+    }
+  };
 
   const loadHealth = async () => {
     setLoading(true);
@@ -47,6 +126,19 @@ export const IntegrationsView: React.FC<{
       setOpenaiModel(h.ai.openaiModel || 'gpt-4o-mini');
       setAnthropicModel(h.ai.anthropicModel || 'claude-3-5-sonnet-20241022');
       setCustomBaseUrl(h.ai.customBaseUrl || '');
+      if (h.ai.customConfigured && h.ai.openaiModel) {
+        setCustomModel(h.ai.openaiModel);
+      }
+
+      if (h.ai.openaiConfigured) {
+        void fetchModelsFor('openai');
+      }
+      if (h.ai.anthropicConfigured) {
+        void fetchModelsFor('anthropic');
+      }
+      if (h.ai.customConfigured) {
+        void fetchModelsFor('custom', undefined, h.ai.customBaseUrl);
+      }
     } finally {
       setLoading(false);
     }
@@ -277,7 +369,7 @@ export const IntegrationsView: React.FC<{
         </div>
       </div>
 
-      {/* 3. AI Provider Layer */}
+      {/* 3. AI Provider Layer (Unified Single Card) */}
       <div className="card">
         <div className="card-header">
           <h3 className="card-title">3. Raporlama ve AI Sağlayıcı Katmanı</h3>
@@ -295,7 +387,8 @@ export const IntegrationsView: React.FC<{
             }
           </span>
         </div>
-        <div style={{ fontSize: '13px', display: 'grid', gap: '6px' }}>
+
+        <div style={{ fontSize: '13px', display: 'grid', gap: '6px', marginBottom: '14px' }}>
           <div>
             <strong>Yerel Kurallı Motor (LocalRuleProvider):</strong> Hazır (%100 çevrimdışı, veri dışarı çıkmaz)
           </div>
@@ -303,166 +396,316 @@ export const IntegrationsView: React.FC<{
             <strong>Gemini CLI:</strong>{' '}
             {health.ai.geminiCliInstalled
               ? `Kurulu (Sürüm: ${health.ai.geminiCliVersion})`
-              : 'Kurulu değil veya erişilemedi'}
-          </div>
-          <div>
-            <strong>OpenAI / Codex API:</strong>{' '}
-            {health.ai.openaiConfigured ? `Yapılandırıldı (${health.ai.openaiModel})` : 'Yapılandırılmadı'}
-          </div>
-          <div>
-            <strong>Anthropic Claude API:</strong>{' '}
-            {health.ai.anthropicConfigured ? `Yapılandırıldı (${health.ai.anthropicModel})` : 'Yapılandırılmadı'}
-          </div>
-          <div>
-            <strong>Özel / Yerel LLM (OpenAI-Uyumlu):</strong>{' '}
-            {health.ai.customConfigured
-              ? `Yapılandırıldı (${health.ai.customBaseUrl || 'Varsayılan Endpoint'})`
-              : 'Yapılandırılmadı'}
+              : 'Kurulu değil veya CLI bulunamadı'}
           </div>
           <div>
             <strong>Uzak AI Veri Gönderim İzni:</strong>{' '}
-            {health.ai.remoteAiAllowed ? 'Açık (Önizleme ile)' : 'Kapalı (Varsayılan Güvenli Mod)'}
+            {health.ai.remoteAiAllowed ? 'Açık (Her zaman önizleme ile)' : 'Kapalı (Varsayılan Güvenli Mod)'}
           </div>
           {health.ai.lastError && (
             <div style={{ color: '#fbbf24' }}>
-              <strong>Son AI Notu / Yedek Durumu:</strong> {health.ai.lastError}
+              <strong>Son AI Notu / Durumu:</strong> {health.ai.lastError}
             </div>
           )}
         </div>
-      </div>
 
-      {/* AI API Entegrasyonları (OpenAI, Claude, Custom) */}
-      <div className="grid-2">
-        {/* OpenAI / Codex */}
-        <div className="card">
-          <div className="card-header">
-            <h3 className="card-title">OpenAI / Codex API Entegrasyonu</h3>
-            <span className={`badge ${health.ai.openaiConfigured ? 'badge-success' : 'badge-neutral'}`}>
-              {health.ai.openaiConfigured ? 'Anahtar Kayıtlı' : 'Yapılandırılmadı'}
-            </span>
+        {/* AI Provider Config Tabs */}
+        <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '12px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px', marginBottom: '12px' }}>
+            <span style={{ fontSize: '13px', fontWeight: 600 }}>API Entegrasyonu ve Model Yapılandırması:</span>
+            <div style={{ display: 'flex', gap: '6px' }}>
+              <button
+                type="button"
+                className={`btn btn-sm ${activeAiTab === 'openai' ? 'btn-primary' : ''}`}
+                onClick={() => setActiveAiTab('openai')}
+              >
+                OpenAI / Codex {health.ai.openaiConfigured && '✓'}
+              </button>
+              <button
+                type="button"
+                className={`btn btn-sm ${activeAiTab === 'anthropic' ? 'btn-primary' : ''}`}
+                onClick={() => setActiveAiTab('anthropic')}
+              >
+                Anthropic Claude {health.ai.anthropicConfigured && '✓'}
+              </button>
+              <button
+                type="button"
+                className={`btn btn-sm ${activeAiTab === 'custom' ? 'btn-primary' : ''}`}
+                onClick={() => setActiveAiTab('custom')}
+              >
+                Özel LLM / Ollama {health.ai.customConfigured && '✓'}
+              </button>
+            </div>
           </div>
-          <form onSubmit={handleSaveOpenAi} style={{ display: 'grid', gap: '8px' }}>
-            <div>
-              <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Model</label>
-              <input
-                className="input"
-                placeholder="Örn: gpt-4o-mini, gpt-4o, o1-mini"
-                value={openaiModel}
-                onChange={(e) => setOpenaiModel(e.target.value)}
-              />
-            </div>
-            <div>
-              <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>API Anahtarı (sk-...)</label>
-              <input
-                type="password"
-                className="input"
-                placeholder="OpenAI API Key (DPAPI ile şifrelenir)"
-                value={openaiKey}
-                onChange={(e) => setOpenaiKey(e.target.value)}
-              />
-            </div>
-            <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
-              <button type="submit" className="btn btn-sm btn-primary">
-                Şifreli Kaydet
-              </button>
-              <button type="button" className="btn btn-sm" onClick={handleTestOpenAi}>
-                Bağlantı Testi
-              </button>
-            </div>
-          </form>
-        </div>
 
-        {/* Anthropic Claude */}
-        <div className="card">
-          <div className="card-header">
-            <h3 className="card-title">Anthropic Claude API Entegrasyonu</h3>
-            <span className={`badge ${health.ai.anthropicConfigured ? 'badge-success' : 'badge-neutral'}`}>
-              {health.ai.anthropicConfigured ? 'Anahtar Kayıtlı' : 'Yapılandırılmadı'}
-            </span>
-          </div>
-          <form onSubmit={handleSaveAnthropic} style={{ display: 'grid', gap: '8px' }}>
-            <div>
-              <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Model</label>
-              <input
-                className="input"
-                placeholder="Örn: claude-3-5-sonnet-20241022, claude-3-5-haiku-20241022"
-                value={anthropicModel}
-                onChange={(e) => setAnthropicModel(e.target.value)}
-              />
-            </div>
-            <div>
-              <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>API Anahtarı (sk-ant-...)</label>
-              <input
-                type="password"
-                className="input"
-                placeholder="Claude API Key (DPAPI ile şifrelenir)"
-                value={anthropicKey}
-                onChange={(e) => setAnthropicKey(e.target.value)}
-              />
-            </div>
-            <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
-              <button type="submit" className="btn btn-sm btn-primary">
-                Şifreli Kaydet
-              </button>
-              <button type="button" className="btn btn-sm" onClick={handleTestAnthropic}>
-                Bağlantı Testi
-              </button>
-            </div>
-          </form>
-        </div>
-      </div>
+          {/* Active Tab Panel */}
+          {activeAiTab === 'openai' && (
+            <form onSubmit={handleSaveOpenAi} style={{ display: 'grid', gap: '10px', background: 'var(--bg-primary)', padding: '12px', borderRadius: '8px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '12.5px', fontWeight: 600 }}>OpenAI / Codex API</span>
+                <span className={`badge ${health.ai.openaiConfigured ? 'badge-success' : 'badge-neutral'}`}>
+                  {health.ai.openaiConfigured ? `Yapılandırıldı (${health.ai.openaiModel})` : 'Yapılandırılmadı'}
+                </span>
+              </div>
 
-      {/* Custom LLM / Ollama / DeepSeek */}
-      <div className="card">
-        <div className="card-header">
-          <h3 className="card-title">Özel / Yerel LLM Entegrasyonu (OpenAI-Uyumlu)</h3>
-          <span className={`badge ${health.ai.customConfigured ? 'badge-success' : 'badge-neutral'}`}>
-            {health.ai.customConfigured ? 'Yapılandırıldı' : 'Yapılandırılmadı'}
-          </span>
+              <div>
+                <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                  API Anahtarı (Giriş yapıldığında modeller otomatik çekilir)
+                </label>
+                <input
+                  type="password"
+                  className="input"
+                  placeholder={health.ai.openaiConfigured ? 'Yeni anahtar girmek için yazın (mevcut anahtar DPAPI ile şifreli kayıtlı)' : 'OpenAI API Key (sk-...)'}
+                  value={openaiKey}
+                  onChange={(e) => {
+                    setOpenaiKey(e.target.value);
+                    if (e.target.value.trim().length >= 20) {
+                      void fetchModelsFor('openai', e.target.value);
+                    }
+                  }}
+                  onBlur={(e) => {
+                    if (e.target.value.trim()) {
+                      void fetchModelsFor('openai', e.target.value);
+                    }
+                  }}
+                />
+              </div>
+
+              <div>
+                <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                  Model Seçimi (API'den otomatik çekilen modeller)
+                </label>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <select
+                    className="select"
+                    style={{ flex: 1 }}
+                    value={openaiModel}
+                    onChange={(e) => setOpenaiModel(e.target.value)}
+                    disabled={loadingOpenaiModels}
+                  >
+                    {loadingOpenaiModels ? (
+                      <option value="">Modeller API'den çekiliyor...</option>
+                    ) : openaiModelsList.length > 0 ? (
+                      openaiModelsList.map((m) => (
+                        <option key={m} value={m}>
+                          {m}
+                        </option>
+                      ))
+                    ) : (
+                      <>
+                        <option value="gpt-4o-mini">gpt-4o-mini (Varsayılan Hızlı & Ekonomik)</option>
+                        <option value="gpt-4o">gpt-4o (Amiral Gemisi)</option>
+                        <option value="o1-mini">o1-mini (Akıl Yürütme)</option>
+                        <option value="o1-preview">o1-preview</option>
+                      </>
+                    )}
+                  </select>
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    title="Modelleri API'den Yenile"
+                    onClick={() => fetchModelsFor('openai')}
+                    disabled={loadingOpenaiModels}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                  >
+                    <RefreshIcon size={12} />
+                    <span>{loadingOpenaiModels ? 'Çekiliyor...' : 'Yenile'}</span>
+                  </button>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+                <button type="submit" className="btn btn-sm btn-primary">
+                  Şifreli Kaydet
+                </button>
+                <button type="button" className="btn btn-sm" onClick={handleTestOpenAi}>
+                  Bağlantı Testi
+                </button>
+              </div>
+            </form>
+          )}
+
+          {activeAiTab === 'anthropic' && (
+            <form onSubmit={handleSaveAnthropic} style={{ display: 'grid', gap: '10px', background: 'var(--bg-primary)', padding: '12px', borderRadius: '8px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '12.5px', fontWeight: 600 }}>Anthropic Claude API</span>
+                <span className={`badge ${health.ai.anthropicConfigured ? 'badge-success' : 'badge-neutral'}`}>
+                  {health.ai.anthropicConfigured ? `Yapılandırıldı (${health.ai.anthropicModel})` : 'Yapılandırılmadı'}
+                </span>
+              </div>
+
+              <div>
+                <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                  API Anahtarı (Giriş yapıldığında modeller otomatik çekilir)
+                </label>
+                <input
+                  type="password"
+                  className="input"
+                  placeholder={health.ai.anthropicConfigured ? 'Yeni anahtar girmek için yazın (mevcut anahtar DPAPI ile şifreli kayıtlı)' : 'Claude API Key (sk-ant-...)'}
+                  value={anthropicKey}
+                  onChange={(e) => {
+                    setAnthropicKey(e.target.value);
+                    if (e.target.value.trim().length >= 20) {
+                      void fetchModelsFor('anthropic', e.target.value);
+                    }
+                  }}
+                  onBlur={(e) => {
+                    if (e.target.value.trim()) {
+                      void fetchModelsFor('anthropic', e.target.value);
+                    }
+                  }}
+                />
+              </div>
+
+              <div>
+                <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                  Model Seçimi (API'den otomatik çekilen modeller)
+                </label>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <select
+                    className="select"
+                    style={{ flex: 1 }}
+                    value={anthropicModel}
+                    onChange={(e) => setAnthropicModel(e.target.value)}
+                    disabled={loadingAnthropicModels}
+                  >
+                    {loadingAnthropicModels ? (
+                      <option value="">Modeller API'den çekiliyor...</option>
+                    ) : anthropicModelsList.length > 0 ? (
+                      anthropicModelsList.map((m) => (
+                        <option key={m} value={m}>
+                          {m}
+                        </option>
+                      ))
+                    ) : (
+                      <>
+                        <option value="claude-3-5-sonnet-20241022">claude-3-5-sonnet-20241022 (Tavsiye Edilen)</option>
+                        <option value="claude-3-5-haiku-20241022">claude-3-5-haiku-20241022 (Hızlı & Ekonomik)</option>
+                        <option value="claude-3-opus-20240229">claude-3-opus-20240229</option>
+                      </>
+                    )}
+                  </select>
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    title="Modelleri API'den Yenile"
+                    onClick={() => fetchModelsFor('anthropic')}
+                    disabled={loadingAnthropicModels}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                  >
+                    <RefreshIcon size={12} />
+                    <span>{loadingAnthropicModels ? 'Çekiliyor...' : 'Yenile'}</span>
+                  </button>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+                <button type="submit" className="btn btn-sm btn-primary">
+                  Şifreli Kaydet
+                </button>
+                <button type="button" className="btn btn-sm" onClick={handleTestAnthropic}>
+                  Bağlantı Testi
+                </button>
+              </div>
+            </form>
+          )}
+
+          {activeAiTab === 'custom' && (
+            <form onSubmit={handleSaveCustom} style={{ display: 'grid', gap: '10px', background: 'var(--bg-primary)', padding: '12px', borderRadius: '8px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '12.5px', fontWeight: 600 }}>Özel / Yerel LLM (Ollama, vLLM, DeepSeek, OpenRouter)</span>
+                <span className={`badge ${health.ai.customConfigured ? 'badge-success' : 'badge-neutral'}`}>
+                  {health.ai.customConfigured ? 'Yapılandırıldı' : 'Yapılandırılmadı'}
+                </span>
+              </div>
+
+              <div className="grid-2">
+                <div>
+                  <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>API Base URL</label>
+                  <input
+                    className="input"
+                    placeholder="Örn: http://localhost:11434/v1 veya https://api.deepseek.com/v1"
+                    value={customBaseUrl}
+                    onChange={(e) => {
+                      setCustomBaseUrl(e.target.value);
+                      if (e.target.value.trim().startsWith('http')) {
+                        void fetchModelsFor('custom', undefined, e.target.value);
+                      }
+                    }}
+                    onBlur={(e) => {
+                      if (e.target.value.trim()) {
+                        void fetchModelsFor('custom', undefined, e.target.value);
+                      }
+                    }}
+                  />
+                </div>
+                <div>
+                  <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                    API Anahtarı (Yerel Ollama için boş bırakılabilir)
+                  </label>
+                  <input
+                    type="password"
+                    className="input"
+                    placeholder="Varsa API Token (DPAPI ile şifrelenir)"
+                    value={customKey}
+                    onChange={(e) => setCustomKey(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                  Model Adı / Seçimi {loadingCustomModels && '(Uç noktadan çekiliyor...)'}
+                </label>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  {customModelsList.length > 0 ? (
+                    <select
+                      className="select"
+                      style={{ flex: 1 }}
+                      value={customModel}
+                      onChange={(e) => setCustomModel(e.target.value)}
+                      disabled={loadingCustomModels}
+                    >
+                      {customModelsList.map((m) => (
+                        <option key={m} value={m}>
+                          {m}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      className="input"
+                      style={{ flex: 1 }}
+                      placeholder="Örn: llama3.1, deepseek-chat, qwen2.5-coder:7b"
+                      value={customModel}
+                      onChange={(e) => setCustomModel(e.target.value)}
+                    />
+                  )}
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    title="Uç Noktadan Modelleri Getir"
+                    onClick={() => fetchModelsFor('custom')}
+                    disabled={loadingCustomModels}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                  >
+                    <RefreshIcon size={12} />
+                    <span>{loadingCustomModels ? 'Çekiliyor...' : 'Modelleri Çek'}</span>
+                  </button>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+                <button type="submit" className="btn btn-sm btn-primary">
+                  Ayarları Kaydet
+                </button>
+                <button type="button" className="btn btn-sm" onClick={handleTestCustom}>
+                  Bağlantı Testi
+                </button>
+              </div>
+            </form>
+          )}
         </div>
-        <p style={{ color: 'var(--text-secondary)', fontSize: '13px', margin: '0 0 10px 0' }}>
-          Ollama (<code>http://localhost:11434/v1</code>), vLLM, LM Studio, DeepSeek veya OpenRouter gibi OpenAI uyumlu uç noktaları bağlayabilirsiniz.
-        </p>
-        <form onSubmit={handleSaveCustom} style={{ display: 'grid', gap: '8px' }}>
-          <div className="grid-2">
-            <div>
-              <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>API Base URL</label>
-              <input
-                className="input"
-                placeholder="Örn: http://localhost:11434/v1 veya https://api.deepseek.com/v1"
-                value={customBaseUrl}
-                onChange={(e) => setCustomBaseUrl(e.target.value)}
-              />
-            </div>
-            <div>
-              <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Model Adı</label>
-              <input
-                className="input"
-                placeholder="Örn: deepseek-chat, qwen2.5-coder:7b, llama3.1"
-                value={customModel}
-                onChange={(e) => setCustomModel(e.target.value)}
-              />
-            </div>
-          </div>
-          <div>
-            <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>API Anahtarı (Yerel Ollama için boş bırakılabilir)</label>
-            <input
-              type="password"
-              className="input"
-              placeholder="API Anahtarı / Token (Varsa DPAPI ile şifrelenir)"
-              value={customKey}
-              onChange={(e) => setCustomKey(e.target.value)}
-            />
-          </div>
-          <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
-            <button type="submit" className="btn btn-sm btn-primary">
-              Ayarları Kaydet
-            </button>
-            <button type="button" className="btn btn-sm" onClick={handleTestCustom}>
-              Bağlantı Testi
-            </button>
-          </div>
-        </form>
       </div>
 
       {/* 4. Optional Jira & Jenkins */}

@@ -189,6 +189,34 @@ export class IntegrationsService {
     }
   }
 
+  public async fetchAiModels(input: {
+    provider: 'openai' | 'anthropic' | 'custom';
+    apiKey?: string;
+    customBaseUrl?: string;
+  }): Promise<{ ok: boolean; models: string[]; error?: string }> {
+    const keyResolver = () => (input.apiKey && input.apiKey.trim() ? input.apiKey.trim() : this.getDecryptedAiToken(input.provider));
+    if (input.provider === 'openai') {
+      const p = new OpenAiApiProvider({
+        providerType: 'openai',
+        apiKeyResolver: keyResolver
+      });
+      return p.fetchAvailableModels();
+    } else if (input.provider === 'anthropic') {
+      const p = new AnthropicApiProvider({
+        apiKeyResolver: keyResolver
+      });
+      return p.fetchAvailableModels();
+    } else {
+      const settings = this.repo.getSettings();
+      const p = new OpenAiApiProvider({
+        providerType: 'custom',
+        apiKeyResolver: keyResolver,
+        customBaseUrl: input.customBaseUrl ?? settings.aiCustomBaseUrl
+      });
+      return p.fetchAvailableModels();
+    }
+  }
+
   /**
    * Performs a real, read-only connection test against Jira or Jenkins.
    * Never reports "connected" unless an actual HTTP 200 response is verified.

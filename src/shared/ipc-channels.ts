@@ -47,6 +47,7 @@ export const IPC_CHANNELS = {
 
   AI_SAVE_KEY: 'mesai:ai:saveKey',
   AI_TEST_CONNECTION: 'mesai:ai:testConnection',
+  AI_FETCH_MODELS: 'mesai:ai:fetchModels',
 
   SETTINGS_GET: 'mesai:settings:get',
   SETTINGS_UPDATE: 'mesai:settings:update',
@@ -169,6 +170,11 @@ export interface MesaiApi {
     customBaseUrl?: string;
   }): Promise<void>;
   testAiConnection(provider: 'openai' | 'anthropic' | 'custom'): Promise<{ ok: boolean; message: string }>;
+  fetchAiModels(input: {
+    provider: 'openai' | 'anthropic' | 'custom';
+    apiKey?: string;
+    customBaseUrl?: string;
+  }): Promise<{ ok: boolean; models: string[]; error?: string }>;
 
   getSettings(): Promise<AppSettings>;
   updateSettings(partial: Partial<AppSettings>): Promise<AppSettings>;
