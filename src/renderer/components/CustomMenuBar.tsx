@@ -1,6 +1,25 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { MESAI_ICON_DATA_URL } from '../assets/logo';
 import type { UpdateState } from '../../shared/types';
+import {
+  DashboardIcon,
+  ProjectsIcon,
+  ActivityIcon,
+  ReportIcon,
+  IntegrationsIcon,
+  SettingsIcon,
+  PlayIcon,
+  PauseIcon,
+  RefreshIcon,
+  SunIcon,
+  MoonIcon,
+  LaptopIcon,
+  CheckIcon,
+  ExternalLinkIcon,
+  DownloadIcon,
+  MessageSquareIcon,
+  GitCommitIcon
+} from './Icons';
 
 interface CustomMenuBarProps {
   activeTab: string;
@@ -10,6 +29,8 @@ interface CustomMenuBarProps {
   onPollZoom: () => void;
   onPollGit: () => void;
   updateState: UpdateState | null;
+  currentTheme: 'light' | 'dark' | 'system';
+  onSetTheme: (theme: 'light' | 'dark' | 'system') => void;
 }
 
 export const CustomMenuBar: React.FC<CustomMenuBarProps> = ({
@@ -18,7 +39,9 @@ export const CustomMenuBar: React.FC<CustomMenuBarProps> = ({
   onTogglePaused,
   onPollZoom,
   onPollGit,
-  updateState
+  updateState,
+  currentTheme,
+  onSetTheme
 }) => {
   const [openMenu, setOpenMenu] = useState<'file' | 'view' | 'tracking' | 'help' | null>(null);
   const [isMaximized, setIsMaximized] = useState(false);
@@ -127,22 +150,35 @@ export const CustomMenuBar: React.FC<CustomMenuBarProps> = ({
               {openMenu === 'view' && (
                 <div className="dropdown-menu">
                   <button type="button" className="dropdown-btn" onClick={() => handleAction(() => onNavigateTab('dashboard'))}>
-                    <span>📊</span> <span>Gösterge Paneli</span>
+                    <DashboardIcon size={14} /> <span>Gösterge Paneli</span>
                   </button>
                   <button type="button" className="dropdown-btn" onClick={() => handleAction(() => onNavigateTab('timeline'))}>
-                    <span>🕒</span> <span>Aktivite Akışı</span>
+                    <ActivityIcon size={14} /> <span>Aktivite Akışı</span>
                   </button>
                   <button type="button" className="dropdown-btn" onClick={() => handleAction(() => onNavigateTab('report'))}>
-                    <span>📝</span> <span>Günlük Rapor</span>
+                    <ReportIcon size={14} /> <span>Günlük Rapor</span>
                   </button>
                   <button type="button" className="dropdown-btn" onClick={() => handleAction(() => onNavigateTab('projects'))}>
-                    <span>📁</span> <span>Projeler</span>
+                    <ProjectsIcon size={14} /> <span>Projeler</span>
                   </button>
                   <button type="button" className="dropdown-btn" onClick={() => handleAction(() => onNavigateTab('integrations'))}>
-                    <span>🔌</span> <span>Entegrasyonlar</span>
+                    <IntegrationsIcon size={14} /> <span>Entegrasyonlar</span>
                   </button>
                   <button type="button" className="dropdown-btn" onClick={() => handleAction(() => onNavigateTab('settings'))}>
-                    <span>⚙️</span> <span>Ayarlar</span>
+                    <SettingsIcon size={14} /> <span>Ayarlar</span>
+                  </button>
+                  <div className="dropdown-divider" />
+                  <button type="button" className="dropdown-btn" onClick={() => handleAction(() => onSetTheme('dark'))}>
+                    <MoonIcon size={14} /> <span>Koyu Tema (Dark)</span>
+                    {currentTheme === 'dark' && <span className="shortcut-hint"><CheckIcon size={12} /></span>}
+                  </button>
+                  <button type="button" className="dropdown-btn" onClick={() => handleAction(() => onSetTheme('light'))}>
+                    <SunIcon size={14} /> <span>Açık Tema (Light)</span>
+                    {currentTheme === 'light' && <span className="shortcut-hint"><CheckIcon size={12} /></span>}
+                  </button>
+                  <button type="button" className="dropdown-btn" onClick={() => handleAction(() => onSetTheme('system'))}>
+                    <LaptopIcon size={14} /> <span>Sistem Teması (System)</span>
+                    {currentTheme === 'system' && <span className="shortcut-hint"><CheckIcon size={12} /></span>}
                   </button>
                 </div>
               )}
@@ -161,14 +197,14 @@ export const CustomMenuBar: React.FC<CustomMenuBarProps> = ({
               {openMenu === 'tracking' && (
                 <div className="dropdown-menu">
                   <button type="button" className="dropdown-btn" onClick={() => handleAction(onPollZoom)}>
-                    <span>💬</span> <span>Şimdi Zoom Oku</span>
+                    <MessageSquareIcon size={14} /> <span>Şimdi Zoom Oku</span>
                   </button>
                   <button type="button" className="dropdown-btn" onClick={() => handleAction(onPollGit)}>
-                    <span>🌿</span> <span>Şimdi Git & Dosyaları Tara</span>
+                    <GitCommitIcon size={14} /> <span>Şimdi Git & Dosyaları Tara</span>
                   </button>
                   <div className="dropdown-divider" />
                   <button type="button" className="dropdown-btn" onClick={() => handleAction(onTogglePaused)}>
-                    <span>{isPaused ? '▶' : '⏸'}</span>
+                    {isPaused ? <PlayIcon size={14} /> : <PauseIcon size={14} />}
                     <span>{isPaused ? 'Takibi Devam Ettir' : 'Takibi Duraklat'}</span>
                   </button>
                 </div>
@@ -192,7 +228,7 @@ export const CustomMenuBar: React.FC<CustomMenuBarProps> = ({
                     className="dropdown-btn"
                     onClick={() => handleAction(() => onNavigateTab('settings'))}
                   >
-                    <span>🔄</span> <span>Güncellemeleri Denetle</span>
+                    <DownloadIcon size={14} /> <span>Güncellemeleri Denetle</span>
                   </button>
                   <button
                     type="button"
@@ -203,11 +239,11 @@ export const CustomMenuBar: React.FC<CustomMenuBarProps> = ({
                       })
                     }
                   >
-                    <span>🌐</span> <span>GitHub Deposu</span>
+                    <ExternalLinkIcon size={14} /> <span>GitHub Deposu</span>
                   </button>
                   <div className="dropdown-divider" />
                   <button type="button" className="dropdown-btn" onClick={() => handleAction(() => setShowAbout(true))}>
-                    <span>ℹ️</span> <span>MesAI Hakkında</span>
+                    <SettingsIcon size={14} /> <span>MesAI Hakkında</span>
                   </button>
                 </div>
               )}
@@ -220,7 +256,7 @@ export const CustomMenuBar: React.FC<CustomMenuBarProps> = ({
           <span className="titlebar-doc-title">MesAI — Kanıta Dayalı Günlük Çalışma Raporu</span>
         </div>
 
-        {/* Right Section: Status Indicator & Window Controls */}
+        {/* Right Section: Status Indicator, Theme Switcher & Window Controls */}
         <div className="titlebar-right">
           {updateState?.status === 'available' && (
             <button
@@ -229,7 +265,7 @@ export const CustomMenuBar: React.FC<CustomMenuBarProps> = ({
               onClick={() => onNavigateTab('settings')}
               title="Yeni sürüm mevcut!"
             >
-              🚀 v{updateState.updateInfo?.version}
+              v{updateState.updateInfo?.version}
             </button>
           )}
 
@@ -240,6 +276,21 @@ export const CustomMenuBar: React.FC<CustomMenuBarProps> = ({
           >
             <span>{isPaused ? '⏸ Duraklatıldı' : '● Takip Aktif'}</span>
           </div>
+
+          <button
+            type="button"
+            className="win-btn"
+            style={{ width: '32px', height: '28px', borderRadius: '4px', color: 'var(--text-secondary)' }}
+            onClick={() => {
+              const next = currentTheme === 'dark' ? 'light' : currentTheme === 'light' ? 'system' : 'dark';
+              onSetTheme(next);
+            }}
+            title={`Tema: ${currentTheme === 'dark' ? 'Koyu' : currentTheme === 'light' ? 'Açık' : 'Sistem'}. Değiştirmek için tıklayın.`}
+          >
+            {currentTheme === 'dark' && <MoonIcon size={14} />}
+            {currentTheme === 'light' && <SunIcon size={14} />}
+            {currentTheme === 'system' && <LaptopIcon size={14} />}
+          </button>
 
           <div className="window-controls">
             <button

@@ -254,6 +254,7 @@ export interface AppSettings {
   jenkinsUsername: string;
   reportMaxChars?: number;
   autoCheckUpdatesOnStartup?: boolean;
+  theme?: 'light' | 'dark' | 'system';
 }
 
 export interface AiPreviewPayload {

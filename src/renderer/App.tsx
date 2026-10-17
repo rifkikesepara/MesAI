@@ -11,6 +11,21 @@ import { DailyReportView, TimelineView } from './views/TimelineAndReportView';
 import { IntegrationsView, SettingsView } from './views/IntegrationsAndSettingsView';
 import { CustomMenuBar } from './components/CustomMenuBar';
 import { MESAI_ICON_DATA_URL } from './assets/logo';
+import {
+  DashboardIcon,
+  ProjectsIcon,
+  ActivityIcon,
+  ReportIcon,
+  IntegrationsIcon,
+  SettingsIcon,
+  PlayIcon,
+  PauseIcon,
+  RefreshIcon,
+  CloseIcon,
+  ExternalLinkIcon,
+  MessageSquareIcon,
+  GitCommitIcon
+} from './components/Icons';
 
 type TabKey = 'dashboard' | 'projects' | 'timeline' | 'report' | 'integrations' | 'settings';
 
@@ -72,6 +87,38 @@ export const App: React.FC = () => {
     };
   }, []);
 
+  // Antigravity Theme Engine (Dark, Light, System)
+  useEffect(() => {
+    const applyTheme = () => {
+      const pref = settings?.theme || 'system';
+      let effective = pref;
+      if (pref === 'system') {
+        const isDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        effective = isDark ? 'dark' : 'light';
+      }
+      document.documentElement.setAttribute('data-theme', effective);
+    };
+
+    applyTheme();
+
+    if (window.matchMedia) {
+      const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+      const listener = () => {
+        if ((settings?.theme || 'system') === 'system') {
+          applyTheme();
+        }
+      };
+      mediaQuery.addEventListener('change', listener);
+      return () => mediaQuery.removeEventListener('change', listener);
+    }
+  }, [settings?.theme]);
+
+  const handleSetTheme = async (newTheme: 'light' | 'dark' | 'system') => {
+    setSettings((prev) => (prev ? { ...prev, theme: newTheme } : null));
+    await window.mesaiApi.updateSettings({ theme: newTheme });
+    showToast(`Tema değiştirildi: ${newTheme === 'dark' ? 'Koyu' : newTheme === 'light' ? 'Açık' : 'Sistem'}`);
+  };
+
   const handlePollZoomNow = async () => {
     setPollingZoom(true);
     try {
@@ -125,6 +172,8 @@ export const App: React.FC = () => {
         onPollZoom={handlePollZoomNow}
         onPollGit={handlePollGitNow}
         updateState={updateState}
+        currentTheme={settings?.theme || 'system'}
+        onSetTheme={handleSetTheme}
       />
       <div className="app-shell">
         {/* Left Navigation Sidebar */}
@@ -146,42 +195,42 @@ export const App: React.FC = () => {
             className={`nav-btn ${activeTab === 'dashboard' ? 'active' : ''}`}
             onClick={() => setActiveTab('dashboard')}
           >
-            <span>📊</span>
+            <DashboardIcon size={16} />
             <span>Gösterge Paneli</span>
           </button>
           <button
             className={`nav-btn ${activeTab === 'projects' ? 'active' : ''}`}
             onClick={() => setActiveTab('projects')}
           >
-            <span>📁</span>
+            <ProjectsIcon size={16} />
             <span>Projeler ({projects.filter((p) => p.enabled).length})</span>
           </button>
           <button
             className={`nav-btn ${activeTab === 'timeline' ? 'active' : ''}`}
             onClick={() => setActiveTab('timeline')}
           >
-            <span>🕒</span>
+            <ActivityIcon size={16} />
             <span>Aktivite Akışı</span>
           </button>
           <button
             className={`nav-btn ${activeTab === 'report' ? 'active' : ''}`}
             onClick={() => setActiveTab('report')}
           >
-            <span>📝</span>
+            <ReportIcon size={16} />
             <span>Günlük Rapor</span>
           </button>
           <button
             className={`nav-btn ${activeTab === 'integrations' ? 'active' : ''}`}
             onClick={() => setActiveTab('integrations')}
           >
-            <span>🔌</span>
+            <IntegrationsIcon size={16} />
             <span>Entegrasyonlar</span>
           </button>
           <button
             className={`nav-btn ${activeTab === 'settings' ? 'active' : ''}`}
             onClick={() => setActiveTab('settings')}
           >
-            <span>⚙️</span>
+            <SettingsIcon size={16} />
             <span>Ayarlar</span>
           </button>
         </nav>
@@ -241,22 +290,28 @@ export const App: React.FC = () => {
             <button
               className={`btn btn-sm ${isPaused ? 'btn-success' : ''}`}
               onClick={handleTogglePaused}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
             >
-              {isPaused ? '▶ Takibi Devam Ettir' : '⏸ Takibi Duraklat'}
+              {isPaused ? <PlayIcon size={14} /> : <PauseIcon size={14} />}
+              <span>{isPaused ? 'Takibi Devam Ettir' : 'Takibi Duraklat'}</span>
             </button>
             <button
               className="btn btn-sm btn-primary"
               onClick={handlePollZoomNow}
               disabled={pollingZoom}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
             >
-              {pollingZoom ? 'Zoom Okunuyor...' : '💬 Şimdi Zoom Oku'}
+              <MessageSquareIcon size={14} />
+              <span>{pollingZoom ? 'Zoom Okunuyor...' : 'Şimdi Zoom Oku'}</span>
             </button>
             <button
               className="btn btn-sm"
               onClick={handlePollGitNow}
               disabled={pollingGit}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
             >
-              {pollingGit ? 'Git Taranıyor...' : '🌿 Şimdi Git Oku'}
+              <GitCommitIcon size={14} />
+              <span>{pollingGit ? 'Git Taranıyor...' : 'Şimdi Git Oku'}</span>
             </button>
           </div>
         </header>
@@ -333,9 +388,14 @@ export const App: React.FC = () => {
         <div className="modal-backdrop" onClick={() => setInspectedEvidence(null)}>
           <div className="modal-panel" onClick={(e) => e.stopPropagation()}>
             <div className="card-header">
-              <h3 className="card-title">🔍 Kaynak Kanıt Detayı (Evidence)</h3>
-              <button className="btn btn-sm" onClick={() => setInspectedEvidence(null)}>
-                Kapat ✕
+              <h3 className="card-title">Kaynak Kanıt Detayı (Evidence)</h3>
+              <button
+                className="btn btn-sm"
+                onClick={() => setInspectedEvidence(null)}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+              >
+                <CloseIcon size={14} />
+                <span>Kapat</span>
               </button>
             </div>
 
@@ -400,7 +460,9 @@ export const App: React.FC = () => {
                         className="activity-link-item"
                         title={lnk}
                       >
-                        <span className="activity-link-icon">↗</span>
+                        <span className="activity-link-icon">
+                          <ExternalLinkIcon size={12} />
+                        </span>
                         <span className="activity-link-text">{lnk}</span>
                       </a>
                     ))}

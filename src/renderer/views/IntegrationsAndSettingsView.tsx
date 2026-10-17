@@ -2,6 +2,16 @@ import React, { useEffect, useState } from 'react';
 import type { AppSettings, IntegrationHealth, UpdateState } from '../../shared/types';
 import { ZOOM_STATUS_LABELS } from './DashboardAndProjectsView';
 import { MESAI_ICON_DATA_URL } from '../assets/logo';
+import {
+  RefreshIcon,
+  DownloadIcon,
+  SparklesIcon,
+  TrashIcon,
+  CheckIcon,
+  SunIcon,
+  MoonIcon,
+  LaptopIcon
+} from '../components/Icons';
 
 export const IntegrationsView: React.FC<{
   onPollZoom: () => Promise<void>;
@@ -137,8 +147,10 @@ export const IntegrationsView: React.FC<{
                   await onPollZoom();
                   await loadHealth();
                 }}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
               >
-                🔄 Şimdi Zoom Penceresini Oku
+                <RefreshIcon size={14} />
+                <span>Şimdi Zoom Penceresini Oku</span>
               </button>
             </div>
           </div>
@@ -174,8 +186,10 @@ export const IntegrationsView: React.FC<{
                   await onPollGit();
                   await loadHealth();
                 }}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
               >
-                🔄 Şimdi Git Depolarını Tara
+                <RefreshIcon size={14} />
+                <span>Şimdi Git Depolarını Tara</span>
               </button>
             </div>
           </div>
@@ -400,6 +414,69 @@ export const SettingsView: React.FC<{
     <div>
       {savedMsg && <div className="alert-banner">{savedMsg}</div>}
 
+      {/* Antigravity Theme Switcher */}
+      <div className="card">
+        <div className="card-header">
+          <h3 className="card-title">Görünüm ve Tema (Antigravity Theme)</h3>
+          <span className="badge badge-info">
+            {form.theme === 'dark' ? 'Koyu Tema' : form.theme === 'light' ? 'Açık Tema' : 'Sistem Teması'}
+          </span>
+        </div>
+        <p style={{ color: 'var(--text-secondary)', fontSize: '13px', margin: '0 0 12px 0' }}>
+          MesAI arayüz temasını seçin. Sistem seçildiğinde Windows renk düzeninizle anlık otomatik eşitlenir.
+        </p>
+
+        <div className="theme-tile-group">
+          <button
+            type="button"
+            className={`theme-tile ${(form.theme || 'system') === 'dark' ? 'active' : ''}`}
+            onClick={async () => {
+              setForm({ ...form, theme: 'dark' });
+              await onUpdateSettings({ theme: 'dark' });
+            }}
+          >
+            <div className="theme-tile-header">
+              <MoonIcon size={18} />
+              <span className="theme-tile-title">Koyu Tema</span>
+              {(form.theme || 'system') === 'dark' && <CheckIcon size={16} />}
+            </div>
+            <div className="theme-tile-desc">Derin obsidian tonları ve yüksek kontrastlı okuma konforu.</div>
+          </button>
+
+          <button
+            type="button"
+            className={`theme-tile ${(form.theme || 'system') === 'light' ? 'active' : ''}`}
+            onClick={async () => {
+              setForm({ ...form, theme: 'light' });
+              await onUpdateSettings({ theme: 'light' });
+            }}
+          >
+            <div className="theme-tile-header">
+              <SunIcon size={18} />
+              <span className="theme-tile-title">Açık Tema</span>
+              {(form.theme || 'system') === 'light' && <CheckIcon size={16} />}
+            </div>
+            <div className="theme-tile-desc">Temiz beyaz arka plan ve net koyu tipografi.</div>
+          </button>
+
+          <button
+            type="button"
+            className={`theme-tile ${(form.theme || 'system') === 'system' ? 'active' : ''}`}
+            onClick={async () => {
+              setForm({ ...form, theme: 'system' });
+              await onUpdateSettings({ theme: 'system' });
+            }}
+          >
+            <div className="theme-tile-header">
+              <LaptopIcon size={18} />
+              <span className="theme-tile-title">Sistem</span>
+              {(form.theme || 'system') === 'system' && <CheckIcon size={16} />}
+            </div>
+            <div className="theme-tile-desc">Windows işletim sistemi temasını otomatik algılar ve takip eder.</div>
+          </button>
+        </div>
+      </div>
+
       <form onSubmit={handleSave} className="card" style={{ display: 'grid', gap: '14px' }}>
         <h3 className="card-title">Toplama Aralıkları, Zamanlama ve Gizlilik Ayarları</h3>
 
@@ -523,8 +600,13 @@ export const SettingsView: React.FC<{
         </div>
 
         <div>
-          <button type="submit" className="btn btn-primary">
-            💾 Ayarları Kaydet
+          <button
+            type="submit"
+            className="btn btn-primary"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+          >
+            <CheckIcon size={14} />
+            <span>Ayarları Kaydet</span>
           </button>
         </div>
       </form>
@@ -549,21 +631,25 @@ export const SettingsView: React.FC<{
             className="btn btn-primary"
             onClick={handleCheckUpdates}
             disabled={checkingUpdate || updateState?.status === 'checking' || updateState?.status === 'downloading'}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
           >
-            {checkingUpdate || updateState?.status === 'checking' ? '⏳ Denetleniyor...' : '🔄 Güncellemeleri Denetle'}
+            <RefreshIcon size={14} />
+            <span>{checkingUpdate || updateState?.status === 'checking' ? 'Denetleniyor...' : 'Güncellemeleri Denetle'}</span>
           </button>
         </div>
 
         {/* Durum Bilgisi */}
         {updateState?.status === 'checking' && (
-          <div className="alert-banner" style={{ marginTop: '12px' }}>
-            🔄 GitHub Releases üzerinden yeni sürüm denetleniyor...
+          <div className="alert-banner" style={{ marginTop: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <RefreshIcon size={14} />
+            <span>GitHub Releases üzerinden yeni sürüm denetleniyor...</span>
           </div>
         )}
 
         {updateState?.status === 'not_available' && (
-          <div className="alert-banner" style={{ marginTop: '12px', background: 'rgba(16, 185, 129, 0.1)', borderColor: 'var(--success)' }}>
-            ✅ Uygulamanız en son sürümde (v{updateState.currentVersion}). Yeni bir güncelleme bulunmuyor.
+          <div className="alert-banner" style={{ marginTop: '12px', background: 'rgba(16, 185, 129, 0.1)', borderColor: 'var(--success)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <CheckIcon size={14} />
+            <span>Uygulamanız en son sürümde (v{updateState.currentVersion}). Yeni bir güncelleme bulunmuyor.</span>
           </div>
         )}
 
@@ -581,7 +667,7 @@ export const SettingsView: React.FC<{
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div style={{ fontWeight: 600, color: 'var(--accent)', fontSize: '15px' }}>
-                🎉 Yeni Sürüm Mevcut: v{updateState.updateInfo.version}
+                Yeni Sürüm Mevcut: v{updateState.updateInfo.version}
               </div>
               {updateState.updateInfo.releaseDate && (
                 <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
@@ -604,8 +690,10 @@ export const SettingsView: React.FC<{
                 type="button"
                 className="btn btn-primary"
                 onClick={handleDownloadUpdate}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
               >
-                ⬇️ Güncellemeyi İndir (v{updateState.updateInfo.version})
+                <DownloadIcon size={14} />
+                <span>Güncellemeyi İndir (v{updateState.updateInfo.version})</span>
               </button>
             </div>
           </div>
@@ -673,8 +761,10 @@ export const SettingsView: React.FC<{
                 type="button"
                 className="btn btn-primary"
                 onClick={handleInstallUpdate}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
               >
-                ⚡ Şimdi Yeniden Başlat ve Güncelle
+                <SparklesIcon size={14} />
+                <span>Şimdi Yeniden Başlat ve Güncelle</span>
               </button>
             </div>
           </div>
@@ -733,8 +823,13 @@ export const SettingsView: React.FC<{
           veritabanından kalıcı olarak silebilirsiniz.
         </p>
         {!confirmClear ? (
-          <button className="btn btn-danger" onClick={() => setConfirmClear(true)}>
-            🗑️ Toplanan Tüm Yerel Verileri Temizle
+          <button
+            className="btn btn-danger"
+            onClick={() => setConfirmClear(true)}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+          >
+            <TrashIcon size={14} />
+            <span>Toplanan Tüm Yerel Verileri Temizle</span>
           </button>
         ) : (
           <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
