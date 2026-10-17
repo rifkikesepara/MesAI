@@ -121,14 +121,12 @@ const thumbarSync = createPng(24, 24, (x, y) => {
   const dy = y - 11.5;
   const dist = Math.sqrt(dx * dx + dy * dy);
   if (dist >= 6.5 && dist <= 9.5) {
-    // Gap in ring top-right and bottom-left
     const angle = Math.atan2(dy, dx);
     if ((angle > 0.3 && angle < 1.3) || (angle < -1.8 && angle > -2.8)) {
       return [0, 0, 0, 0];
     }
-    return [148, 163, 184, 255]; // slate-400
+    return [148, 163, 184, 255];
   }
-  // Arrow heads
   if ((x >= 16 && x <= 20 && y >= 7 && y <= 11) || (x >= 3 && x <= 7 && y >= 13 && y <= 17)) {
     return [148, 163, 184, 255];
   }
@@ -136,4 +134,88 @@ const thumbarSync = createPng(24, 24, (x, y) => {
 });
 fs.writeFileSync(path.join(assetsDir, 'thumbar-sync.png'), thumbarSync);
 
-console.log('Generated taskbar and thumbar icons successfully.');
+// Helper to decode existing tray-icon.png
+function decodePng(buffer) {
+  let offset = 8;
+  let ihdr = null;
+  const idatChunks = [];
+  while (offset < buffer.length) {
+    const len = buffer.readUInt32BE(offset);
+    const type = buffer.toString('ascii', offset + 4, offset + 8);
+    const data = buffer.slice(offset + 8, offset + 8 + len);
+    if (type === 'IHDR') ihdr = data;
+    if (type === 'IDAT') idatChunks.push(data);
+    offset += 12 + len;
+  }
+  const width = ihdr.readUInt32BE(0);
+  const height = ihdr.readUInt32BE(4);
+  const raw = zlib.inflateSync(Buffer.concat(idatChunks));
+  const stride = width * 4;
+  const pixels = Buffer.alloc(width * height * 4);
+  for (let y = 0; y < height; y++) {
+    const filter = raw[y * (stride + 1)];
+    const rowOffset = y * (stride + 1) + 1;
+    for (let x = 0; x < stride; x++) {
+      const a = x >= 4 ? pixels[y * stride + x - 4] : 0;
+      const b = y > 0 ? pixels[(y - 1) * stride + x] : 0;
+      const c = x >= 4 && y > 0 ? pixels[(y - 1) * stride + x - 4] : 0;
+      let val = raw[rowOffset + x];
+      if (filter === 1) val += a;
+      else if (filter === 2) val += b;
+      else if (filter === 3) val += Math.floor((a + b) / 2);
+      else if (filter === 4) {
+        const p = a + b - c;
+        const pa = Math.abs(p - a);
+        const pb = Math.abs(p - b);
+        const pc = Math.abs(p - c);
+        const pr = pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+        val += pr;
+      }
+      pixels[y * stride + x] = val & 0xFF;
+    }
+  }
+  return { width, height, pixels };
+}
+
+const baseTrayPath = path.join(assetsDir, 'tray-icon.png');
+if (fs.existsSync(baseTrayPath)) {
+  const { width, height, pixels } = decodePng(fs.readFileSync(baseTrayPath));
+
+  // 6. Tray Active: base icon + green dot at bottom right (cx=24, cy=24, r=6.5)
+  const trayActive = createPng(width, height, (x, y) => {
+    const dx = x - 24;
+    const dy = y - 24;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist <= 6.5) {
+      if (dist > 5.2) return [15, 23, 42, 255]; // dark ring border #0f172a
+      if (dist > 4.2) return [255, 255, 255, 255]; // white ring
+      return [16, 185, 129, 255]; // emerald-500 #10b981
+    }
+    const idx = (y * width + x) * 4;
+    return [pixels[idx], pixels[idx + 1], pixels[idx + 2], pixels[idx + 3]];
+  });
+  fs.writeFileSync(path.join(assetsDir, 'tray-icon-active.png'), trayActive);
+
+  // 7. Tray Paused: base icon + amber badge with pause bars at bottom right
+  const trayPaused = createPng(width, height, (x, y) => {
+    const dx = x - 24;
+    const dy = y - 24;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist <= 6.5) {
+      if (dist > 5.2) return [15, 23, 42, 255]; // dark ring border
+      if (dist > 4.2) return [255, 255, 255, 255]; // white ring
+      // Pause bars
+      if (y >= 21 && y <= 27) {
+        if ((x >= 22 && x <= 23) || (x >= 25 && x <= 26)) {
+          return [255, 255, 255, 255];
+        }
+      }
+      return [245, 158, 11, 255]; // amber-500 #f59e0b
+    }
+    const idx = (y * width + x) * 4;
+    return [pixels[idx], pixels[idx + 1], pixels[idx + 2], pixels[idx + 3]];
+  });
+  fs.writeFileSync(path.join(assetsDir, 'tray-icon-paused.png'), trayPaused);
+}
+
+console.log('Generated taskbar and tray icons successfully.');
