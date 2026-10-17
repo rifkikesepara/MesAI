@@ -181,14 +181,14 @@ const baseTrayPath = path.join(assetsDir, 'tray-icon.png');
 if (fs.existsSync(baseTrayPath)) {
   const { width, height, pixels } = decodePng(fs.readFileSync(baseTrayPath));
 
-  // 6. Tray Active: base icon + green dot at bottom right (cx=24, cy=24, r=6.5)
+  // 6. Tray Active: full vibrant color base icon + green dot at bottom right (cx=23, cy=23, r=7.0)
   const trayActive = createPng(width, height, (x, y) => {
-    const dx = x - 24;
-    const dy = y - 24;
+    const dx = x - 23;
+    const dy = y - 23;
     const dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist <= 6.5) {
-      if (dist > 5.2) return [15, 23, 42, 255]; // dark ring border #0f172a
-      if (dist > 4.2) return [255, 255, 255, 255]; // white ring
+    if (dist <= 7.0) {
+      if (dist > 5.6) return [15, 23, 42, 255]; // dark ring border #0f172a
+      if (dist > 4.4) return [255, 255, 255, 255]; // white ring
       return [16, 185, 129, 255]; // emerald-500 #10b981
     }
     const idx = (y * width + x) * 4;
@@ -196,24 +196,32 @@ if (fs.existsSync(baseTrayPath)) {
   });
   fs.writeFileSync(path.join(assetsDir, 'tray-icon-active.png'), trayActive);
 
-  // 7. Tray Paused: base icon + amber badge with pause bars at bottom right
+  // 7. Tray Paused: grayscale/dimmed base icon + high-contrast amber pause badge (cx=23, cy=23, r=7.5)
   const trayPaused = createPng(width, height, (x, y) => {
-    const dx = x - 24;
-    const dy = y - 24;
+    const dx = x - 23;
+    const dy = y - 23;
     const dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist <= 6.5) {
-      if (dist > 5.2) return [15, 23, 42, 255]; // dark ring border
-      if (dist > 4.2) return [255, 255, 255, 255]; // white ring
-      // Pause bars
-      if (y >= 21 && y <= 27) {
-        if ((x >= 22 && x <= 23) || (x >= 25 && x <= 26)) {
-          return [255, 255, 255, 255];
+    if (dist <= 7.5) {
+      if (dist > 6.0) return [15, 23, 42, 255]; // dark outer ring border
+      if (dist > 4.8) return [255, 255, 255, 255]; // white ring
+      // Pause bars inside badge
+      if (y >= 20 && y <= 26) {
+        if ((x >= 20 && x <= 21) || (x >= 24 && x <= 25)) {
+          return [255, 255, 255, 255]; // bold white pause bars
         }
       }
-      return [245, 158, 11, 255]; // amber-500 #f59e0b
+      return [249, 115, 22, 255]; // vivid orange #f97316
     }
     const idx = (y * width + x) * 4;
-    return [pixels[idx], pixels[idx + 1], pixels[idx + 2], pixels[idx + 3]];
+    const r = pixels[idx];
+    const g = pixels[idx + 1];
+    const b = pixels[idx + 2];
+    const a = pixels[idx + 3];
+    if (a === 0) return [0, 0, 0, 0];
+    // Convert base icon to dimmed grayscale
+    const gray = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+    const dimmedGray = Math.round(gray * 0.45);
+    return [dimmedGray, dimmedGray, dimmedGray, Math.round(a * 0.7)];
   });
   fs.writeFileSync(path.join(assetsDir, 'tray-icon-paused.png'), trayPaused);
 }
