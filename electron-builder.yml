@@ -1,0 +1,19 @@
+appId: com.mesai.devtrack
+productName: MesAI
+directories:
+  output: dist-electron
+files:
+  - dist-main/**/*
+  - dist-renderer/**/*
+  - package.json
+extraResources:
+  - from: readers/ZoomChatReader/bin/Release/net10.0-windows
+    to: ZoomChatReader
+    filter:
+      - "**/*"
+win:
+  target:
+    - portable
+  signAndEditExecutable: false
+portable:
+  artifactName: "MesAI-${version}-Portable.exe"

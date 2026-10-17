@@ -1,0 +1,15 @@
+node_modules/
+dist-main/
+dist-renderer/
+dist-electron/
+readers/**/bin/
+readers/**/obj/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.dpapi.json
+.env*
+verify-output.json
+Thumbs.db
+.DS_Store
+
