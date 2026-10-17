@@ -218,10 +218,14 @@ if (fs.existsSync(baseTrayPath)) {
     const b = pixels[idx + 2];
     const a = pixels[idx + 3];
     if (a === 0) return [0, 0, 0, 0];
-    // Convert base icon to dimmed grayscale
-    const gray = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
-    const dimmedGray = Math.round(gray * 0.45);
-    return [dimmedGray, dimmedGray, dimmedGray, Math.round(a * 0.7)];
+    // Convert base icon to elegant pale white / silver for clear visibility on dark taskbar
+    const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    const lightVal = Math.round(185 + lum * 60); // 185 to 245
+    const tintR = Math.round(lightVal * 0.92);
+    const tintG = Math.round(lightVal * 0.95);
+    const tintB = Math.round(lightVal);
+    const alpha = Math.round(a * 0.88);
+    return [tintR, tintG, tintB, alpha];
   });
   fs.writeFileSync(path.join(assetsDir, 'tray-icon-paused.png'), trayPaused);
 }
