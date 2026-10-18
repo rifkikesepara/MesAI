@@ -3,6 +3,7 @@ import type {
   ActivityCategory,
   ActivityStatus,
   AiPreviewPayload,
+  AIProviderType,
   AppSettings,
   DailyReport,
   Evidence,
@@ -43,6 +44,12 @@ export const IPC_CHANNELS = {
   INTEGRATIONS_HEALTH: 'mesai:integrations:health',
   INTEGRATIONS_SAVE_SECRET: 'mesai:integrations:saveSecret',
   INTEGRATIONS_TEST_CONNECTION: 'mesai:integrations:testConnection',
+
+  AI_SAVE_KEY: 'mesai:ai:saveKey',
+  AI_TEST_CONNECTION: 'mesai:ai:testConnection',
+  AI_FETCH_MODELS: 'mesai:ai:fetchModels',
+  AI_INSTALL_CLI: 'mesai:ai:installCli',
+  AI_AUTH_CLI: 'mesai:ai:authCli',
 
   SETTINGS_GET: 'mesai:settings:get',
   SETTINGS_UPDATE: 'mesai:settings:update',
@@ -121,12 +128,13 @@ export interface MesaiApi {
   listWorkItems(): Promise<WorkItem[]>;
 
   getDailyReport(reportDate: string): Promise<DailyReport | null>;
-  previewAiPayload(reportDate: string, maxChars?: number): Promise<AiPreviewPayload>;
+  previewAiPayload(reportDate: string, maxChars?: number, providerOverride?: AIProviderType): Promise<AiPreviewPayload>;
   generateDailyReport(input: {
     reportDate: string;
-    provider: 'local_rule' | 'gemini_cli';
+    provider: AIProviderType;
     userConfirmedRemoteSend?: boolean;
     maxChars?: number;
+    promptOverride?: string;
   }): Promise<DailyReport>;
   updateReportItem(input: {
     itemId: string;
@@ -157,6 +165,22 @@ export interface MesaiApi {
     token: string;
   }): Promise<void>;
   testIntegrationConnection(service: 'jira' | 'jenkins'): Promise<{ ok: boolean; message: string }>;
+
+  saveAiApiKey(input: {
+    provider: 'openai' | 'anthropic' | 'custom';
+    apiKey?: string;
+    model?: string;
+    customBaseUrl?: string;
+    mode?: 'auto' | 'cli' | 'api';
+  }): Promise<void>;
+  testAiConnection(provider: 'openai' | 'anthropic' | 'custom'): Promise<{ ok: boolean; message: string }>;
+  fetchAiModels(input: {
+    provider: 'openai' | 'anthropic' | 'custom';
+    apiKey?: string;
+    customBaseUrl?: string;
+  }): Promise<{ ok: boolean; models: string[]; error?: string }>;
+  installCli(provider: 'gemini' | 'openai' | 'anthropic' | 'custom'): Promise<{ ok: boolean; message: string; output?: string }>;
+  authCli(provider: 'gemini' | 'openai' | 'anthropic' | 'custom'): Promise<{ ok: boolean; message: string }>;
 
   getSettings(): Promise<AppSettings>;
   updateSettings(partial: Partial<AppSettings>): Promise<AppSettings>;

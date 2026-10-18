@@ -234,6 +234,13 @@ export interface SyncState {
   metadata: Record<string, unknown>;
 }
 
+export type AIProviderType =
+  | 'local_rule'
+  | 'gemini_cli'
+  | 'openai'
+  | 'anthropic'
+  | 'custom';
+
 export interface AppSettings {
   watchRootPath: string;
   zoomPollIntervalSeconds: number;
@@ -244,10 +251,21 @@ export interface AppSettings {
   endOfDayNotification: boolean;
   timezone: string;
   retentionDays: number;
-  aiProvider: 'local_rule' | 'gemini_cli';
+  aiProvider: AIProviderType;
+  aiModel?: string;
+  aiOpenaiModel?: string;
+  aiOpenaiBaseUrl?: string;
+  aiOpenaiMode?: 'auto' | 'cli' | 'api';
+  aiAnthropicModel?: string;
+  aiAnthropicMode?: 'auto' | 'cli' | 'api';
+  aiCustomModel?: string;
+  aiCustomBaseUrl?: string;
+  aiCustomMode?: 'auto' | 'cli' | 'api';
   allowRemoteAiSend: boolean;
   autoLaunchOnStartup: boolean;
   globalExclusions: string[];
+  globalMappedChatNames?: string[];
+  globalJiraProjectKeys?: string[];
   jiraUrl: string;
   jiraEmail: string;
   jenkinsUrl: string;
@@ -259,7 +277,7 @@ export interface AppSettings {
 
 export interface AiPreviewPayload {
   reportDate: string;
-  provider: 'local_rule' | 'gemini_cli';
+  provider: AIProviderType;
   activityCount: number;
   sanitizedPromptPreview: string;
   warnings: string[];
@@ -287,10 +305,27 @@ export interface IntegrationHealth {
     lastError: string | null;
   };
   ai: {
-    activeProvider: 'local_rule' | 'gemini_cli';
+    activeProvider: AIProviderType;
     localRuleAvailable: boolean;
     geminiCliInstalled: boolean;
     geminiCliVersion: string | null;
+    openaiConfigured: boolean;
+    openaiModel: string;
+    openaiBaseUrl?: string;
+    openaiCliInstalled: boolean;
+    openaiCliVersion: string | null;
+    openaiMode?: 'auto' | 'cli' | 'api';
+    anthropicConfigured: boolean;
+    anthropicModel: string;
+    anthropicCliInstalled: boolean;
+    anthropicCliVersion: string | null;
+    anthropicMode?: 'auto' | 'cli' | 'api';
+    customConfigured: boolean;
+    customModel: string;
+    customBaseUrl: string;
+    customCliInstalled: boolean;
+    customCliVersion: string | null;
+    customMode?: 'auto' | 'cli' | 'api';
     remoteAiAllowed: boolean;
     lastError: string | null;
   };

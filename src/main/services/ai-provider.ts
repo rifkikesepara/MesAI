@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { Activity, ActivityCategory, ActivityStatus } from '../../shared/types';
+import type { Activity, ActivityCategory, ActivityStatus, AIProviderType } from '../../shared/types';
 
 export interface GeneratedDraftItem {
   workItemId: string | null;
@@ -17,13 +17,14 @@ export interface GeneratedDraftItem {
 }
 
 export interface AIProvider {
-  readonly name: 'local_rule' | 'gemini_cli';
+  readonly name: AIProviderType;
   generateReportItems(
     reportDate: string,
     activities: Activity[],
     maxChars?: number,
     signal?: AbortSignal,
-    jiraContextMap?: Record<string, string>
+    jiraContextMap?: Record<string, string>,
+    promptOverride?: string
   ): Promise<GeneratedDraftItem[]>;
 }
 
@@ -711,7 +712,8 @@ export class LocalRuleProvider implements AIProvider {
     rawActivities: Activity[],
     maxChars = 1000,
     _signal?: AbortSignal,
-    jiraContextMap: Record<string, string> = {}
+    jiraContextMap: Record<string, string> = {},
+    _promptOverride?: string
   ): Promise<GeneratedDraftItem[]> {
     // STRICT DATE FILTER: Only include activities whose occurredAtIso local date matches reportDate
     const activities = rawActivities.filter(
@@ -1219,7 +1221,7 @@ export function buildSanitizedAiPrompt(
     '</untrusted_evidence_json>'
   ];
 
-  return instructions.join('\n').slice(0, 18_000);
+  return instructions.join('\n');
 }
 
 /**
@@ -1307,27 +1309,45 @@ export class GeminiCliProvider implements AIProvider {
   ) {}
 
   private resolveAgyCliPath(): string | null {
-    const candidate = path.join(
-      os.homedir(),
-      '.gemini',
-      'bin',
-      process.platform === 'win32' ? 'agy.exe' : 'agy'
-    );
-    return fs.existsSync(candidate) ? candidate : null;
+    const candidates = [
+      path.join(os.homedir(), '.gemini', 'bin', process.platform === 'win32' ? 'agy.exe' : 'agy'),
+      path.join(process.env.LOCALAPPDATA || '', 'agy', 'bin', process.platform === 'win32' ? 'agy.exe' : 'agy')
+    ];
+    for (const c of candidates) {
+      if (fs.existsSync(c)) return c;
+    }
+    return null;
   }
 
   public async checkHealth(): Promise<{ installed: boolean; version: string | null; error?: string }> {
     const agyPath = this.resolveAgyCliPath();
+    // 1. Prefer local Antigravity CLI (agy.exe) if present
+    if (agyPath) {
+      const ver = await new Promise<string | null>((res) => {
+        execFile(agyPath, ['--version'], { timeout: 10_000, windowsHide: true }, (err, stdout) => {
+          if (err || !stdout.trim()) res(null);
+          else res(stdout.trim());
+        });
+      });
+      if (ver) {
+        return {
+          installed: true,
+          version: `Antigravity CLI (agy v${ver})`
+        };
+      }
+    }
+
+    // 2. Fallback to Gemini CLI npm bundle
     try {
       const out = await this.invokeGeminiNodeCli(['--version'], 12_000);
       const ver = out.trim();
       return {
         installed: true,
-        version: agyPath ? `${ver} (Terminal CLI aktif)` : ver
+        version: agyPath ? `${ver} (Antigravity CLI aktif)` : `Gemini CLI (v${ver})`
       };
     } catch (err) {
       if (agyPath) {
-        return { installed: true, version: 'Gemini Terminal CLI (agy)' };
+        return { installed: true, version: 'Antigravity CLI (agy)' };
       }
       return { installed: false, version: null, error: (err as Error).message };
     }
@@ -1338,14 +1358,17 @@ export class GeminiCliProvider implements AIProvider {
     rawActivities: Activity[],
     maxChars = 1000,
     signal?: AbortSignal,
-    jiraContextMap: Record<string, string> = {}
+    jiraContextMap: Record<string, string> = {},
+    promptOverride?: string
   ): Promise<GeneratedDraftItem[]> {
     const activities = rawActivities.filter(
       (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
     );
     if (activities.length === 0) return [];
 
-    const prompt = buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap);
+    const prompt = promptOverride?.trim()
+      ? promptOverride.trim()
+      : buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap);
     const validEvidenceIds = new Set<string>(
       activities.flatMap((a) => (a.evidences ?? []).map((e) => e.id))
     );
@@ -1367,8 +1390,8 @@ export class GeminiCliProvider implements AIProvider {
       process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY
     );
 
-    // If GEMINI_API_KEY is not set and ~/.gemini/bin/agy.exe is installed, use agy.exe directly
-    if (!hasExplicitGeminiApiKey && agyPath) {
+    // If Antigravity CLI (agy.exe) is installed, prefer it for zero API key execution
+    if (agyPath && !hasExplicitGeminiApiKey) {
       return this.invokeAgyCli(agyPath, prompt, timeoutMs, signal);
     }
 
@@ -1397,14 +1420,14 @@ export class GeminiCliProvider implements AIProvider {
 
   private invokeAgyCli(
     agyExecutable: string,
-    stdinPrompt: string,
+    prompt: string,
     timeoutMs: number,
     signal?: AbortSignal
   ): Promise<string> {
     return new Promise((resolve, reject) => {
       const child = execFile(
         agyExecutable,
-        ['--disable-slash-commands', '--effort', 'low'],
+        ['-p', prompt, '--disable-slash-commands', '--effort', 'low'],
         {
           cwd: os.tmpdir(),
           timeout: timeoutMs,
@@ -1422,7 +1445,7 @@ export class GeminiCliProvider implements AIProvider {
               .join(' | ');
             reject(
               new Error(
-                `Gemini Terminal CLI hatası: ${(cleanStderr || error.message).slice(0, 260)}`
+                `Antigravity CLI (agy) hatası: ${(cleanStderr || error.message).slice(0, 260)}`
               )
             );
             return;
@@ -1430,14 +1453,7 @@ export class GeminiCliProvider implements AIProvider {
           resolve(stdout);
         }
       );
-
-      if (child.stdin) {
-        child.stdin.on('error', () => {
-          // ignore EPIPE
-        });
-        child.stdin.write(stdinPrompt, 'utf8');
-        child.stdin.end();
-      }
+      child.stdin?.end();
     });
   }
 
@@ -1521,5 +1537,734 @@ export class GeminiCliProvider implements AIProvider {
         child.stdin.end();
       }
     });
+  }
+}
+
+/**
+ * Local OpenAI Codex CLI Provider (codex.exe / openai CLI).
+ * Executes local Codex session non-interactively with zero API keys required.
+ */
+export class CodexCliProvider implements AIProvider {
+  public readonly name = 'openai' as const;
+
+  constructor(
+    private readonly config: {
+      model?: string;
+      customRunner?: (prompt: string, signal?: AbortSignal) => Promise<string>;
+    } = {}
+  ) {}
+
+  public static resolveCodexCliPath(): string | null {
+    const localAppData = process.env.LOCALAPPDATA || '';
+    const extraPaths = [
+      path.join(localAppData, 'Programs', 'OpenAI', 'Codex', 'bin', process.platform === 'win32' ? 'codex.exe' : 'codex'),
+      path.join(process.env.APPDATA || '', 'npm', process.platform === 'win32' ? 'codex.cmd' : 'codex')
+    ];
+    for (const p of extraPaths) {
+      if (p && fs.existsSync(p)) return p;
+    }
+    const envPath = process.env.PATH || '';
+    const names = process.platform === 'win32' ? ['codex.exe', 'codex.cmd', 'codex'] : ['codex'];
+    for (const dir of envPath.split(path.delimiter)) {
+      for (const name of names) {
+        const full = path.join(dir, name);
+        if (fs.existsSync(full)) return full;
+      }
+    }
+    return null;
+  }
+
+  public async checkHealth(): Promise<{ installed: boolean; version: string | null; error?: string }> {
+    const codexPath = CodexCliProvider.resolveCodexCliPath();
+    if (!codexPath) {
+      return { installed: false, version: null, error: 'Codex CLI bulunamadı.' };
+    }
+    const isCmd = process.platform === 'win32' && codexPath.toLowerCase().endsWith('.cmd');
+    return new Promise((resolve) => {
+      try {
+        execFile(codexPath, ['--version'], { timeout: 10_000, windowsHide: true, shell: isCmd }, (err, stdout) => {
+          if (err) {
+            resolve({ installed: false, version: null, error: err.message });
+          } else {
+            resolve({ installed: true, version: stdout.trim() || 'Codex CLI' });
+          }
+        });
+      } catch (err) {
+        resolve({ installed: false, version: null, error: (err as Error).message });
+      }
+    });
+  }
+
+  public getEffectiveModel(): string | undefined {
+    const m = this.config.model?.trim();
+    if (!m) return undefined;
+    if (m === '6.1sol') return 'gpt-6.1-sol';
+    return m;
+  }
+
+  public async generateReportItems(
+    reportDate: string,
+    rawActivities: Activity[],
+    maxChars = 1000,
+    signal?: AbortSignal,
+    jiraContextMap: Record<string, string> = {},
+    promptOverride?: string
+  ): Promise<GeneratedDraftItem[]> {
+    const activities = rawActivities.filter(
+      (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
+    );
+    if (activities.length === 0) return [];
+
+    const prompt = promptOverride?.trim()
+      ? promptOverride.trim()
+      : buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap);
+    const validEvidenceIds = new Set<string>(
+      activities.flatMap((a) => (a.evidences ?? []).map((e) => e.id))
+    );
+
+    const rawOutput = this.config.customRunner
+      ? await this.config.customRunner(prompt, signal)
+      : await this.runCodexPrompt(prompt, 75_000, signal);
+
+    return validateAndParseAiReportJson(rawOutput, validEvidenceIds, maxChars);
+  }
+
+  private runCodexPrompt(prompt: string, timeoutMs: number, signal?: AbortSignal): Promise<string> {
+    const codexPath = CodexCliProvider.resolveCodexCliPath();
+    if (!codexPath) {
+      throw new Error('Yerel Codex CLI (codex.exe) bulunamadı. Lütfen Codex CLI kurun veya API Key kullanın.');
+    }
+
+    const effectiveModel = this.getEffectiveModel();
+    const args = [
+      'exec',
+      '--skip-git-repo-check',
+      '--ephemeral',
+      '--dangerously-bypass-approvals-and-sandbox',
+      ...(effectiveModel ? ['-m', effectiveModel] : []),
+      prompt
+    ];
+    const isCmd = process.platform === 'win32' && codexPath.toLowerCase().endsWith('.cmd');
+
+    return new Promise((resolve, reject) => {
+      try {
+        const child = execFile(
+          codexPath,
+          args,
+          {
+            cwd: os.tmpdir(),
+            timeout: timeoutMs,
+            maxBuffer: 8 * 1024 * 1024,
+            windowsHide: true,
+            shell: isCmd,
+            signal
+          },
+          (error, stdout, stderr) => {
+            if (error) {
+              const cleanStderr = (stderr || '')
+                .split(/\r?\n/)
+                .map((l) => l.trim())
+                .filter((l) => l && !l.startsWith('Reading additional input') && !l.startsWith('warning:'))
+                .slice(0, 3)
+                .join(' | ');
+              reject(new Error(`Codex CLI hatası: ${(cleanStderr || error.message).slice(0, 300)}`));
+              return;
+            }
+            resolve(stdout);
+          }
+        );
+        child.stdin?.end();
+      } catch (err) {
+        reject(new Error(`Codex CLI çalıştırma hatası: ${(err as Error).message}`));
+      }
+    });
+  }
+}
+
+/**
+ * Local Claude Code CLI Provider (claude.cmd / claude.exe).
+ * Executes local Claude session non-interactively with zero API keys required.
+ */
+export class ClaudeCliProvider implements AIProvider {
+  public readonly name = 'anthropic' as const;
+
+  constructor(
+    private readonly config: {
+      model?: string;
+      customRunner?: (prompt: string, signal?: AbortSignal) => Promise<string>;
+    } = {}
+  ) {}
+
+  public static resolveClaudeCliPath(): string | null {
+    const extraPaths = [
+      path.join(process.env.APPDATA || '', 'npm', process.platform === 'win32' ? 'claude.cmd' : 'claude'),
+      path.join(process.env.APPDATA || '', 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe'),
+      path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Claude', 'claude.exe')
+    ];
+    for (const p of extraPaths) {
+      if (p && fs.existsSync(p)) return p;
+    }
+    const envPath = process.env.PATH || '';
+    const names = process.platform === 'win32' ? ['claude.cmd', 'claude.exe', 'claude'] : ['claude'];
+    for (const dir of envPath.split(path.delimiter)) {
+      for (const name of names) {
+        const full = path.join(dir, name);
+        if (fs.existsSync(full)) return full;
+      }
+    }
+    return null;
+  }
+
+  public async checkHealth(): Promise<{ installed: boolean; version: string | null; error?: string }> {
+    const claudePath = ClaudeCliProvider.resolveClaudeCliPath();
+    if (!claudePath) {
+      return { installed: false, version: null, error: 'Claude Code CLI bulunamadı.' };
+    }
+    const isCmd = process.platform === 'win32' && claudePath.toLowerCase().endsWith('.cmd');
+    return new Promise((resolve) => {
+      try {
+        execFile(
+          claudePath,
+          ['--version'],
+          { timeout: 10_000, windowsHide: true, shell: isCmd },
+          (err, stdout) => {
+            if (err) {
+              resolve({ installed: false, version: null, error: err.message });
+            } else {
+              resolve({ installed: true, version: stdout.trim() || 'Claude Code CLI' });
+            }
+          }
+        );
+      } catch (err) {
+        resolve({ installed: false, version: null, error: (err as Error).message });
+      }
+    });
+  }
+
+  public async generateReportItems(
+    reportDate: string,
+    rawActivities: Activity[],
+    maxChars = 1000,
+    signal?: AbortSignal,
+    jiraContextMap: Record<string, string> = {},
+    promptOverride?: string
+  ): Promise<GeneratedDraftItem[]> {
+    const activities = rawActivities.filter(
+      (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
+    );
+    if (activities.length === 0) return [];
+
+    const prompt = promptOverride?.trim()
+      ? promptOverride.trim()
+      : buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap);
+    const validEvidenceIds = new Set<string>(
+      activities.flatMap((a) => (a.evidences ?? []).map((e) => e.id))
+    );
+
+    const rawOutput = this.config.customRunner
+      ? await this.config.customRunner(prompt, signal)
+      : await this.runClaudePrompt(prompt, 75_000, signal);
+
+    return validateAndParseAiReportJson(rawOutput, validEvidenceIds, maxChars);
+  }
+
+  private runClaudePrompt(prompt: string, timeoutMs: number, signal?: AbortSignal): Promise<string> {
+    const claudePath = ClaudeCliProvider.resolveClaudeCliPath();
+    if (!claudePath) {
+      throw new Error('Yerel Claude Code CLI bulunamadı. Lütfen Claude CLI kurun veya API Key kullanın.');
+    }
+
+    const args = ['-p', prompt, '--permission-mode', 'non-interactive', '--tools', ''];
+    const isCmd = process.platform === 'win32' && claudePath.toLowerCase().endsWith('.cmd');
+
+    return new Promise((resolve, reject) => {
+      try {
+        const child = execFile(
+          claudePath,
+          args,
+          {
+            cwd: os.tmpdir(),
+            timeout: timeoutMs,
+            maxBuffer: 8 * 1024 * 1024,
+            windowsHide: true,
+            shell: isCmd,
+            signal
+          },
+          (error, stdout, stderr) => {
+            if (error) {
+              const cleanStderr = (stderr || '')
+                .split(/\r?\n/)
+                .map((l) => l.trim())
+                .filter((l) => l && !l.startsWith('warning:'))
+                .slice(0, 3)
+                .join(' | ');
+              reject(new Error(`Claude Code CLI hatası: ${(cleanStderr || error.message).slice(0, 300)}`));
+              return;
+            }
+            resolve(stdout);
+          }
+        );
+        child.stdin?.end();
+      } catch (err) {
+        reject(new Error(`Claude Code CLI çalıştırma hatası: ${(err as Error).message}`));
+      }
+    });
+  }
+}
+
+/**
+ * Local Ollama CLI Provider (ollama.exe / ollama).
+ * Executes local Ollama models non-interactively with zero API keys required.
+ */
+export class OllamaCliProvider implements AIProvider {
+  public readonly name = 'custom' as const;
+
+  constructor(
+    private readonly config: {
+      model?: string;
+      customRunner?: (prompt: string, signal?: AbortSignal) => Promise<string>;
+    } = {}
+  ) {}
+
+  public static resolveOllamaCliPath(): string | null {
+    const localAppData = process.env.LOCALAPPDATA || '';
+    const extraPaths = [
+      path.join(localAppData, 'Programs', 'Ollama', process.platform === 'win32' ? 'ollama.exe' : 'ollama')
+    ];
+    for (const p of extraPaths) {
+      if (p && fs.existsSync(p)) return p;
+    }
+    const envPath = process.env.PATH || '';
+    const names = process.platform === 'win32' ? ['ollama.exe', 'ollama'] : ['ollama'];
+    for (const dir of envPath.split(path.delimiter)) {
+      for (const name of names) {
+        const full = path.join(dir, name);
+        if (fs.existsSync(full)) return full;
+      }
+    }
+    return null;
+  }
+
+  public async checkHealth(): Promise<{ installed: boolean; version: string | null; error?: string }> {
+    const ollamaPath = OllamaCliProvider.resolveOllamaCliPath();
+    if (!ollamaPath) {
+      return { installed: false, version: null, error: 'Ollama CLI bulunamadı.' };
+    }
+    const isCmd = process.platform === 'win32' && (ollamaPath.toLowerCase().endsWith('.cmd') || ollamaPath.toLowerCase().endsWith('.bat'));
+    return new Promise((resolve) => {
+      try {
+        execFile(ollamaPath, ['--version'], { timeout: 10_000, windowsHide: true, shell: isCmd }, (err, stdout) => {
+          if (err) {
+            resolve({ installed: false, version: null, error: err.message });
+          } else {
+            resolve({ installed: true, version: stdout.trim() || 'Ollama CLI' });
+          }
+        });
+      } catch (err) {
+        resolve({ installed: false, version: null, error: (err as Error).message });
+      }
+    });
+  }
+
+  public async generateReportItems(
+    reportDate: string,
+    rawActivities: Activity[],
+    maxChars = 1000,
+    signal?: AbortSignal,
+    jiraContextMap: Record<string, string> = {},
+    promptOverride?: string
+  ): Promise<GeneratedDraftItem[]> {
+    const activities = rawActivities.filter(
+      (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
+    );
+    if (activities.length === 0) return [];
+
+    const prompt = promptOverride?.trim()
+      ? promptOverride.trim()
+      : buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap);
+    const validEvidenceIds = new Set<string>(
+      activities.flatMap((a) => (a.evidences ?? []).map((e) => e.id))
+    );
+
+    const rawOutput = this.config.customRunner
+      ? await this.config.customRunner(prompt, signal)
+      : await this.runOllamaPrompt(prompt, 90_000, signal);
+
+    return validateAndParseAiReportJson(rawOutput, validEvidenceIds, maxChars);
+  }
+
+  private runOllamaPrompt(prompt: string, timeoutMs: number, signal?: AbortSignal): Promise<string> {
+    const ollamaPath = OllamaCliProvider.resolveOllamaCliPath();
+    if (!ollamaPath) {
+      throw new Error('Yerel Ollama CLI bulunamadı. Lütfen Ollama kurun veya API uç noktası belirtin.');
+    }
+
+    const model = this.config.model?.trim() || 'llama3.2';
+    const args = ['run', model, prompt];
+
+    return new Promise((resolve, reject) => {
+      const child = execFile(
+        ollamaPath,
+        args,
+        {
+          cwd: os.tmpdir(),
+          timeout: timeoutMs,
+          maxBuffer: 8 * 1024 * 1024,
+          windowsHide: true,
+          signal
+        },
+        (error, stdout, stderr) => {
+          if (error) {
+            const cleanStderr = (stderr || '')
+              .split(/\r?\n/)
+              .map((l) => l.trim())
+              .filter((l) => l && !l.startsWith('pulling'))
+              .slice(0, 3)
+              .join(' | ');
+            reject(new Error(`Ollama CLI hatası: ${(cleanStderr || error.message).slice(0, 300)}`));
+            return;
+          }
+          resolve(stdout);
+        }
+      );
+      child.stdin?.end();
+    });
+  }
+}
+
+/**
+ * OpenAI / Codex / Custom OpenAI-compatible REST API Provider.
+ * Connects directly using standard fetch to OpenAI API or custom local/remote endpoint.
+ */
+export class OpenAiApiProvider implements AIProvider {
+  public readonly name: AIProviderType;
+
+  constructor(
+    private readonly config: {
+      providerType?: 'openai' | 'custom';
+      apiKeyResolver: () => string | null;
+      model?: string;
+      customBaseUrl?: string;
+    }
+  ) {
+    this.name = config.providerType ?? 'openai';
+  }
+
+  public getEffectiveBaseUrl(): string {
+    const raw = this.config.customBaseUrl?.trim();
+    if (raw) return raw.replace(/\/+$/, '');
+    return 'https://api.openai.com/v1';
+  }
+
+  public getEffectiveModel(): string {
+    const m = this.config.model?.trim();
+    if (m) return m;
+    return this.name === 'custom' ? 'default' : 'gpt-4o-mini';
+  }
+
+  public async testConnection(signal?: AbortSignal): Promise<{ ok: boolean; message: string }> {
+    const key = this.config.apiKeyResolver();
+    const isCustom = this.name === 'custom';
+    if (!key && !isCustom) {
+      return { ok: false, message: 'API anahtarı girilmedi.' };
+    }
+    const baseUrl = this.getEffectiveBaseUrl();
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (key) headers['Authorization'] = `Bearer ${key}`;
+
+      const res = await fetch(`${baseUrl}/models`, {
+        method: 'GET',
+        headers,
+        signal: signal ?? AbortSignal.timeout(10_000)
+      });
+
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '');
+        return { ok: false, message: `HTTP ${res.status}: ${txt.slice(0, 160) || res.statusText}` };
+      }
+      return { ok: true, message: `Bağlantı başarılı! (${baseUrl})` };
+    } catch (err) {
+      return { ok: false, message: `Bağlantı hatası: ${(err as Error).message}` };
+    }
+  }
+
+  public async fetchAvailableModels(signal?: AbortSignal): Promise<{ ok: boolean; models: string[]; error?: string }> {
+    const key = this.config.apiKeyResolver();
+    const isCustom = this.name === 'custom';
+    if (!key && !isCustom) {
+      return { ok: false, models: [], error: 'API anahtarı girilmedi.' };
+    }
+    const baseUrl = this.getEffectiveBaseUrl();
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (key) headers['Authorization'] = `Bearer ${key}`;
+
+      const res = await fetch(`${baseUrl}/models`, {
+        method: 'GET',
+        headers,
+        signal: signal ?? AbortSignal.timeout(10_000)
+      });
+
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '');
+        return { ok: false, models: [], error: `HTTP ${res.status}: ${txt.slice(0, 160) || res.statusText}` };
+      }
+
+      const json = (await res.json()) as { data?: Array<{ id?: string }> };
+      let modelIds = (json.data ?? []).map((m) => m.id).filter((id): id is string => typeof id === 'string');
+
+      if (this.name === 'openai') {
+        const nonChatRegex = /embedding|audio|tts|whisper|dall-e|moderation|realtime/i;
+        const chatModels = modelIds.filter((id) => !nonChatRegex.test(id));
+        if (chatModels.length > 0) {
+          modelIds = chatModels;
+        }
+      }
+      modelIds.sort();
+
+      return { ok: true, models: modelIds };
+    } catch (err) {
+      return { ok: false, models: [], error: (err as Error).message };
+    }
+  }
+
+  public async generateReportItems(
+    reportDate: string,
+    rawActivities: Activity[],
+    maxChars = 1000,
+    signal?: AbortSignal,
+    jiraContextMap: Record<string, string> = {},
+    promptOverride?: string
+  ): Promise<GeneratedDraftItem[]> {
+    const activities = rawActivities.filter(
+      (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
+    );
+    if (activities.length === 0) return [];
+
+    const key = this.config.apiKeyResolver();
+    if (!key && this.name !== 'custom') {
+      throw new Error(
+        'OpenAI API anahtarı yapılandırılmamış. Lütfen Ayarlar > Entegrasyonlar sekmesinden API anahtarını kaydedin.'
+      );
+    }
+
+    const prompt = promptOverride?.trim()
+      ? promptOverride.trim()
+      : buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap);
+    const validEvidenceIds = new Set<string>(
+      activities.flatMap((a) => (a.evidences ?? []).map((e) => e.id))
+    );
+
+    const baseUrl = this.getEffectiveBaseUrl();
+    const model = this.getEffectiveModel();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (key) headers['Authorization'] = `Bearer ${key}`;
+
+    const makeRequest = async (useJsonFormat: boolean) => {
+      const body: Record<string, unknown> = {
+        model,
+        messages: [
+          {
+            role: 'system',
+            content:
+              'Sen kurumsal bir Türkçe yazılım mühendisliği rapor asistanısın. Yanıt olarak YALNIZCA geçerli bir JSON döndür.'
+          },
+          { role: 'user', content: prompt }
+        ],
+        temperature: 0.2
+      };
+      if (useJsonFormat) {
+        body['response_format'] = { type: 'json_object' };
+      }
+
+      const res = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: signal ?? AbortSignal.timeout(90_000)
+      });
+
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        let detailedMsg = errText.slice(0, 300);
+        try {
+          const parsed = JSON.parse(errText) as { error?: { message?: string; code?: string; type?: string } };
+          if (parsed.error?.code === 'credit_balance_exhausted' || parsed.error?.type === 'insufficient_quota') {
+            detailedMsg = 'OpenAI API kredisi (bakiye) yetersiz. Not: ChatGPT Plus aboneliği API kullanımını kapsamaz; platform.openai.com/settings/organization/billing adresinden API kredisi yüklemeniz veya Özel/Yerel LLM (Ollama vb.) kullanmanız gerekir.';
+          } else if (parsed.error?.message) {
+            detailedMsg = parsed.error.message;
+          }
+        } catch {
+          // keep slice
+        }
+        throw new Error(`OpenAI API Hatası (HTTP ${res.status}): ${detailedMsg}`);
+      }
+
+      const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+      const content = data.choices?.[0]?.message?.content;
+      if (!content) {
+        throw new Error('OpenAI API yanıtında mesaj içeriği bulunamadı.');
+      }
+      return content;
+    };
+
+    let rawOutput: string;
+    try {
+      rawOutput = await makeRequest(true);
+    } catch (err) {
+      if ((err as Error).message.includes('response_format') || this.name === 'custom') {
+        rawOutput = await makeRequest(false);
+      } else {
+        throw err;
+      }
+    }
+
+    return validateAndParseAiReportJson(rawOutput, validEvidenceIds, maxChars);
+  }
+}
+
+/**
+ * Anthropic Claude REST API Provider (e.g. Claude 3.5 Sonnet / Claude 3.5 Haiku).
+ */
+export class AnthropicApiProvider implements AIProvider {
+  public readonly name: AIProviderType = 'anthropic';
+
+  constructor(
+    private readonly config: {
+      apiKeyResolver: () => string | null;
+      model?: string;
+    }
+  ) {}
+
+  public getEffectiveModel(): string {
+    const m = this.config.model?.trim();
+    return m || 'claude-3-5-sonnet-20241022';
+  }
+
+  public async testConnection(signal?: AbortSignal): Promise<{ ok: boolean; message: string }> {
+    const key = this.config.apiKeyResolver();
+    if (!key) {
+      return { ok: false, message: 'Anthropic API anahtarı girilmedi.' };
+    }
+    try {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key': key,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: this.getEffectiveModel(),
+          max_tokens: 10,
+          messages: [{ role: 'user', content: 'ping' }]
+        }),
+        signal: signal ?? AbortSignal.timeout(12_000)
+      });
+
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '');
+        return { ok: false, message: `HTTP ${res.status}: ${txt.slice(0, 160) || res.statusText}` };
+      }
+      return { ok: true, message: 'Anthropic Claude bağlantısı başarılı!' };
+    } catch (err) {
+      return { ok: false, message: `Bağlantı hatası: ${(err as Error).message}` };
+    }
+  }
+
+  public async fetchAvailableModels(signal?: AbortSignal): Promise<{ ok: boolean; models: string[]; error?: string }> {
+    const key = this.config.apiKeyResolver();
+    if (!key) {
+      return { ok: false, models: [], error: 'Anthropic API anahtarı girilmedi.' };
+    }
+    const knownModels = [
+      'claude-3-5-sonnet-20241022',
+      'claude-3-5-haiku-20241022',
+      'claude-3-opus-20240229',
+      'claude-3-sonnet-20240229',
+      'claude-3-haiku-20240307'
+    ];
+    try {
+      const res = await fetch('https://api.anthropic.com/v1/models', {
+        method: 'GET',
+        headers: {
+          'x-api-key': key,
+          'anthropic-version': '2023-06-01'
+        },
+        signal: signal ?? AbortSignal.timeout(10_000)
+      });
+
+      if (res.ok) {
+        const json = (await res.json()) as { data?: Array<{ id?: string }> };
+        const fetched = (json.data ?? []).map((m) => m.id).filter((id): id is string => typeof id === 'string');
+        if (fetched.length > 0) {
+          fetched.sort();
+          return { ok: true, models: fetched };
+        }
+      }
+      return { ok: true, models: knownModels };
+    } catch {
+      return { ok: true, models: knownModels };
+    }
+  }
+
+  public async generateReportItems(
+    reportDate: string,
+    rawActivities: Activity[],
+    maxChars = 1000,
+    signal?: AbortSignal,
+    jiraContextMap: Record<string, string> = {},
+    promptOverride?: string
+  ): Promise<GeneratedDraftItem[]> {
+    const activities = rawActivities.filter(
+      (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
+    );
+    if (activities.length === 0) return [];
+
+    const key = this.config.apiKeyResolver();
+    if (!key) {
+      throw new Error(
+        'Anthropic Claude API anahtarı yapılandırılmamış. Lütfen Ayarlar > Entegrasyonlar sekmesinden API anahtarını kaydedin.'
+      );
+    }
+
+    const prompt = promptOverride?.trim()
+      ? promptOverride.trim()
+      : buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap);
+    const validEvidenceIds = new Set<string>(
+      activities.flatMap((a) => (a.evidences ?? []).map((e) => e.id))
+    );
+
+    const model = this.getEffectiveModel();
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: 4096,
+        system:
+          'Sen kurumsal bir Türkçe yazılım mühendisliği rapor asistanısın. Yanıt olarak YALNIZCA geçerli bir JSON döndür.',
+        messages: [{ role: 'user', content: prompt }]
+      }),
+      signal: signal ?? AbortSignal.timeout(90_000)
+    });
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      throw new Error(`Anthropic Claude API Hatası (HTTP ${res.status}): ${errText.slice(0, 300)}`);
+    }
+
+    const data = (await res.json()) as { content?: Array<{ type: string; text?: string }> };
+    const textBlock = data.content?.find((c) => c.type === 'text');
+    if (!textBlock?.text) {
+      throw new Error('Anthropic API yanıtında metin bloğu bulunamadı.');
+    }
+
+    return validateAndParseAiReportJson(textBlock.text, validEvidenceIds, maxChars);
   }
 }

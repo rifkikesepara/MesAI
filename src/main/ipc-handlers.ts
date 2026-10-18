@@ -7,7 +7,7 @@ import {
   type DashboardSummary,
   type ManualNoteInput
 } from '../shared/ipc-channels';
-import type { ActivityCategory, ActivityStatus, AppSettings } from '../shared/types';
+import type { ActivityCategory, ActivityStatus, AIProviderType, AppSettings } from '../shared/types';
 import type { MesaiRepository } from './db/repositories';
 import type { ZoomReaderAdapter } from './services/zoom-adapter';
 import type { GitFileWatcherService } from './services/git-file-watcher';
@@ -16,6 +16,7 @@ import type { ReportService } from './services/report-service';
 import type { IntegrationsService } from './services/integrations-service';
 import type { SchedulerService } from './services/scheduler-service';
 import type { UpdateService } from './services/update-service';
+import { CliInstallerService, type CliTargetProvider } from './services/cli-installer-service';
 import { getTodayLocalDate } from './services/timestamp-resolver';
 
 function assertNonEmptyString(val: unknown, fieldName: string): string {
@@ -214,11 +215,16 @@ export function registerIpcHandlers(deps: {
 
   ipcMain.handle(
     IPC_CHANNELS.REPORT_PREVIEW_AI,
-    async (_e, reportDate: unknown, maxChars: unknown) => {
+    async (_e, reportDate: unknown, maxChars: unknown, providerOverride: unknown) => {
       const date = assertDateYmd(reportDate);
       const parsedMax =
         typeof maxChars === 'number' && !Number.isNaN(maxChars) ? maxChars : undefined;
-      return reportService.previewAiPayload(date, parsedMax);
+      const parsedProvider =
+        typeof providerOverride === 'string' &&
+        ['local_rule', 'gemini_cli', 'openai', 'anthropic', 'custom'].includes(providerOverride)
+          ? (providerOverride as AIProviderType)
+          : undefined;
+      return reportService.previewAiPayload(date, parsedMax, parsedProvider);
     }
   );
 
@@ -228,19 +234,26 @@ export function registerIpcHandlers(deps: {
     }
     const obj = input as {
       reportDate: string;
-      provider: 'local_rule' | 'gemini_cli';
+      provider: AIProviderType;
       userConfirmedRemoteSend?: boolean;
       maxChars?: number;
+      promptOverride?: string;
     };
     const reportDate = assertDateYmd(obj.reportDate);
-    const provider = obj.provider === 'gemini_cli' ? 'gemini_cli' : 'local_rule';
+    const validProviders: AIProviderType[] = ['local_rule', 'gemini_cli', 'openai', 'anthropic', 'custom'];
+    const provider: AIProviderType = validProviders.includes(obj.provider) ? obj.provider : 'local_rule';
     const maxChars =
       typeof obj.maxChars === 'number' && !Number.isNaN(obj.maxChars) ? obj.maxChars : undefined;
+    const promptOverride =
+      typeof obj.promptOverride === 'string' && obj.promptOverride.trim()
+        ? obj.promptOverride.trim()
+        : undefined;
     return reportService.generateReport({
       reportDate,
       provider,
       userConfirmedRemoteSend: Boolean(obj.userConfirmedRemoteSend),
-      maxChars
+      maxChars,
+      promptOverride
     });
   });
 
@@ -368,6 +381,61 @@ export function registerIpcHandlers(deps: {
       throw new Error('Geçersiz servis adı.');
     }
     return integrations.testConnection(service);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.AI_SAVE_KEY, async (_e, input: unknown) => {
+    if (!input || typeof input !== 'object') {
+      throw new Error('Geçersiz AI entegrasyon verisi.');
+    }
+    const obj = input as {
+      provider: 'openai' | 'anthropic' | 'custom';
+      apiKey?: string;
+      model?: string;
+      customBaseUrl?: string;
+      mode?: 'auto' | 'cli' | 'api';
+    };
+    if (!['openai', 'anthropic', 'custom'].includes(obj.provider)) {
+      throw new Error('Geçersiz AI sağlayıcısı.');
+    }
+    integrations.saveAiCredential(obj);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.AI_TEST_CONNECTION, async (_e, provider: unknown) => {
+    if (provider !== 'openai' && provider !== 'anthropic' && provider !== 'custom') {
+      throw new Error('Geçersiz AI sağlayıcısı.');
+    }
+    return integrations.testAiConnection(provider);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.AI_FETCH_MODELS, async (_e, input: unknown) => {
+    if (!input || typeof input !== 'object') {
+      throw new Error('Geçersiz istek.');
+    }
+    const obj = input as {
+      provider: 'openai' | 'anthropic' | 'custom';
+      apiKey?: string;
+      customBaseUrl?: string;
+    };
+    if (!['openai', 'anthropic', 'custom'].includes(obj.provider)) {
+      throw new Error('Geçersiz AI sağlayıcısı.');
+    }
+    return integrations.fetchAiModels(obj);
+  });
+
+  const cliInstaller = new CliInstallerService();
+
+  ipcMain.handle(IPC_CHANNELS.AI_INSTALL_CLI, async (_e, provider: unknown) => {
+    if (!['gemini', 'openai', 'anthropic', 'custom'].includes(provider as string)) {
+      throw new Error('Geçersiz AI sağlayıcısı.');
+    }
+    return cliInstaller.installCli(provider as CliTargetProvider);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.AI_AUTH_CLI, async (_e, provider: unknown) => {
+    if (!['gemini', 'openai', 'anthropic', 'custom'].includes(provider as string)) {
+      throw new Error('Geçersiz AI sağlayıcısı.');
+    }
+    return cliInstaller.launchCliAuth(provider as CliTargetProvider);
   });
 
   ipcMain.handle(IPC_CHANNELS.SETTINGS_GET, async () => {

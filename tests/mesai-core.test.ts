@@ -5,10 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { MesaiDatabase } from '../src/main/db/database';
 import { MesaiRepository } from '../src/main/db/repositories';
-import { resolveZoomTimestamp } from '../src/main/services/timestamp-resolver';
+import { getTodayLocalDate, resolveZoomTimestamp } from '../src/main/services/timestamp-resolver';
 import { MatcherService } from '../src/main/services/matcher-service';
 import { GitFileWatcherService, shouldExcludeFilePath } from '../src/main/services/git-file-watcher';
-import { GeminiCliProvider } from '../src/main/services/ai-provider';
+import { GeminiCliProvider, buildSanitizedAiPrompt } from '../src/main/services/ai-provider';
 import { ReportService } from '../src/main/services/report-service';
 import { ZoomReaderAdapter } from '../src/main/services/zoom-adapter';
 import { IntegrationsService } from '../src/main/services/integrations-service';
@@ -604,7 +604,175 @@ describe('MesAI Core Verification Suite', () => {
 
     db.close();
   });
+
+  it('10. AI integration credentials encryption via secretProvider, OpenAI/Claude/Custom API configuration and health report', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mesai-ai-test-'));
+    const db = new MesaiDatabase(path.join(tmpDir, 'test.sqlite'));
+    const repo = new MesaiRepository(db);
+    const mockSecretProvider = {
+      encrypt: (s: string) => Buffer.from(s, 'utf8').toString('base64'),
+      decrypt: (b: string) => Buffer.from(b, 'base64').toString('utf8')
+    };
+
+    const matcher = new MatcherService(repo);
+    const zoomAdapter = new ZoomReaderAdapter(repo, matcher, { stateDir: tmpDir });
+    const gitWatcher = new GitFileWatcherService(repo, matcher);
+    const reportService = new ReportService(repo);
+
+    const integrations = new IntegrationsService(repo, zoomAdapter, gitWatcher, reportService, {
+      userDataDir: tmpDir,
+      secretProvider: mockSecretProvider
+    });
+
+    // 1. Initial health before configuration
+    let health = await integrations.getHealthSummary();
+    assert.equal(health.ai.openaiConfigured, false);
+    assert.equal(health.ai.anthropicConfigured, false);
+    assert.equal(health.ai.customConfigured, false);
+
+    // 2. Save OpenAI credentials
+    integrations.saveAiCredential({
+      provider: 'openai',
+      apiKey: 'sk-test-openai-12345',
+      model: 'gpt-4o'
+    });
+
+    // Verify API key is NOT stored in plain text in sqlite
+    const rawSqlite = fs.readFileSync(path.join(tmpDir, 'test.sqlite'), 'utf8');
+    assert.ok(!rawSqlite.includes('sk-test-openai-12345'), 'OpenAI API key must never be in plain text in SQLite');
+
+    // Verify key was decrypted properly via secretProvider
+    assert.equal(integrations.getDecryptedAiToken('openai'), 'sk-test-openai-12345');
+
+    // 3. Save Anthropic credentials
+    integrations.saveAiCredential({
+      provider: 'anthropic',
+      apiKey: 'sk-ant-test-99999',
+      model: 'claude-3-5-sonnet-20241022'
+    });
+    assert.equal(integrations.getDecryptedAiToken('anthropic'), 'sk-ant-test-99999');
+
+    // 4. Save Custom endpoint
+    integrations.saveAiCredential({
+      provider: 'custom',
+      apiKey: 'ollama-key',
+      model: 'deepseek-chat',
+      customBaseUrl: 'http://localhost:11434/v1'
+    });
+    assert.equal(integrations.getDecryptedAiToken('custom'), 'ollama-key');
+
+    // 5. Health summary reflects configured state
+    health = await integrations.getHealthSummary();
+    assert.equal(health.ai.openaiConfigured, true);
+    assert.equal(health.ai.anthropicConfigured, true);
+    assert.equal(health.ai.customConfigured, true);
+    assert.equal(health.ai.customBaseUrl, 'http://localhost:11434/v1');
+
+    // 6. Test connection with invalid endpoint / dummy key should return graceful error, not crash
+    const testRes = await integrations.testAiConnection('custom');
+    assert.equal(typeof testRes.ok, 'boolean');
+    assert.equal(typeof testRes.message, 'string');
+
+    // 7. Verify reportService falls back safely to local_rule when remote AI fails
+    repo.updateSettings({ aiProvider: 'openai', allowRemoteAiSend: true });
+    repo.addManualNote({
+      projectId: null,
+      category: 'development',
+      status: 'completed',
+      title: 'AI Entegrasyon Geliştirmesi',
+      summary: 'OpenAI, Anthropic ve Özel LLM entegrasyonu tamamlandı.'
+    });
+
+    const todayDate = getTodayLocalDate();
+    const report = await reportService.generateReport({
+      reportDate: todayDate,
+      provider: 'openai',
+      userConfirmedRemoteSend: true
+    });
+
+    // Dummy key will fail remote request and gracefully fall back to local rule
+    assert.ok(report.providerUsed.includes('local_rule'), 'Should fall back to local_rule on remote failure');
+    assert.ok(report.items.length > 0, 'Report items must not be lost on fallback');
+
+    db.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('11. untrusted_evidence_json is never truncated mid-JSON and promptOverride is honored', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mesai-prompt-test-'));
+    const db = new MesaiDatabase(path.join(tmpDir, 'test.db'));
+    const repo = new MesaiRepository(db);
+
+    const today = getTodayLocalDate();
+
+    // Create 40 activities to simulate a large work day
+    for (let i = 0; i < 40; i++) {
+      repo.addManualNote({
+        projectId: null,
+        category: 'development',
+        status: 'completed',
+        title: `Görev ${i} Kapsamlı Mimari Geliştirme ve Test`,
+        summary: `Bileşen ${i} üzerinde kapsamlı refactoring gerçekleştirildi. LogFiles, InfiniteGrid ve BAM veri modelleri güncellendi. Kod diff detayı: function test${i}() { console.log("detaylı diff içeriği ${i}"); }`
+      });
+    }
+
+    const activities = repo.listActivities({});
+    const prompt = buildSanitizedAiPrompt(today, activities, 1000);
+
+    // 1. untrusted_evidence_json tags must exist and match
+    const openTag = '<untrusted_evidence_json>';
+    const closeTag = '</untrusted_evidence_json>';
+    const lastOpenIndex = prompt.lastIndexOf(openTag);
+    const lastCloseIndex = prompt.lastIndexOf(closeTag);
+    assert.ok(lastOpenIndex !== -1, 'Opening tag must exist');
+    assert.ok(lastCloseIndex !== -1, 'Closing tag must exist and never be sliced off');
+    assert.ok(lastCloseIndex > lastOpenIndex, 'Closing tag must come after opening tag');
+
+    const jsonStr = prompt.slice(lastOpenIndex + openTag.length, lastCloseIndex).trim();
+    let parsed: any;
+    assert.doesNotThrow(() => {
+      parsed = JSON.parse(jsonStr);
+    }, 'Evidence JSON inside <untrusted_evidence_json> must be 100% valid parseable JSON');
+    assert.ok(parsed && typeof parsed === 'object', 'Parsed evidence payload must be an object');
+
+    // 2. promptOverride is forwarded and honored by provider
+    let receivedPrompt = '';
+    const mockProvider = new GeminiCliProvider(async (p: string) => {
+      receivedPrompt = p;
+      return JSON.stringify({
+        items: [
+          {
+            workItemId: null,
+            projectId: null,
+            category: 'development',
+            itemStatus: 'completed',
+            text: 'Özel prompt ile üretilen madde.',
+            isInsufficientEvidence: false,
+            insufficientReason: null,
+            evidenceIds: []
+          }
+        ]
+      });
+    });
+
+    const reportService = new ReportService(repo, mockProvider);
+
+    const customUserPrompt = 'KULLANICI TARAFINDAN ÖZELLEŞTİRİLMİŞ PROMPT: Raporu buna göre üret.';
+    const customReport = await reportService.generateReport({
+      reportDate: today,
+      provider: 'gemini_cli',
+      userConfirmedRemoteSend: true,
+      promptOverride: customUserPrompt
+    });
+
+    assert.equal(receivedPrompt, customUserPrompt, 'Provider must receive the user promptOverride verbatim');
+    assert.ok(customReport.items.some((item) => item.text.includes('Özel prompt ile üretilen madde')));
+
+    db.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
 });
+
 
 
 

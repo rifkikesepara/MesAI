@@ -5,6 +5,8 @@ import type {
   ActivityCategory,
   ActivityStatus,
   AiPreviewPayload,
+  AIProviderType,
+  AppSettings,
   DailyReport,
   Evidence,
   Project,
@@ -23,6 +25,8 @@ import {
   TrashIcon,
   ExternalLinkIcon
 } from '../components/Icons';
+import { SkeletonActivityList, SkeletonReport } from '../components/Skeleton';
+import { VirtualList } from '../components/VirtualList';
 
 export const TimelineView: React.FC<{
   projects: Project[];
@@ -271,13 +275,16 @@ export const TimelineView: React.FC<{
         </div>
 
         {loading ? (
-          <div style={{ padding: '16px 0', color: 'var(--text-secondary)' }}>Yükleniyor...</div>
+          <SkeletonActivityList count={5} />
         ) : activities.length === 0 ? (
           <div style={{ padding: '16px 0', color: 'var(--text-secondary)' }}>
             Seçilen filtrelere uygun aktivite bulunamadı.
           </div>
         ) : (
-          activities.map((act) => (
+          <VirtualList
+            items={activities}
+            itemHeight={130}
+            renderItem={(act) => (
             <div key={act.id} className="item-row">
               <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
@@ -426,11 +433,12 @@ export const TimelineView: React.FC<{
                 </div>
               )}
             </div>
-          ))
-        )}
-      </div>
+          )}
+        />
+      )}
     </div>
-  );
+  </div>
+);
 };
 
 function getLocalTodayYmd(): string {
@@ -448,7 +456,8 @@ export const DailyReportView: React.FC<{
   const todayStr = getLocalTodayYmd();
   const [reportDate, setReportDate] = useState(todayStr);
   const [report, setReport] = useState<DailyReport | null>(null);
-  const [provider, setProvider] = useState<'local_rule' | 'gemini_cli'>('local_rule');
+  const [provider, setProvider] = useState<AIProviderType>('local_rule');
+  const [settings, setSettings] = useState<AppSettings | null>(null);
   const [maxChars, setMaxChars] = useState<number>(1000);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -465,9 +474,11 @@ export const DailyReportView: React.FC<{
   const [newItemCategory, setNewItemCategory] = useState<ActivityCategory>('development');
   const [newItemStatus, setNewItemStatus] = useState<ActivityStatus>('completed');
   const [newItemProjectId, setNewItemProjectId] = useState<string>('');
+  const [customPrompt, setCustomPrompt] = useState('');
 
   useEffect(() => {
     void window.mesaiApi.getSettings().then((s) => {
+      setSettings(s);
       if (s.reportMaxChars && s.reportMaxChars >= 120) {
         setMaxChars(s.reportMaxChars);
       }
@@ -502,9 +513,10 @@ export const DailyReportView: React.FC<{
     setStatusBanner(null);
     const validMaxChars = Math.max(120, Number(maxChars) || 1000);
 
-    if (provider === 'gemini_cli') {
-      const preview = await window.mesaiApi.previewAiPayload(reportDate, validMaxChars);
+    if (provider !== 'local_rule') {
+      const preview = await window.mesaiApi.previewAiPayload(reportDate, validMaxChars, provider);
       setAiPreview(preview);
+      setCustomPrompt(preview.sanitizedPromptPreview);
       return;
     }
 
@@ -512,8 +524,9 @@ export const DailyReportView: React.FC<{
   };
 
   const executeGenerate = async (
-    selectedProvider: 'local_rule' | 'gemini_cli',
-    confirmedRemote: boolean
+    selectedProvider: AIProviderType,
+    confirmedRemote: boolean,
+    promptOverride?: string
   ) => {
     setAiPreview(null);
     setLoading(true);
@@ -524,7 +537,8 @@ export const DailyReportView: React.FC<{
         reportDate,
         provider: selectedProvider,
         userConfirmedRemoteSend: confirmedRemote,
-        maxChars: validMaxChars
+        maxChars: validMaxChars,
+        promptOverride: promptOverride?.trim() || undefined
       });
       setReport(generated);
       setStatusBanner(
@@ -673,12 +687,21 @@ export const DailyReportView: React.FC<{
             </label>
             <select
               className="select"
-              style={{ width: '270px' }}
+              style={{ width: '290px' }}
               value={provider}
-              onChange={(e) => setProvider(e.target.value as 'local_rule' | 'gemini_cli')}
+              onChange={(e) => setProvider(e.target.value as AIProviderType)}
             >
               <option value="local_rule">Yerel Kurallı Motor (Varsayılan — %100 Çevrimdışı)</option>
-              <option value="gemini_cli">Gemini CLI (Veri Önizlemeli & Şema Doğrulamalı)</option>
+              <option value="gemini_cli">Antigravity / Gemini CLI (agy — Veri Önizlemeli)</option>
+              <option value="openai">
+                OpenAI / Codex ({settings?.aiOpenaiMode === 'api' ? 'API' : 'Yerel Codex CLI'} — {settings?.aiOpenaiModel || 'gpt-6.1-sol'})
+              </option>
+              <option value="anthropic">
+                Anthropic Claude ({settings?.aiAnthropicMode === 'api' ? 'API' : 'Yerel Claude CLI'} — {settings?.aiAnthropicModel || 'claude-3-5-sonnet'})
+              </option>
+              <option value="custom">
+                Özel / Yerel LLM ({settings?.aiCustomMode === 'api' ? 'API' : 'Ollama CLI'} — {settings?.aiCustomModel || settings?.aiCustomBaseUrl || 'Yerel'})
+              </option>
             </select>
           </div>
 
@@ -764,12 +787,16 @@ export const DailyReportView: React.FC<{
         )}
       </div>
 
-      {report && (
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: '2fr 1fr',
-            gap: '16px',
+      {loading ? (
+        <SkeletonReport />
+      ) : (
+        <>
+          {report && (
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '2fr 1fr',
+                gap: '16px',
             marginBottom: '16px'
           }}
         >
@@ -805,7 +832,7 @@ export const DailyReportView: React.FC<{
                   background: 'var(--bg-primary)',
                   borderRadius: '8px',
                   border: '1px solid var(--border-color)',
-                  color: '#f8fafc',
+                  color: 'var(--text-primary)',
                   fontSize: '13.5px',
                   lineHeight: 1.6,
                   whiteSpace: 'pre-wrap',
@@ -884,7 +911,10 @@ export const DailyReportView: React.FC<{
               madde ekleyebilirsiniz.
             </div>
           ) : (
-            report.items.map((item) => (
+            <VirtualList
+              items={report.items}
+              itemHeight={115}
+              renderItem={(item) => (
               <div key={item.id} className="item-row">
                 {editingItemId === item.id ? (
                   <div
@@ -1002,12 +1032,12 @@ export const DailyReportView: React.FC<{
                       </div>
                     </div>
 
-                    <div style={{ marginTop: '8px', fontSize: '14.5px', color: '#f8fafc' }}>
+                    <div style={{ marginTop: '8px', fontSize: '14.5px', color: 'var(--text-primary)' }}>
                       {item.text}
                     </div>
 
                     {item.isInsufficientEvidence && item.insufficientReason && (
-                      <div style={{ marginTop: '4px', fontSize: '12px', color: '#fbbf24' }}>
+                      <div style={{ marginTop: '4px', fontSize: '12px', color: 'var(--warning)' }}>
                         ⚠️ Not: {item.insufficientReason}
                       </div>
                     )}
@@ -1028,8 +1058,9 @@ export const DailyReportView: React.FC<{
                   </div>
                 )}
               </div>
-            ))
-          )}
+            )}
+          />
+        )}
 
           {/* Add manual item to report */}
           <form
@@ -1103,25 +1134,96 @@ export const DailyReportView: React.FC<{
           <strong>"Günlük Rapor Taslağı Oluştur"</strong> butonuna tıklayabilirsiniz.
         </div>
       )}
+    </>
+  )}
 
       {/* AI Data Preview Modal */}
       {aiPreview && (
         <div className="modal-backdrop">
-          <div className="modal-panel">
-            <h3 style={{ marginTop: 0 }}>Gemini CLI — Gönderilecek Veri Önizlemesi ve Onayı</h3>
+          <div className="modal-panel" style={{ maxWidth: '920px', width: '95%' }}>
+            <h3 style={{ marginTop: 0 }}>
+              {provider === 'gemini_cli'
+                ? 'Gemini CLI'
+                : provider === 'openai'
+                  ? `OpenAI (${settings?.aiOpenaiMode === 'api' ? 'API' : 'Yerel Codex CLI'} — ${settings?.aiOpenaiModel || 'gpt-6.1-sol'})`
+                  : provider === 'anthropic'
+                    ? `Anthropic Claude (${settings?.aiAnthropicMode === 'api' ? 'API' : 'Yerel Claude CLI'} — ${settings?.aiAnthropicModel || 'claude-3-5-sonnet'})`
+                    : `Özel LLM (${settings?.aiCustomMode === 'api' ? 'API' : 'Ollama CLI'} — ${settings?.aiCustomModel || 'Yerel'})`}{' '}
+              — Gönderilecek Prompt ve Kanıt Önizlemesi
+            </h3>
             <div className="alert-banner alert-warning">
               {aiPreview.warnings.map((w, i) => (
                 <div key={i}>• {w}</div>
               ))}
             </div>
-            <p style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
-              Aşağıdaki yapılandırılmış veri ({aiPreview.activityCount} aktivite özeti) Gemini CLI
-              alt sürecine güvenli argüman olarak iletilecektir:
+            <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+              Aşağıdaki yapılandırılmış prompt ({aiPreview.activityCount} aktivite kanıtı){' '}
+              {provider === 'gemini_cli'
+                ? 'Gemini CLI sürecine'
+                : provider === 'openai' && settings?.aiOpenaiMode !== 'api'
+                  ? 'yerel Codex CLI sürecine (API anahtarı kullanılmaz)'
+                  : 'seçili AI sağlayıcısına'}{' '}
+              güvenli girdi olarak iletilecektir. İsterseniz talimatları veya kanıt JSON'ını doğrudan düzenleyebilirsiniz:
             </p>
-            <pre className="code-pre" style={{ maxHeight: '300px' }}>
-              {aiPreview.sanitizedPromptPreview}
-            </pre>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '16px' }}>
+
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: '6px',
+                fontSize: '12px'
+              }}
+            >
+              <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>
+                Yapay Zekaya Gönderilecek Prompt Metni:
+              </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ color: 'var(--text-muted)' }}>
+                  {customPrompt.length.toLocaleString('tr-TR')} karakter • {customPrompt.split('\n').length} satır
+                </span>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => setCustomPrompt(aiPreview.sanitizedPromptPreview)}
+                  disabled={customPrompt === aiPreview.sanitizedPromptPreview}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '2px 8px', fontSize: '11px' }}
+                  title="Prompt metnini orijinal haline döndürür"
+                >
+                  <RefreshIcon size={12} />
+                  <span>Varsayılana Sıfırla</span>
+                </button>
+              </div>
+            </div>
+
+            <textarea
+              className="input"
+              value={customPrompt}
+              onChange={(e) => setCustomPrompt(e.target.value)}
+              style={{
+                width: '100%',
+                height: '340px',
+                fontFamily: 'Consolas, "Fira Code", monospace',
+                fontSize: '11.5px',
+                lineHeight: '1.45',
+                resize: 'vertical',
+                whiteSpace: 'pre',
+                overflowWrap: 'normal',
+                overflowX: 'auto',
+                background: 'var(--bg-tertiary)',
+                color: 'var(--text-primary)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '6px',
+                padding: '10px'
+              }}
+              placeholder="Yapay zekaya iletilecek prompt metni..."
+            />
+
+            <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
+              ✓ <code>&lt;untrusted_evidence_json&gt;</code> bloğu eksiksizdir. Yapay zekaya gidecek sistem talimatlarını veya kanıt JSON'ını serbestçe özelleştirebilirsiniz.
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '16px', flexWrap: 'wrap' }}>
               <button className="btn" onClick={() => setAiPreview(null)}>
                 İptal
               </button>
@@ -1133,9 +1235,17 @@ export const DailyReportView: React.FC<{
               </button>
               <button
                 className="btn btn-primary"
-                onClick={() => executeGenerate('gemini_cli', true)}
+                onClick={() => executeGenerate(provider, true, customPrompt)}
               >
-                Onayla ve Gemini CLI ile Üret
+                {customPrompt !== aiPreview.sanitizedPromptPreview ? 'Düzenlenen Prompt' : 'Onayla'} ve{' '}
+                {provider === 'gemini_cli'
+                  ? 'Gemini CLI'
+                  : provider === 'openai'
+                    ? `OpenAI (${settings?.aiOpenaiMode === 'api' ? 'API' : 'Codex CLI'})`
+                    : provider === 'anthropic'
+                      ? `Anthropic Claude (${settings?.aiAnthropicMode === 'api' ? 'API' : 'Claude CLI'})`
+                      : `Özel AI (${settings?.aiCustomMode === 'api' ? 'API' : 'Ollama CLI'})`}{' '}
+                ile Üret
               </button>
             </div>
           </div>

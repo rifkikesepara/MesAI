@@ -192,3 +192,53 @@ export const DownloadIcon: React.FC<IconProps> = ({ size = 16, className, style 
     <line x1="12" y1="15" x2="12" y2="3" />
   </svg>
 );
+
+// ==================== AI PROVIDER ICONS ====================
+
+/** Antigravity / Gemini Star Icon */
+export const AntigravityIcon: React.FC<IconProps> = ({ size = 16, className, style }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className} style={style}>
+    <path d="M12 2L14.4 9.6L22 12L14.4 14.4L12 22L9.6 14.4L2 12L9.6 9.6L12 2Z" />
+  </svg>
+);
+
+/** OpenAI Swirl Icon */
+export const OpenAiIcon: React.FC<IconProps> = ({ size = 16, className, style }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={className} style={style}>
+    <path d="M12 2.5a5.5 5.5 0 0 0-4.8 2.8L6.5 6.6a5.5 5.5 0 0 0-1.8 5.2 5.5 5.5 0 0 0 2.2 4.6v1.4a5.5 5.5 0 0 0 4.8 2.8 5.5 5.5 0 0 0 4.8-2.8l.7-1.3a5.5 5.5 0 0 0 1.8-5.2 5.5 5.5 0 0 0-2.2-4.6v-1.4A5.5 5.5 0 0 0 12 2.5z" />
+    <path d="M12 6.5v11" />
+    <path d="M7.5 9.25l9 5.5" />
+    <path d="M7.5 14.75l9-5.5" />
+  </svg>
+);
+
+/** Anthropic Claude Burst Icon */
+export const AnthropicIcon: React.FC<IconProps> = ({ size = 16, className, style }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className} style={style}>
+    <path d="M13.8 3.5h3.4L23 20.5h-3.6l-1.3-3.6h-5.4l-1.3 3.6H7.8L13.8 3.5zm2.7 10.7l-1.9-5.3-1.9 5.3h3.8zM4.6 15.5l1.6-4.4 1.6 4.4H4.6z" />
+  </svg>
+);
+
+/** Ollama / Custom LLM Terminal/Robot Icon */
+export const OllamaIcon: React.FC<IconProps> = ({ size = 16, className, style }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} style={style}>
+    <rect x="4" y="4" width="16" height="14" rx="3" />
+    <circle cx="9" cy="10" r="1.5" fill="currentColor" />
+    <circle cx="15" cy="10" r="1.5" fill="currentColor" />
+    <path d="M9 14h6" />
+    <path d="M12 2v2" />
+    <path d="M2 11h2" />
+    <path d="M20 11h2" />
+    <path d="M7 18v3" />
+    <path d="M17 18v3" />
+  </svg>
+);
+
+/** Terminal Command Line Icon */
+export const TerminalIcon: React.FC<IconProps> = ({ size = 16, className, style }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} style={style}>
+    <polyline points="4 17 10 11 4 5" />
+    <line x1="12" y1="19" x2="20" y2="19" />
+  </svg>
+);
+

@@ -1,15 +1,22 @@
 import type { MesaiRepository } from '../db/repositories';
 import {
+  AIProvider,
+  AnthropicApiProvider,
   buildSanitizedAiPrompt,
+  ClaudeCliProvider,
+  CodexCliProvider,
   fitItemsToMaxChars,
   GeminiCliProvider,
-  LocalRuleProvider
+  LocalRuleProvider,
+  OllamaCliProvider,
+  OpenAiApiProvider
 } from './ai-provider';
 import { toLocalIsoString } from './timestamp-resolver';
 import type {
   ActivityCategory,
   ActivityStatus,
   AiPreviewPayload,
+  AIProviderType,
   DailyReport
 } from '../../shared/types';
 
@@ -32,6 +39,7 @@ const STATUS_LABELS: Record<ActivityStatus, string> = {
 export class ReportService {
   private readonly localProvider = new LocalRuleProvider();
   private readonly geminiProvider: GeminiCliProvider;
+  private aiApiKeyResolver?: (provider: 'openai' | 'anthropic' | 'custom') => string | null;
   private jiraIssueSyncer?: (jiraKeys: string[]) => Promise<void>;
 
   constructor(
@@ -39,6 +47,10 @@ export class ReportService {
     customGeminiProvider?: GeminiCliProvider
   ) {
     this.geminiProvider = customGeminiProvider ?? new GeminiCliProvider();
+  }
+
+  public setAiApiKeyResolver(resolver: (provider: 'openai' | 'anthropic' | 'custom') => string | null): void {
+    this.aiApiKeyResolver = resolver;
   }
 
   public setJiraIssueSyncer(syncer: (jiraKeys: string[]) => Promise<void>): void {
@@ -49,8 +61,9 @@ export class ReportService {
     return this.geminiProvider;
   }
 
-  public previewAiPayload(reportDate: string, maxChars?: number): AiPreviewPayload {
+  public previewAiPayload(reportDate: string, maxChars?: number, providerOverride?: AIProviderType): AiPreviewPayload {
     const settings = this.repo.getSettings();
+    const effectiveProvider = providerOverride ?? settings.aiProvider;
     const effectiveMaxChars =
       typeof maxChars === 'number' && maxChars >= 120
         ? Math.floor(maxChars)
@@ -76,20 +89,93 @@ export class ReportService {
       `Maksimum karakter sınırı: ${effectiveMaxChars} karakter.`,
       'Mesajlar, kod diff özetleri ve Jira bağlamları <untrusted_evidence_json> bloğu içinde güvenilmeyen kaynak verisi olarak izole edilir.'
     ];
-    if (!settings.allowRemoteAiSend) {
+    if (!settings.allowRemoteAiSend && effectiveProvider !== 'local_rule') {
       warnings.push(
-        'Ayarlarda "Uzak AI Gönderim İzni" kapalıdır. Gemini CLI ile gönderim yapmak için önizleme onayı gereklidir.'
+        'Ayarlarda "Uzak AI Gönderim İzni" kapalıdır. AI servisine veri gönderimi yapmak için önizleme onayı gereklidir.'
       );
     }
 
     return {
       reportDate,
-      provider: settings.aiProvider,
+      provider: effectiveProvider,
       activityCount: activities.length,
       sanitizedPromptPreview,
       warnings,
       maxChars: effectiveMaxChars
     };
+  }
+
+  private getProviderInstance(provider: AIProviderType): { provider: AIProvider; isCli: boolean } {
+    const settings = this.repo.getSettings();
+    switch (provider) {
+      case 'gemini_cli':
+        return { provider: this.geminiProvider, isCli: true };
+      case 'openai': {
+        const useCli =
+          settings.aiOpenaiMode === 'cli' ||
+          (settings.aiOpenaiMode !== 'api' &&
+            (!this.aiApiKeyResolver?.('openai') || Boolean(CodexCliProvider.resolveCodexCliPath())));
+        if (useCli && CodexCliProvider.resolveCodexCliPath()) {
+          return {
+            provider: new CodexCliProvider({ model: settings.aiOpenaiModel || settings.aiModel }),
+            isCli: true
+          };
+        }
+        return {
+          provider: new OpenAiApiProvider({
+            providerType: 'openai',
+            apiKeyResolver: () => this.aiApiKeyResolver?.('openai') ?? null,
+            model: settings.aiOpenaiModel || settings.aiModel,
+            customBaseUrl: settings.aiOpenaiBaseUrl || undefined
+          }),
+          isCli: false
+        };
+      }
+      case 'anthropic': {
+        const useCli =
+          settings.aiAnthropicMode === 'cli' ||
+          (settings.aiAnthropicMode !== 'api' &&
+            (!this.aiApiKeyResolver?.('anthropic') && Boolean(ClaudeCliProvider.resolveClaudeCliPath())));
+        if (useCli && ClaudeCliProvider.resolveClaudeCliPath()) {
+          return {
+            provider: new ClaudeCliProvider({ model: settings.aiAnthropicModel || settings.aiModel }),
+            isCli: true
+          };
+        }
+        return {
+          provider: new AnthropicApiProvider({
+            apiKeyResolver: () => this.aiApiKeyResolver?.('anthropic') ?? null,
+            model: settings.aiAnthropicModel || settings.aiModel
+          }),
+          isCli: false
+        };
+      }
+      case 'custom': {
+        const useCli =
+          settings.aiCustomMode === 'cli' ||
+          (settings.aiCustomMode !== 'api' &&
+            !settings.aiCustomBaseUrl &&
+            Boolean(OllamaCliProvider.resolveOllamaCliPath()));
+        if (useCli && OllamaCliProvider.resolveOllamaCliPath()) {
+          return {
+            provider: new OllamaCliProvider({ model: settings.aiCustomModel || settings.aiModel }),
+            isCli: true
+          };
+        }
+        return {
+          provider: new OpenAiApiProvider({
+            providerType: 'custom',
+            apiKeyResolver: () => this.aiApiKeyResolver?.('custom') ?? null,
+            model: settings.aiCustomModel || settings.aiModel,
+            customBaseUrl: settings.aiCustomBaseUrl
+          }),
+          isCli: false
+        };
+      }
+      case 'local_rule':
+      default:
+        return { provider: this.localProvider, isCli: false };
+    }
   }
 
   /**
@@ -99,9 +185,10 @@ export class ReportService {
    */
   public async generateReport(input: {
     reportDate: string;
-    provider: 'local_rule' | 'gemini_cli';
+    provider: AIProviderType;
     userConfirmedRemoteSend?: boolean;
     maxChars?: number;
+    promptOverride?: string;
   }): Promise<DailyReport> {
     if (typeof input.maxChars === 'number' && input.maxChars >= 120) {
       this.repo.updateSettings({ reportMaxChars: Math.floor(input.maxChars) });
@@ -139,23 +226,41 @@ export class ReportService {
     const remainingBudget = Math.max(0, effectiveMaxChars - userEditedChars);
     const providerBudget = Math.max(120, remainingBudget);
 
+    const { provider: providerInstance, isCli } = this.getProviderInstance(input.provider);
+
     let effectiveProvider: string = input.provider;
+    if (input.provider === 'gemini_cli') {
+      effectiveProvider = 'gemini_cli (Antigravity CLI / agy)';
+    } else if (input.provider === 'openai') {
+      effectiveProvider = isCli
+        ? `openai (Codex CLI - ${settings.aiOpenaiModel || 'gpt-6.1-sol'})`
+        : `openai (API - ${settings.aiOpenaiModel || 'gpt-4o-mini'})`;
+    } else if (input.provider === 'anthropic') {
+      effectiveProvider = isCli
+        ? `anthropic (Claude CLI - ${settings.aiAnthropicModel || 'claude-3-5-sonnet'})`
+        : `anthropic (API - ${settings.aiAnthropicModel || 'claude-3-5-sonnet'})`;
+    } else if (input.provider === 'custom') {
+      effectiveProvider = isCli
+        ? `custom (Ollama CLI - ${settings.aiCustomModel || 'llama'})`
+        : `custom (API - ${settings.aiCustomModel || 'custom'})`;
+    }
     let draftItems;
 
-    if (input.provider === 'gemini_cli') {
-      if (!settings.allowRemoteAiSend && !input.userConfirmedRemoteSend) {
+    if (input.provider !== 'local_rule') {
+      if (!settings.allowRemoteAiSend && !input.userConfirmedRemoteSend && !isCli) {
         throw new Error(
           'Uzak AI servisine veri gönderimi varsayılan olarak kapalıdır. Lütfen veri önizlemesini onaylayın veya Yerel Kurallı Motoru seçin.'
         );
       }
 
       try {
-        draftItems = await this.geminiProvider.generateReportItems(
+        draftItems = await providerInstance.generateReportItems(
           input.reportDate,
           activities,
           providerBudget,
           undefined,
-          jiraContextMap
+          jiraContextMap,
+          input.promptOverride
         );
         this.repo.updateSyncState({
           connector: 'ai_provider',
@@ -171,7 +276,7 @@ export class ReportService {
           connector: 'ai_provider',
           status: 'fallback_local',
           lastAttemptAt: attemptAt,
-          lastError: `Gemini CLI başarısız oldu, yerel kurallı motora geçildi: ${errMsg}`
+          lastError: `${input.provider} başarısız oldu, yerel kurallı motora geçildi: ${errMsg}`
         });
         draftItems = await this.localProvider.generateReportItems(
           input.reportDate,
@@ -180,7 +285,7 @@ export class ReportService {
           undefined,
           jiraContextMap
         );
-        effectiveProvider = 'local_rule (AI hata sonrası yerel yedek)';
+        effectiveProvider = `local_rule (${input.provider} hata sonrası yerel yedek)`;
       }
     } else {
       draftItems = await this.localProvider.generateReportItems(

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import type { DashboardSummary } from '../../shared/ipc-channels';
-import type { Evidence, Project } from '../../shared/types';
+import type { AppSettings, Evidence, Project } from '../../shared/types';
 import {
   ProjectsIcon,
   SearchIcon,
@@ -8,6 +8,8 @@ import {
   ActivityIcon,
   ReportIcon
 } from '../components/Icons';
+import { SkeletonDashboard } from '../components/Skeleton';
+import { VirtualList } from '../components/VirtualList';
 
 export const SOURCE_LABELS: Record<string, string> = {
   zoom_chat: 'Zoom Sohbet',
@@ -54,7 +56,7 @@ export const DashboardView: React.FC<{
   onInspectEvidence: (ev: Evidence) => void;
 }> = ({ summary, loading, onRefresh, onOpenTab, onInspectEvidence }) => {
   if (loading && !summary) {
-    return <div className="card">Veriler yükleniyor...</div>;
+    return <SkeletonDashboard />;
   }
 
   if (!summary) {
@@ -144,7 +146,7 @@ export const DashboardView: React.FC<{
               <strong>Toplam Kaydedilen Mesaj:</strong> {zoomSync?.recordsCount ?? 0}
             </div>
             {zoomSync?.lastError && (
-              <div style={{ color: '#fca5a5' }}>
+              <div style={{ color: 'var(--danger)' }}>
                 <strong>Durum Detayı:</strong> {zoomSync.lastError}
               </div>
             )}
@@ -170,7 +172,7 @@ export const DashboardView: React.FC<{
               <strong>Toplanan Git/Dosya Kaydı:</strong> {gitSync?.recordsCount ?? 0}
             </div>
             {gitSync?.lastError && (
-              <div style={{ color: '#fca5a5' }}>
+              <div style={{ color: 'var(--danger)' }}>
                 <strong>Son Hata:</strong> {gitSync.lastError}
               </div>
             )}
@@ -223,7 +225,7 @@ export const DashboardView: React.FC<{
                   Özgün Zaman: <code>{act.rawTimestampText}</code>
                 </div>
               </div>
-              <div style={{ marginTop: '6px', color: '#e2e8f0' }}>{act.summary}</div>
+              <div style={{ marginTop: '6px', color: 'var(--text-primary)' }}>{act.summary}</div>
               {act.evidences && act.evidences.length > 0 && (
                 <div style={{ marginTop: '6px' }}>
                   <button
@@ -247,6 +249,8 @@ export const DashboardView: React.FC<{
 export const ProjectsView: React.FC<{
   projects: Project[];
   watchRootPath: string;
+  settings?: AppSettings | null;
+  onUpdateSettings?: (partial: Partial<AppSettings>) => Promise<void>;
   onScanRoot: (rootPath: string) => Promise<void>;
   onSelectFolder: () => Promise<string | null>;
   onUpdateProject: (proj: {
@@ -256,13 +260,45 @@ export const ProjectsView: React.FC<{
     mappedChatNames: string[];
     jiraProjectKeys: string[];
   }) => Promise<void>;
-}> = ({ projects, watchRootPath, onScanRoot, onSelectFolder, onUpdateProject }) => {
+}> = ({ projects, watchRootPath, settings, onUpdateSettings, onScanRoot, onSelectFolder, onUpdateProject }) => {
   const [rootInput, setRootInput] = useState(watchRootPath || 'C:\\Repos');
   const [scanning, setScanning] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [chatInput, setChatInput] = useState('');
   const [jiraInput, setJiraInput] = useState('');
   const [exclInput, setExclInput] = useState('');
+
+  // Global mapping state
+  const [editingGlobal, setEditingGlobal] = useState(false);
+  const [globalChatInput, setGlobalChatInput] = useState('');
+  const [globalJiraInput, setGlobalJiraInput] = useState('');
+  const [globalExclInput, setGlobalExclInput] = useState('');
+
+  const startEditGlobal = () => {
+    setGlobalChatInput((settings?.globalMappedChatNames || []).join(', '));
+    setGlobalJiraInput((settings?.globalJiraProjectKeys || []).join(', '));
+    setGlobalExclInput((settings?.globalExclusions || []).join(', '));
+    setEditingGlobal(true);
+  };
+
+  const saveEditGlobal = async () => {
+    if (!onUpdateSettings) return;
+    await onUpdateSettings({
+      globalMappedChatNames: globalChatInput
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+      globalJiraProjectKeys: globalJiraInput
+        .split(',')
+        .map((s) => s.trim().toUpperCase())
+        .filter(Boolean),
+      globalExclusions: globalExclInput
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+    });
+    setEditingGlobal(false);
+  };
 
   const handleBrowse = async () => {
     const picked = await onSelectFolder();
@@ -352,6 +388,117 @@ export const ProjectsView: React.FC<{
         </div>
       </div>
 
+      {/* Global Mappings & Exclusions Card */}
+      <div className="card" style={{ borderLeft: '4px solid var(--accent)' }}>
+        <div className="card-header">
+          <div>
+            <h3 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span>🌐 Genel (Global) Eşleştirme & Filtre Tanımları</span>
+            </h3>
+            <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '2px' }}>
+              Burada tanımlanan kurallar tek tek projelere ek olarak tüm projelere otomatik uygulanır.
+            </div>
+          </div>
+          {onUpdateSettings && (
+            <button
+              className="btn btn-sm"
+              onClick={() => (editingGlobal ? setEditingGlobal(false) : startEditGlobal())}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+            >
+              <SettingsIcon size={13} />
+              <span>{editingGlobal ? 'Kapat' : 'Genel Kuralları Düzenle'}</span>
+            </button>
+          )}
+        </div>
+
+        <div style={{ fontSize: '12.5px', color: 'var(--text-secondary)', display: 'grid', gap: '4px', marginTop: '4px' }}>
+          <div>
+            <strong>Global Zoom Sohbetleri ({settings?.globalMappedChatNames?.length || 0}):</strong>{' '}
+            {settings?.globalMappedChatNames && settings.globalMappedChatNames.length > 0 ? (
+              settings.globalMappedChatNames.map((c) => (
+                <span key={c} className="badge badge-info" style={{ marginRight: '4px' }}>
+                  {c}
+                </span>
+              ))
+            ) : (
+              <span style={{ color: 'var(--text-muted)' }}>Tanımlanmadı</span>
+            )}
+          </div>
+          <div>
+            <strong>Global Jira Önekleri ({settings?.globalJiraProjectKeys?.length || 0}):</strong>{' '}
+            {settings?.globalJiraProjectKeys && settings.globalJiraProjectKeys.length > 0 ? (
+              settings.globalJiraProjectKeys.map((k) => (
+                <span key={k} className="badge badge-success" style={{ marginRight: '4px' }}>
+                  {k}
+                </span>
+              ))
+            ) : (
+              <span style={{ color: 'var(--text-muted)' }}>Tanımlanmadı</span>
+            )}
+          </div>
+          <div>
+            <strong>Global Hariç Tutulan Filtreler ({settings?.globalExclusions?.length || 0}):</strong>{' '}
+            {(settings?.globalExclusions || []).slice(0, 8).join(', ')}
+            {(settings?.globalExclusions || []).length > 8 ? ` +${(settings?.globalExclusions || []).length - 8} daha...` : ''}
+          </div>
+        </div>
+
+        {editingGlobal && onUpdateSettings && (
+          <div
+            style={{
+              marginTop: '12px',
+              padding: '12px',
+              background: 'var(--bg-primary)',
+              borderRadius: '8px',
+              display: 'grid',
+              gap: '10px'
+            }}
+          >
+            <div>
+              <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                Genel Zoom Sohbet / Kanal Adları (virgülle ayırın, örn: BAM Ekibi, Genel Duyurular)
+              </label>
+              <input
+                className="input"
+                value={globalChatInput}
+                onChange={(e) => setGlobalChatInput(e.target.value)}
+                placeholder="Örn: BAM Ekibi, Sprint Planning, Genel Duyurular"
+              />
+            </div>
+            <div>
+              <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                Genel Jira İş Anahtarı Önekleri (virgülle ayırın, örn: BAM, CORE, INFRA)
+              </label>
+              <input
+                className="input"
+                value={globalJiraInput}
+                onChange={(e) => setGlobalJiraInput(e.target.value)}
+                placeholder="Örn: BAM, CORE, DEVOPS"
+              />
+            </div>
+            <div>
+              <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                Genel Hariç Tutulan Dosya / Klasör Kalıpları (virgülle ayırın)
+              </label>
+              <input
+                className="input"
+                value={globalExclInput}
+                onChange={(e) => setGlobalExclInput(e.target.value)}
+                placeholder="Örn: node_modules, .git, dist, build, target"
+              />
+            </div>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button className="btn btn-sm btn-primary" onClick={saveEditGlobal}>
+                Genel Ayarları Kaydet
+              </button>
+              <button className="btn btn-sm" onClick={() => setEditingGlobal(false)}>
+                İptal
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
       <div className="card">
         <div className="card-header">
           <h3 className="card-title">Keşfedilen Git Projeleri ({projects.length})</h3>
@@ -362,7 +509,10 @@ export const ProjectsView: React.FC<{
             Bu klasör altında henüz Git projesi bulunamadı.
           </div>
         ) : (
-          projects.map((p) => (
+          <VirtualList
+            items={projects}
+            itemHeight={105}
+            renderItem={(p) => (
             <div key={p.id} className="item-row">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div>
@@ -407,7 +557,7 @@ export const ProjectsView: React.FC<{
                 </div>
               </div>
 
-              <div style={{ fontSize: '12.5px', color: '#cbd5e1', marginTop: '6px' }}>
+              <div style={{ fontSize: '12.5px', color: 'var(--text-secondary)', marginTop: '6px' }}>
                 <span>
                   <strong>Eşleşen Zoom Sohbetleri:</strong>{' '}
                   {p.mappedChatNames.length > 0 ? p.mappedChatNames.join(', ') : 'Tanımlanmadı'}
@@ -476,9 +626,10 @@ export const ProjectsView: React.FC<{
                 </div>
               )}
             </div>
-          ))
-        )}
-      </div>
+          )}
+        />
+      )}
     </div>
-  );
+  </div>
+);
 };
