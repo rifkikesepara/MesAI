@@ -5,10 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { MesaiDatabase } from '../src/main/db/database';
 import { MesaiRepository } from '../src/main/db/repositories';
-import { resolveZoomTimestamp } from '../src/main/services/timestamp-resolver';
+import { getTodayLocalDate, resolveZoomTimestamp } from '../src/main/services/timestamp-resolver';
 import { MatcherService } from '../src/main/services/matcher-service';
 import { GitFileWatcherService, shouldExcludeFilePath } from '../src/main/services/git-file-watcher';
-import { GeminiCliProvider } from '../src/main/services/ai-provider';
+import { GeminiCliProvider, buildSanitizedAiPrompt } from '../src/main/services/ai-provider';
 import { ReportService } from '../src/main/services/report-service';
 import { ZoomReaderAdapter } from '../src/main/services/zoom-adapter';
 import { IntegrationsService } from '../src/main/services/integrations-service';
@@ -683,8 +683,9 @@ describe('MesAI Core Verification Suite', () => {
       summary: 'OpenAI, Anthropic ve Özel LLM entegrasyonu tamamlandı.'
     });
 
+    const todayDate = getTodayLocalDate();
     const report = await reportService.generateReport({
-      reportDate: '2026-10-17',
+      reportDate: todayDate,
       provider: 'openai',
       userConfirmedRemoteSend: true
     });
@@ -696,7 +697,82 @@ describe('MesAI Core Verification Suite', () => {
     db.close();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
+
+  it('11. untrusted_evidence_json is never truncated mid-JSON and promptOverride is honored', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mesai-prompt-test-'));
+    const db = new MesaiDatabase(path.join(tmpDir, 'test.db'));
+    const repo = new MesaiRepository(db);
+
+    const today = getTodayLocalDate();
+
+    // Create 40 activities to simulate a large work day
+    for (let i = 0; i < 40; i++) {
+      repo.addManualNote({
+        projectId: null,
+        category: 'development',
+        status: 'completed',
+        title: `Görev ${i} Kapsamlı Mimari Geliştirme ve Test`,
+        summary: `Bileşen ${i} üzerinde kapsamlı refactoring gerçekleştirildi. LogFiles, InfiniteGrid ve BAM veri modelleri güncellendi. Kod diff detayı: function test${i}() { console.log("detaylı diff içeriği ${i}"); }`
+      });
+    }
+
+    const activities = repo.listActivities({});
+    const prompt = buildSanitizedAiPrompt(today, activities, 1000);
+
+    // 1. untrusted_evidence_json tags must exist and match
+    const openTag = '<untrusted_evidence_json>';
+    const closeTag = '</untrusted_evidence_json>';
+    const lastOpenIndex = prompt.lastIndexOf(openTag);
+    const lastCloseIndex = prompt.lastIndexOf(closeTag);
+    assert.ok(lastOpenIndex !== -1, 'Opening tag must exist');
+    assert.ok(lastCloseIndex !== -1, 'Closing tag must exist and never be sliced off');
+    assert.ok(lastCloseIndex > lastOpenIndex, 'Closing tag must come after opening tag');
+
+    const jsonStr = prompt.slice(lastOpenIndex + openTag.length, lastCloseIndex).trim();
+    let parsed: any;
+    assert.doesNotThrow(() => {
+      parsed = JSON.parse(jsonStr);
+    }, 'Evidence JSON inside <untrusted_evidence_json> must be 100% valid parseable JSON');
+    assert.ok(parsed && typeof parsed === 'object', 'Parsed evidence payload must be an object');
+
+    // 2. promptOverride is forwarded and honored by provider
+    let receivedPrompt = '';
+    const mockProvider = new GeminiCliProvider(async (p: string) => {
+      receivedPrompt = p;
+      return JSON.stringify({
+        items: [
+          {
+            workItemId: null,
+            projectId: null,
+            category: 'development',
+            itemStatus: 'completed',
+            text: 'Özel prompt ile üretilen madde.',
+            isInsufficientEvidence: false,
+            insufficientReason: null,
+            evidenceIds: []
+          }
+        ]
+      });
+    });
+
+    const reportService = new ReportService(repo, mockProvider);
+
+    const customUserPrompt = 'KULLANICI TARAFINDAN ÖZELLEŞTİRİLMİŞ PROMPT: Raporu buna göre üret.';
+    const customReport = await reportService.generateReport({
+      reportDate: today,
+      provider: 'gemini_cli',
+      userConfirmedRemoteSend: true,
+      promptOverride: customUserPrompt
+    });
+
+    assert.equal(receivedPrompt, customUserPrompt, 'Provider must receive the user promptOverride verbatim');
+    assert.ok(customReport.items.some((item) => item.text.includes('Özel prompt ile üretilen madde')));
+
+    db.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
 });
+
 
 
 

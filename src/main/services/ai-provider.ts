@@ -23,7 +23,8 @@ export interface AIProvider {
     activities: Activity[],
     maxChars?: number,
     signal?: AbortSignal,
-    jiraContextMap?: Record<string, string>
+    jiraContextMap?: Record<string, string>,
+    promptOverride?: string
   ): Promise<GeneratedDraftItem[]>;
 }
 
@@ -711,7 +712,8 @@ export class LocalRuleProvider implements AIProvider {
     rawActivities: Activity[],
     maxChars = 1000,
     _signal?: AbortSignal,
-    jiraContextMap: Record<string, string> = {}
+    jiraContextMap: Record<string, string> = {},
+    _promptOverride?: string
   ): Promise<GeneratedDraftItem[]> {
     // STRICT DATE FILTER: Only include activities whose occurredAtIso local date matches reportDate
     const activities = rawActivities.filter(
@@ -1219,7 +1221,7 @@ export function buildSanitizedAiPrompt(
     '</untrusted_evidence_json>'
   ];
 
-  return instructions.join('\n').slice(0, 18_000);
+  return instructions.join('\n');
 }
 
 /**
@@ -1356,14 +1358,17 @@ export class GeminiCliProvider implements AIProvider {
     rawActivities: Activity[],
     maxChars = 1000,
     signal?: AbortSignal,
-    jiraContextMap: Record<string, string> = {}
+    jiraContextMap: Record<string, string> = {},
+    promptOverride?: string
   ): Promise<GeneratedDraftItem[]> {
     const activities = rawActivities.filter(
       (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
     );
     if (activities.length === 0) return [];
 
-    const prompt = buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap);
+    const prompt = promptOverride?.trim()
+      ? promptOverride.trim()
+      : buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap);
     const validEvidenceIds = new Set<string>(
       activities.flatMap((a) => (a.evidences ?? []).map((e) => e.id))
     );
@@ -1602,14 +1607,17 @@ export class CodexCliProvider implements AIProvider {
     rawActivities: Activity[],
     maxChars = 1000,
     signal?: AbortSignal,
-    jiraContextMap: Record<string, string> = {}
+    jiraContextMap: Record<string, string> = {},
+    promptOverride?: string
   ): Promise<GeneratedDraftItem[]> {
     const activities = rawActivities.filter(
       (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
     );
     if (activities.length === 0) return [];
 
-    const prompt = buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap);
+    const prompt = promptOverride?.trim()
+      ? promptOverride.trim()
+      : buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap);
     const validEvidenceIds = new Set<string>(
       activities.flatMap((a) => (a.evidences ?? []).map((e) => e.id))
     );
@@ -1738,14 +1746,17 @@ export class ClaudeCliProvider implements AIProvider {
     rawActivities: Activity[],
     maxChars = 1000,
     signal?: AbortSignal,
-    jiraContextMap: Record<string, string> = {}
+    jiraContextMap: Record<string, string> = {},
+    promptOverride?: string
   ): Promise<GeneratedDraftItem[]> {
     const activities = rawActivities.filter(
       (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
     );
     if (activities.length === 0) return [];
 
-    const prompt = buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap);
+    const prompt = promptOverride?.trim()
+      ? promptOverride.trim()
+      : buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap);
     const validEvidenceIds = new Set<string>(
       activities.flatMap((a) => (a.evidences ?? []).map((e) => e.id))
     );
@@ -1860,14 +1871,17 @@ export class OllamaCliProvider implements AIProvider {
     rawActivities: Activity[],
     maxChars = 1000,
     signal?: AbortSignal,
-    jiraContextMap: Record<string, string> = {}
+    jiraContextMap: Record<string, string> = {},
+    promptOverride?: string
   ): Promise<GeneratedDraftItem[]> {
     const activities = rawActivities.filter(
       (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
     );
     if (activities.length === 0) return [];
 
-    const prompt = buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap);
+    const prompt = promptOverride?.trim()
+      ? promptOverride.trim()
+      : buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap);
     const validEvidenceIds = new Set<string>(
       activities.flatMap((a) => (a.evidences ?? []).map((e) => e.id))
     );
@@ -2020,7 +2034,8 @@ export class OpenAiApiProvider implements AIProvider {
     rawActivities: Activity[],
     maxChars = 1000,
     signal?: AbortSignal,
-    jiraContextMap: Record<string, string> = {}
+    jiraContextMap: Record<string, string> = {},
+    promptOverride?: string
   ): Promise<GeneratedDraftItem[]> {
     const activities = rawActivities.filter(
       (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
@@ -2034,7 +2049,9 @@ export class OpenAiApiProvider implements AIProvider {
       );
     }
 
-    const prompt = buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap);
+    const prompt = promptOverride?.trim()
+      ? promptOverride.trim()
+      : buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap);
     const validEvidenceIds = new Set<string>(
       activities.flatMap((a) => (a.evidences ?? []).map((e) => e.id))
     );
@@ -2197,7 +2214,8 @@ export class AnthropicApiProvider implements AIProvider {
     rawActivities: Activity[],
     maxChars = 1000,
     signal?: AbortSignal,
-    jiraContextMap: Record<string, string> = {}
+    jiraContextMap: Record<string, string> = {},
+    promptOverride?: string
   ): Promise<GeneratedDraftItem[]> {
     const activities = rawActivities.filter(
       (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
@@ -2211,7 +2229,9 @@ export class AnthropicApiProvider implements AIProvider {
       );
     }
 
-    const prompt = buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap);
+    const prompt = promptOverride?.trim()
+      ? promptOverride.trim()
+      : buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap);
     const validEvidenceIds = new Set<string>(
       activities.flatMap((a) => (a.evidences ?? []).map((e) => e.id))
     );

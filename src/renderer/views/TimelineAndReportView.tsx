@@ -468,6 +468,7 @@ export const DailyReportView: React.FC<{
   const [newItemCategory, setNewItemCategory] = useState<ActivityCategory>('development');
   const [newItemStatus, setNewItemStatus] = useState<ActivityStatus>('completed');
   const [newItemProjectId, setNewItemProjectId] = useState<string>('');
+  const [customPrompt, setCustomPrompt] = useState('');
 
   useEffect(() => {
     void window.mesaiApi.getSettings().then((s) => {
@@ -509,6 +510,7 @@ export const DailyReportView: React.FC<{
     if (provider !== 'local_rule') {
       const preview = await window.mesaiApi.previewAiPayload(reportDate, validMaxChars, provider);
       setAiPreview(preview);
+      setCustomPrompt(preview.sanitizedPromptPreview);
       return;
     }
 
@@ -517,7 +519,8 @@ export const DailyReportView: React.FC<{
 
   const executeGenerate = async (
     selectedProvider: AIProviderType,
-    confirmedRemote: boolean
+    confirmedRemote: boolean,
+    promptOverride?: string
   ) => {
     setAiPreview(null);
     setLoading(true);
@@ -528,7 +531,8 @@ export const DailyReportView: React.FC<{
         reportDate,
         provider: selectedProvider,
         userConfirmedRemoteSend: confirmedRemote,
-        maxChars: validMaxChars
+        maxChars: validMaxChars,
+        promptOverride: promptOverride?.trim() || undefined
       });
       setReport(generated);
       setStatusBanner(
@@ -1120,7 +1124,7 @@ export const DailyReportView: React.FC<{
       {/* AI Data Preview Modal */}
       {aiPreview && (
         <div className="modal-backdrop">
-          <div className="modal-panel">
+          <div className="modal-panel" style={{ maxWidth: '920px', width: '95%' }}>
             <h3 style={{ marginTop: 0 }}>
               {provider === 'gemini_cli'
                 ? 'Gemini CLI'
@@ -1129,26 +1133,81 @@ export const DailyReportView: React.FC<{
                   : provider === 'anthropic'
                     ? `Anthropic Claude (${settings?.aiAnthropicMode === 'api' ? 'API' : 'Yerel Claude CLI'} — ${settings?.aiAnthropicModel || 'claude-3-5-sonnet'})`
                     : `Özel LLM (${settings?.aiCustomMode === 'api' ? 'API' : 'Ollama CLI'} — ${settings?.aiCustomModel || 'Yerel'})`}{' '}
-              — Gönderilecek Veri Önizlemesi ve Onayı
+              — Gönderilecek Prompt ve Kanıt Önizlemesi
             </h3>
             <div className="alert-banner alert-warning">
               {aiPreview.warnings.map((w, i) => (
                 <div key={i}>• {w}</div>
               ))}
             </div>
-            <p style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
-              Aşağıdaki yapılandırılmış veri ({aiPreview.activityCount} aktivite özeti){' '}
+            <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+              Aşağıdaki yapılandırılmış prompt ({aiPreview.activityCount} aktivite kanıtı){' '}
               {provider === 'gemini_cli'
                 ? 'Gemini CLI sürecine'
                 : provider === 'openai' && settings?.aiOpenaiMode !== 'api'
                   ? 'yerel Codex CLI sürecine (API anahtarı kullanılmaz)'
                   : 'seçili AI sağlayıcısına'}{' '}
-              güvenli parametre olarak iletilecektir:
+              güvenli girdi olarak iletilecektir. İsterseniz talimatları veya kanıt JSON'ını doğrudan düzenleyebilirsiniz:
             </p>
-            <pre className="code-pre" style={{ maxHeight: '300px' }}>
-              {aiPreview.sanitizedPromptPreview}
-            </pre>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '16px' }}>
+
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: '6px',
+                fontSize: '12px'
+              }}
+            >
+              <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>
+                Yapay Zekaya Gönderilecek Prompt Metni:
+              </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ color: 'var(--text-muted)' }}>
+                  {customPrompt.length.toLocaleString('tr-TR')} karakter • {customPrompt.split('\n').length} satır
+                </span>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => setCustomPrompt(aiPreview.sanitizedPromptPreview)}
+                  disabled={customPrompt === aiPreview.sanitizedPromptPreview}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '2px 8px', fontSize: '11px' }}
+                  title="Prompt metnini orijinal haline döndürür"
+                >
+                  <RefreshIcon size={12} />
+                  <span>Varsayılana Sıfırla</span>
+                </button>
+              </div>
+            </div>
+
+            <textarea
+              className="input"
+              value={customPrompt}
+              onChange={(e) => setCustomPrompt(e.target.value)}
+              style={{
+                width: '100%',
+                height: '340px',
+                fontFamily: 'Consolas, "Fira Code", monospace',
+                fontSize: '11.5px',
+                lineHeight: '1.45',
+                resize: 'vertical',
+                whiteSpace: 'pre',
+                overflowWrap: 'normal',
+                overflowX: 'auto',
+                background: 'var(--bg-tertiary)',
+                color: 'var(--text-primary)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '6px',
+                padding: '10px'
+              }}
+              placeholder="Yapay zekaya iletilecek prompt metni..."
+            />
+
+            <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
+              ✓ <code>&lt;untrusted_evidence_json&gt;</code> bloğu eksiksizdir. Yapay zekaya gidecek sistem talimatlarını veya kanıt JSON'ını serbestçe özelleştirebilirsiniz.
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '16px', flexWrap: 'wrap' }}>
               <button className="btn" onClick={() => setAiPreview(null)}>
                 İptal
               </button>
@@ -1160,9 +1219,9 @@ export const DailyReportView: React.FC<{
               </button>
               <button
                 className="btn btn-primary"
-                onClick={() => executeGenerate(provider, true)}
+                onClick={() => executeGenerate(provider, true, customPrompt)}
               >
-                Onayla ve{' '}
+                {customPrompt !== aiPreview.sanitizedPromptPreview ? 'Düzenlenen Prompt' : 'Onayla'} ve{' '}
                 {provider === 'gemini_cli'
                   ? 'Gemini CLI'
                   : provider === 'openai'

@@ -134,6 +134,7 @@ export interface MesaiApi {
     provider: AIProviderType;
     userConfirmedRemoteSend?: boolean;
     maxChars?: number;
+    promptOverride?: string;
   }): Promise<DailyReport>;
   updateReportItem(input: {
     itemId: string;

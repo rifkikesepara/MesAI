@@ -188,6 +188,7 @@ export class ReportService {
     provider: AIProviderType;
     userConfirmedRemoteSend?: boolean;
     maxChars?: number;
+    promptOverride?: string;
   }): Promise<DailyReport> {
     if (typeof input.maxChars === 'number' && input.maxChars >= 120) {
       this.repo.updateSettings({ reportMaxChars: Math.floor(input.maxChars) });
@@ -258,7 +259,8 @@ export class ReportService {
           activities,
           providerBudget,
           undefined,
-          jiraContextMap
+          jiraContextMap,
+          input.promptOverride
         );
         this.repo.updateSyncState({
           connector: 'ai_provider',

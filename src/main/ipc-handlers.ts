@@ -237,17 +237,23 @@ export function registerIpcHandlers(deps: {
       provider: AIProviderType;
       userConfirmedRemoteSend?: boolean;
       maxChars?: number;
+      promptOverride?: string;
     };
     const reportDate = assertDateYmd(obj.reportDate);
     const validProviders: AIProviderType[] = ['local_rule', 'gemini_cli', 'openai', 'anthropic', 'custom'];
     const provider: AIProviderType = validProviders.includes(obj.provider) ? obj.provider : 'local_rule';
     const maxChars =
       typeof obj.maxChars === 'number' && !Number.isNaN(obj.maxChars) ? obj.maxChars : undefined;
+    const promptOverride =
+      typeof obj.promptOverride === 'string' && obj.promptOverride.trim()
+        ? obj.promptOverride.trim()
+        : undefined;
     return reportService.generateReport({
       reportDate,
       provider,
       userConfirmedRemoteSend: Boolean(obj.userConfirmedRemoteSend),
-      maxChars
+      maxChars,
+      promptOverride
     });
   });
 
