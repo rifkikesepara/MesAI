@@ -8,6 +8,7 @@ import {
   ActivityIcon,
   ReportIcon
 } from '../components/Icons';
+import { SkeletonDashboard } from '../components/Skeleton';
 
 export const SOURCE_LABELS: Record<string, string> = {
   zoom_chat: 'Zoom Sohbet',
@@ -54,7 +55,7 @@ export const DashboardView: React.FC<{
   onInspectEvidence: (ev: Evidence) => void;
 }> = ({ summary, loading, onRefresh, onOpenTab, onInspectEvidence }) => {
   if (loading && !summary) {
-    return <div className="card">Veriler yükleniyor...</div>;
+    return <SkeletonDashboard />;
   }
 
   if (!summary) {

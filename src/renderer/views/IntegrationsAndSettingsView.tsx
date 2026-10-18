@@ -21,6 +21,7 @@ import {
   OllamaIcon,
   TerminalIcon,
 } from "../components/Icons";
+import { SkeletonIntegrations, SkeletonSettings } from "../components/Skeleton";
 
 export const IntegrationsView: React.FC<{
   onPollZoom: () => Promise<void>;
@@ -378,11 +379,7 @@ export const IntegrationsView: React.FC<{
   };
 
   if (loading && !health) {
-    return (
-      <div className="card">
-        Entegrasyon sağlık durumları kontrol ediliyor...
-      </div>
-    );
+    return <SkeletonIntegrations />;
   }
 
   if (!health) {
@@ -1961,7 +1958,7 @@ export const SettingsView: React.FC<{
   };
 
   if (!form) {
-    return <div className="card">Ayarlar yükleniyor...</div>;
+    return <SkeletonSettings />;
   }
 
   const handleSave = async (e: React.FormEvent) => {

@@ -25,6 +25,7 @@ import {
   TrashIcon,
   ExternalLinkIcon
 } from '../components/Icons';
+import { SkeletonActivityList, SkeletonReport } from '../components/Skeleton';
 
 export const TimelineView: React.FC<{
   projects: Project[];
@@ -273,7 +274,7 @@ export const TimelineView: React.FC<{
         </div>
 
         {loading ? (
-          <div style={{ padding: '16px 0', color: 'var(--text-secondary)' }}>Yükleniyor...</div>
+          <SkeletonActivityList count={5} />
         ) : activities.length === 0 ? (
           <div style={{ padding: '16px 0', color: 'var(--text-secondary)' }}>
             Seçilen filtrelere uygun aktivite bulunamadı.
@@ -781,12 +782,16 @@ export const DailyReportView: React.FC<{
         )}
       </div>
 
-      {report && (
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: '2fr 1fr',
-            gap: '16px',
+      {loading ? (
+        <SkeletonReport />
+      ) : (
+        <>
+          {report && (
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '2fr 1fr',
+                gap: '16px',
             marginBottom: '16px'
           }}
         >
@@ -1120,6 +1125,8 @@ export const DailyReportView: React.FC<{
           <strong>"Günlük Rapor Taslağı Oluştur"</strong> butonuna tıklayabilirsiniz.
         </div>
       )}
+    </>
+  )}
 
       {/* AI Data Preview Modal */}
       {aiPreview && (
