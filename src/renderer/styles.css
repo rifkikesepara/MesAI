@@ -1,5 +1,6 @@
 :root,
 [data-theme="dark"] {
+  color-scheme: dark;
   --bg-primary: #101010;
   --bg-secondary: #161616;
   --bg-surface: #1e1e1e;
@@ -33,6 +34,7 @@
 }
 
 [data-theme="light"] {
+  color-scheme: light;
   --bg-primary: #f8fafc;
   --bg-secondary: #ffffff;
   --bg-surface: #ffffff;
@@ -445,6 +447,27 @@ body {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+/* Datepicker native calendar icon styling */
+input[type="date"]::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  opacity: 0.75;
+  transition: opacity 0.15s ease, filter 0.15s ease;
+  padding: 2px;
+  border-radius: 4px;
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+}
+
+[data-theme="dark"] input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.9) brightness(1.2);
+}
+
+[data-theme="light"] input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: none;
 }
 
 .textarea {

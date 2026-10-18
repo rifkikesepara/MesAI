@@ -334,6 +334,12 @@ export const App: React.FC = () => {
             <ProjectsView
               projects={projects}
               watchRootPath={settings?.watchRootPath ?? 'C:\\Repos'}
+              settings={settings}
+              onUpdateSettings={async (partial) => {
+                const updated = await window.mesaiApi.updateSettings(partial);
+                setSettings(updated);
+                await refreshCoreData();
+              }}
               onScanRoot={async (rootPath) => {
                 const updated = await window.mesaiApi.scanRootForProjects(rootPath);
                 setProjects(updated);

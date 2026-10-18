@@ -264,6 +264,8 @@ export interface AppSettings {
   allowRemoteAiSend: boolean;
   autoLaunchOnStartup: boolean;
   globalExclusions: string[];
+  globalMappedChatNames?: string[];
+  globalJiraProjectKeys?: string[];
   jiraUrl: string;
   jiraEmail: string;
   jenkinsUrl: string;

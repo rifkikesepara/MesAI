@@ -2676,20 +2676,146 @@ export const SettingsView: React.FC<{
 
       <div className="card">
         <h3 className="card-title">
-          Koruyucu Dosya Filtreleri (Varsayılan Hariç Tutulanlar)
+          🌐 Genel (Global) Eşleştirme & Filtre Kuralları
         </h3>
         <p style={{ color: "var(--text-secondary)", fontSize: "13px" }}>
-          Aşağıdaki klasör ve dosya kalıpları dosya izleme ve Git çalışma ağacı
-          taramalarından otomatik olarak hariç tutulur:
+          Tüm projelere otomatik uygulanan genel Zoom sohbetleri, Jira önekleri ve hariç tutulan dosya filtreleri:
         </p>
-        <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
-          {form.globalExclusions.map((ex) => (
-            <span key={ex} className="badge badge-neutral">
-              {ex}
-            </span>
-          ))}
-          <span className="badge badge-neutral">.env*</span>
-          <span className="badge badge-neutral">*.tmp / *.log / *.swp</span>
+
+        <div style={{ display: "grid", gap: "14px", marginTop: "10px" }}>
+          <div>
+            <label style={{ fontSize: "12.5px", fontWeight: 600, color: "var(--text-primary)", display: "block", marginBottom: "4px" }}>
+              Genel Eşleşen Zoom Sohbet / Kanal Adları ({form.globalMappedChatNames?.length || 0})
+            </label>
+            <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "6px" }}>
+              {(form.globalMappedChatNames || []).map((c, i) => (
+                <span key={i} className="badge badge-info" style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                  <span>{c}</span>
+                  <span
+                    style={{ cursor: "pointer", fontWeight: "bold" }}
+                    onClick={() => {
+                      const next = (form.globalMappedChatNames || []).filter((_, idx) => idx !== i);
+                      setForm({ ...form, globalMappedChatNames: next });
+                      void onUpdateSettings({ globalMappedChatNames: next });
+                    }}
+                  >
+                    ×
+                  </span>
+                </span>
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: "8px" }}>
+              <input
+                className="input"
+                id="add-global-chat-input"
+                placeholder="Örn: BAM Ekibi, Sprint Sync"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    const val = e.currentTarget.value.trim();
+                    if (!val) return;
+                    const next = Array.from(new Set([...(form.globalMappedChatNames || []), val]));
+                    setForm({ ...form, globalMappedChatNames: next });
+                    void onUpdateSettings({ globalMappedChatNames: next });
+                    e.currentTarget.value = "";
+                  }
+                }}
+              />
+            </div>
+            <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "2px" }}>
+              Yazıp Enter'a basarak genel sohbet adı ekleyebilirsiniz.
+            </div>
+          </div>
+
+          <div>
+            <label style={{ fontSize: "12.5px", fontWeight: 600, color: "var(--text-primary)", display: "block", marginBottom: "4px" }}>
+              Genel Jira İş Anahtarı Önekleri ({form.globalJiraProjectKeys?.length || 0})
+            </label>
+            <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "6px" }}>
+              {(form.globalJiraProjectKeys || []).map((k, i) => (
+                <span key={i} className="badge badge-success" style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                  <span>{k}</span>
+                  <span
+                    style={{ cursor: "pointer", fontWeight: "bold" }}
+                    onClick={() => {
+                      const next = (form.globalJiraProjectKeys || []).filter((_, idx) => idx !== i);
+                      setForm({ ...form, globalJiraProjectKeys: next });
+                      void onUpdateSettings({ globalJiraProjectKeys: next });
+                    }}
+                  >
+                    ×
+                  </span>
+                </span>
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: "8px" }}>
+              <input
+                className="input"
+                id="add-global-jira-input"
+                placeholder="Örn: BAM, CORE, DEVOPS"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    const val = e.currentTarget.value.trim().toUpperCase();
+                    if (!val) return;
+                    const next = Array.from(new Set([...(form.globalJiraProjectKeys || []), val]));
+                    setForm({ ...form, globalJiraProjectKeys: next });
+                    void onUpdateSettings({ globalJiraProjectKeys: next });
+                    e.currentTarget.value = "";
+                  }
+                }}
+              />
+            </div>
+            <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "2px" }}>
+              Yazıp Enter'a basarak genel Jira öneki ekleyebilirsiniz.
+            </div>
+          </div>
+
+          <div>
+            <label style={{ fontSize: "12.5px", fontWeight: 600, color: "var(--text-primary)", display: "block", marginBottom: "4px" }}>
+              Genel Hariç Tutulan Dosya / Klasör Kalıpları ({form.globalExclusions?.length || 0})
+            </label>
+            <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "6px" }}>
+              {form.globalExclusions.map((ex, i) => (
+                <span key={i} className="badge badge-neutral" style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                  <span>{ex}</span>
+                  <span
+                    style={{ cursor: "pointer", fontWeight: "bold" }}
+                    onClick={() => {
+                      const next = form.globalExclusions.filter((_, idx) => idx !== i);
+                      setForm({ ...form, globalExclusions: next });
+                      void onUpdateSettings({ globalExclusions: next });
+                    }}
+                  >
+                    ×
+                  </span>
+                </span>
+              ))}
+              <span className="badge badge-neutral">.env*</span>
+              <span className="badge badge-neutral">*.tmp / *.log / *.swp</span>
+            </div>
+            <div style={{ display: "flex", gap: "8px" }}>
+              <input
+                className="input"
+                id="add-global-excl-input"
+                placeholder="Örn: target, dist, coverage"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    const val = e.currentTarget.value.trim();
+                    if (!val) return;
+                    const next = Array.from(new Set([...form.globalExclusions, val]));
+                    setForm({ ...form, globalExclusions: next });
+                    void onUpdateSettings({ globalExclusions: next });
+                    e.currentTarget.value = "";
+                  }
+                }}
+              />
+            </div>
+            <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "2px" }}>
+              Yazıp Enter'a basarak hariç tutulacak klasör/dosya kalıbı ekleyebilirsiniz.
+            </div>
+          </div>
         </div>
       </div>
 

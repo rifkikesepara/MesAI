@@ -26,6 +26,7 @@ import {
   ExternalLinkIcon
 } from '../components/Icons';
 import { SkeletonActivityList, SkeletonReport } from '../components/Skeleton';
+import { VirtualList } from '../components/VirtualList';
 
 export const TimelineView: React.FC<{
   projects: Project[];
@@ -280,7 +281,11 @@ export const TimelineView: React.FC<{
             Seçilen filtrelere uygun aktivite bulunamadı.
           </div>
         ) : (
-          activities.map((act) => (
+          <VirtualList
+            items={activities}
+            itemHeight={130}
+            maxHeight={750}
+            renderItem={(act) => (
             <div key={act.id} className="item-row">
               <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
@@ -429,11 +434,12 @@ export const TimelineView: React.FC<{
                 </div>
               )}
             </div>
-          ))
-        )}
-      </div>
+          )}
+        />
+      )}
     </div>
-  );
+  </div>
+);
 };
 
 function getLocalTodayYmd(): string {
@@ -906,7 +912,11 @@ export const DailyReportView: React.FC<{
               madde ekleyebilirsiniz.
             </div>
           ) : (
-            report.items.map((item) => (
+            <VirtualList
+              items={report.items}
+              itemHeight={115}
+              maxHeight={650}
+              renderItem={(item) => (
               <div key={item.id} className="item-row">
                 {editingItemId === item.id ? (
                   <div
@@ -1050,8 +1060,9 @@ export const DailyReportView: React.FC<{
                   </div>
                 )}
               </div>
-            ))
-          )}
+            )}
+          />
+        )}
 
           {/* Add manual item to report */}
           <form

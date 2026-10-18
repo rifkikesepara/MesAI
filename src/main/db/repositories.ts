@@ -62,6 +62,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
     '.vs',
     '.idea'
   ],
+  globalMappedChatNames: [],
+  globalJiraProjectKeys: [],
   jiraUrl: '',
   jiraEmail: '',
   jenkinsUrl: '',

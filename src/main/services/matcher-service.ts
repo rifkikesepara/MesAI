@@ -40,15 +40,20 @@ export class MatcherService {
     const combinedText = combinedTextParts.join(' ');
     const jiraKeys = extractJiraKeys(combinedText);
 
+    const settings = this.repo.getSettings();
+    const globalJiraKeys = (settings.globalJiraProjectKeys || []).map((k) => k.toUpperCase().trim()).filter(Boolean);
+    const globalChatNames = (settings.globalMappedChatNames || []).map((c) => c.toLowerCase().trim()).filter(Boolean);
+
     // 1. Deterministic Match: Explicit Jira Key in message/link/branch/commit
     if (jiraKeys.length > 0) {
       for (const jiraKey of jiraKeys) {
-        const prefix = jiraKey.split('-')[0];
+        const prefix = jiraKey.split('-')[0].toUpperCase();
         const matchedProject =
           projects.find((p) =>
             p.jiraProjectKeys.some((k) => k.toUpperCase() === prefix)
           ) ??
           (act.projectId ? projects.find((p) => p.id === act.projectId) : null) ??
+          (globalJiraKeys.includes(prefix) ? projects[0] ?? null : null) ??
           null;
 
         const workItem = this.repo.upsertWorkItem({
@@ -86,9 +91,12 @@ export class MatcherService {
     // 2. Deterministic Match: User-configured Chat Name -> Project mapping
     if (act.chatOrRepoName) {
       const chatLower = act.chatOrRepoName.toLowerCase().trim();
-      const chatMatchedProject = projects.find((p) =>
-        p.mappedChatNames.some((cn) => cn.toLowerCase().trim() === chatLower)
-      );
+      const chatMatchedProject =
+        projects.find((p) =>
+          p.mappedChatNames.some((cn) => cn.toLowerCase().trim() === chatLower)
+        ) ??
+        (globalChatNames.includes(chatLower) ? (act.projectId ? projects.find(p => p.id === act.projectId) : projects[0]) ?? null : null);
+
       if (chatMatchedProject) {
         this.repo.upsertActivityLink({
           activityId: act.id,
