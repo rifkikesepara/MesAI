@@ -145,7 +145,7 @@ export const DashboardView: React.FC<{
               <strong>Toplam Kaydedilen Mesaj:</strong> {zoomSync?.recordsCount ?? 0}
             </div>
             {zoomSync?.lastError && (
-              <div style={{ color: '#fca5a5' }}>
+              <div style={{ color: 'var(--danger)' }}>
                 <strong>Durum Detayı:</strong> {zoomSync.lastError}
               </div>
             )}
@@ -171,7 +171,7 @@ export const DashboardView: React.FC<{
               <strong>Toplanan Git/Dosya Kaydı:</strong> {gitSync?.recordsCount ?? 0}
             </div>
             {gitSync?.lastError && (
-              <div style={{ color: '#fca5a5' }}>
+              <div style={{ color: 'var(--danger)' }}>
                 <strong>Son Hata:</strong> {gitSync.lastError}
               </div>
             )}
@@ -224,7 +224,7 @@ export const DashboardView: React.FC<{
                   Özgün Zaman: <code>{act.rawTimestampText}</code>
                 </div>
               </div>
-              <div style={{ marginTop: '6px', color: '#e2e8f0' }}>{act.summary}</div>
+              <div style={{ marginTop: '6px', color: 'var(--text-primary)' }}>{act.summary}</div>
               {act.evidences && act.evidences.length > 0 && (
                 <div style={{ marginTop: '6px' }}>
                   <button
@@ -408,7 +408,7 @@ export const ProjectsView: React.FC<{
                 </div>
               </div>
 
-              <div style={{ fontSize: '12.5px', color: '#cbd5e1', marginTop: '6px' }}>
+              <div style={{ fontSize: '12.5px', color: 'var(--text-secondary)', marginTop: '6px' }}>
                 <span>
                   <strong>Eşleşen Zoom Sohbetleri:</strong>{' '}
                   {p.mappedChatNames.length > 0 ? p.mappedChatNames.join(', ') : 'Tanımlanmadı'}

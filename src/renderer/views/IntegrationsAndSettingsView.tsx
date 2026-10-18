@@ -427,7 +427,7 @@ export const IntegrationsView: React.FC<{
               <strong>Toplam Kayıt:</strong> {health.zoom.recordsCount}
             </div>
             {health.zoom.lastError && (
-              <div style={{ color: "#fca5a5" }}>
+              <div style={{ color: "var(--danger)" }}>
                 <strong>Durum Mesajı:</strong> {health.zoom.lastError}
               </div>
             )}
@@ -475,7 +475,7 @@ export const IntegrationsView: React.FC<{
               {health.git.lastSuccessAt || "Henüz yok"}
             </div>
             {health.git.lastError && (
-              <div style={{ color: "#fca5a5" }}>
+              <div style={{ color: "var(--danger)" }}>
                 <strong>Son Hata:</strong> {health.git.lastError}
               </div>
             )}
@@ -537,7 +537,7 @@ export const IntegrationsView: React.FC<{
               : "Kapalı (Varsayılan Güvenli Mod)"}
           </div>
           {health.ai.lastError && (
-            <div style={{ color: "#fbbf24" }}>
+            <div style={{ color: "var(--warning)" }}>
               <strong>Son AI Notu / Durumu:</strong> {health.ai.lastError}
             </div>
           )}
@@ -1825,7 +1825,7 @@ export const IntegrationsView: React.FC<{
               onChange={(e) => setJiraToken(e.target.value)}
             />
             {health.jira.lastError && (
-              <div style={{ fontSize: "12px", color: "#fca5a5" }}>
+              <div style={{ fontSize: "12px", color: "var(--danger)" }}>
                 {health.jira.lastError}
               </div>
             )}
@@ -1891,7 +1891,7 @@ export const IntegrationsView: React.FC<{
               onChange={(e) => setJenkinsToken(e.target.value)}
             />
             {health.jenkins.lastError && (
-              <div style={{ fontSize: "12px", color: "#fca5a5" }}>
+              <div style={{ fontSize: "12px", color: "var(--danger)" }}>
                 {health.jenkins.lastError}
               </div>
             )}
@@ -2694,7 +2694,7 @@ export const SettingsView: React.FC<{
       </div>
 
       <div className="card" style={{ borderColor: "rgba(239, 68, 68, 0.4)" }}>
-        <h3 className="card-title" style={{ color: "#fca5a5" }}>
+        <h3 className="card-title" style={{ color: "var(--danger)" }}>
           Yerel Veri Yönetimi ve Temizleme
         </h3>
         <p style={{ color: "var(--text-secondary)", fontSize: "13px" }}>
@@ -2712,7 +2712,7 @@ export const SettingsView: React.FC<{
           </button>
         ) : (
           <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-            <span style={{ color: "#fca5a5", fontSize: "13px" }}>
+            <span style={{ color: "var(--danger)", fontSize: "13px" }}>
               Tüm aktiviteler ve raporlar silinecek. Emin misiniz?
             </span>
             <button

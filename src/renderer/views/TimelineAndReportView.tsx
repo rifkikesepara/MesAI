@@ -827,7 +827,7 @@ export const DailyReportView: React.FC<{
                   background: 'var(--bg-primary)',
                   borderRadius: '8px',
                   border: '1px solid var(--border-color)',
-                  color: '#f8fafc',
+                  color: 'var(--text-primary)',
                   fontSize: '13.5px',
                   lineHeight: 1.6,
                   whiteSpace: 'pre-wrap',
@@ -1024,12 +1024,12 @@ export const DailyReportView: React.FC<{
                       </div>
                     </div>
 
-                    <div style={{ marginTop: '8px', fontSize: '14.5px', color: '#f8fafc' }}>
+                    <div style={{ marginTop: '8px', fontSize: '14.5px', color: 'var(--text-primary)' }}>
                       {item.text}
                     </div>
 
                     {item.isInsufficientEvidence && item.insufficientReason && (
-                      <div style={{ marginTop: '4px', fontSize: '12px', color: '#fbbf24' }}>
+                      <div style={{ marginTop: '4px', fontSize: '12px', color: 'var(--warning)' }}>
                         ⚠️ Not: {item.insufficientReason}
                       </div>
                     )}
