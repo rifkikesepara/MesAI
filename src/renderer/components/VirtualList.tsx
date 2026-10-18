@@ -14,64 +14,68 @@ export function VirtualList<T>({
   items,
   itemHeight,
   renderItem,
-  maxHeight = 600,
+  maxHeight = 650,
   className = '',
-  overscan = 5,
+  overscan = 6,
   emptyPlaceholder
 }: VirtualListProps<T>): React.ReactElement {
   const containerRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(
-    typeof maxHeight === 'number' ? maxHeight : 600
+    typeof maxHeight === 'number' ? maxHeight : 650
   );
 
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
 
-    const updateHeight = () => {
-      if (el.clientHeight > 0) {
-        setViewportHeight(el.clientHeight);
+    const measure = () => {
+      const h = el.clientHeight;
+      if (h > 0) {
+        setViewportHeight(h);
       }
     };
 
-    updateHeight();
-    const ro = new ResizeObserver(updateHeight);
+    measure();
+    const ro = new ResizeObserver(measure);
     ro.observe(el);
-
     return () => ro.disconnect();
   }, []);
 
   const totalCount = items.length;
-  const totalHeight = totalCount * itemHeight;
-
-  const { startIndex, endIndex, offsetY } = useMemo(() => {
-    if (totalCount === 0) {
-      return { startIndex: 0, endIndex: 0, offsetY: 0 };
-    }
-
-    const start = Math.max(0, Math.floor(scrollTop / itemHeight) - overscan);
-    const visibleCount = Math.ceil(viewportHeight / itemHeight) + 2 * overscan;
-    const end = Math.min(totalCount, start + visibleCount);
-    const offset = start * itemHeight;
-
-    return { startIndex: start, endIndex: end, offsetY: offset };
-  }, [scrollTop, itemHeight, viewportHeight, overscan, totalCount]);
-
-  const visibleItems = useMemo(() => {
-    return items.slice(startIndex, endIndex).map((item, i) => ({
-      item,
-      actualIndex: startIndex + i
-    }));
-  }, [items, startIndex, endIndex]);
-
-  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
-    setScrollTop(e.currentTarget.scrollTop);
-  };
 
   if (totalCount === 0 && emptyPlaceholder) {
     return <>{emptyPlaceholder}</>;
   }
+
+  // If items list is small (e.g. <= 25 items), render directly without virtualization
+  // This guarantees 100% reliability, zero layout quirks or flickering for small/medium lists
+  if (totalCount <= 25) {
+    return (
+      <div className={className} style={{ width: '100%' }}>
+        {items.map((item, index) => (
+          <React.Fragment key={index}>
+            {renderItem(item, index)}
+          </React.Fragment>
+        ))}
+      </div>
+    );
+  }
+
+  const effectiveViewport = Math.max(viewportHeight, 400);
+  const totalHeight = totalCount * itemHeight;
+
+  const startIndex = Math.max(0, Math.floor(scrollTop / itemHeight) - overscan);
+  const visibleCount = Math.ceil(effectiveViewport / itemHeight) + 2 * overscan;
+  const endIndex = Math.min(totalCount, startIndex + visibleCount);
+
+  const paddingTop = startIndex * itemHeight;
+  const paddingBottom = Math.max(0, (totalCount - endIndex) * itemHeight);
+  const visibleItems = items.slice(startIndex, endIndex);
+
+  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    setScrollTop(e.currentTarget.scrollTop);
+  };
 
   return (
     <div
@@ -81,31 +85,27 @@ export function VirtualList<T>({
       style={{
         overflowY: 'auto',
         maxHeight,
-        position: 'relative',
-        contain: 'strict',
-        width: '100%'
+        width: '100%',
+        position: 'relative'
       }}
     >
       <div
         style={{
-          height: totalHeight,
-          width: '100%',
-          position: 'relative'
+          boxSizing: 'border-box',
+          paddingTop: `${paddingTop}px`,
+          paddingBottom: `${paddingBottom}px`,
+          minHeight: `${totalHeight}px`,
+          width: '100%'
         }}
       >
-        <div
-          style={{
-            transform: `translateY(${offsetY}px)`,
-            willChange: 'transform',
-            width: '100%'
-          }}
-        >
-          {visibleItems.map(({ item, actualIndex }) => (
-            <div key={actualIndex} style={{ minHeight: itemHeight }}>
+        {visibleItems.map((item, i) => {
+          const actualIndex = startIndex + i;
+          return (
+            <React.Fragment key={actualIndex}>
               {renderItem(item, actualIndex)}
-            </div>
-          ))}
-        </div>
+            </React.Fragment>
+          );
+        })}
       </div>
     </div>
   );
