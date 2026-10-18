@@ -284,7 +284,6 @@ export const TimelineView: React.FC<{
           <VirtualList
             items={activities}
             itemHeight={130}
-            maxHeight={750}
             renderItem={(act) => (
             <div key={act.id} className="item-row">
               <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
@@ -915,7 +914,6 @@ export const DailyReportView: React.FC<{
             <VirtualList
               items={report.items}
               itemHeight={115}
-              maxHeight={650}
               renderItem={(item) => (
               <div key={item.id} className="item-row">
                 {editingItemId === item.id ? (

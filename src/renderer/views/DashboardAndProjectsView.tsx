@@ -512,7 +512,6 @@ export const ProjectsView: React.FC<{
           <VirtualList
             items={projects}
             itemHeight={105}
-            maxHeight={650}
             renderItem={(p) => (
             <div key={p.id} className="item-row">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
