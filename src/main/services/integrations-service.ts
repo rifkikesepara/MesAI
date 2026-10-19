@@ -78,10 +78,10 @@ export class IntegrationsService {
   }
 
   /**
-   * Saves Jira or Jenkins URL/username in settings and encrypts the token via OS DPAPI (never plaintext in SQLite).
+   * Saves Jira, GitLab, or Jenkins URL/username in settings and encrypts the token via OS DPAPI (never plaintext in SQLite).
    */
   public saveIntegrationCredential(input: {
-    service: 'jira' | 'jenkins';
+    service: 'jira' | 'gitlab' | 'jenkins';
     url: string;
     usernameOrEmail: string;
     token: string;
@@ -91,6 +91,8 @@ export class IntegrationsService {
 
     if (input.service === 'jira') {
       this.repo.updateSettings({ jiraUrl: cleanUrl, jiraEmail: cleanUser });
+    } else if (input.service === 'gitlab') {
+      this.repo.updateSettings({ gitlabUrl: cleanUrl, gitlabUsername: cleanUser });
     } else {
       this.repo.updateSettings({ jenkinsUrl: cleanUrl, jenkinsUsername: cleanUser });
     }
@@ -109,12 +111,12 @@ export class IntegrationsService {
     });
   }
 
-  public hasEncryptedToken(service: 'jira' | 'jenkins'): boolean {
+  public hasEncryptedToken(service: 'jira' | 'gitlab' | 'jenkins'): boolean {
     const store = this.readEncryptedStore();
     return Boolean(store[`${service}_token`]);
   }
 
-  private getDecryptedToken(service: 'jira' | 'jenkins'): string | null {
+  private getDecryptedToken(service: 'jira' | 'gitlab' | 'jenkins'): string | null {
     const store = this.readEncryptedStore();
     const enc = store[`${service}_token`];
     if (!enc) return null;
@@ -303,7 +305,7 @@ export class IntegrationsService {
    * Performs a real, read-only connection test against Jira or Jenkins.
    * Never reports "connected" unless an actual HTTP 200 response is verified.
    */
-  public async testConnection(service: 'jira' | 'jenkins'): Promise<{ ok: boolean; message: string }> {
+  public async testConnection(service: 'jira' | 'gitlab' | 'jenkins'): Promise<{ ok: boolean; message: string }> {
     const settings = this.repo.getSettings();
     const attemptAt = new Date().toISOString();
     const token = this.getDecryptedToken(service);
@@ -348,6 +350,52 @@ export class IntegrationsService {
         const msg = `Jira bağlantı hatası: ${(err as Error).message}`;
         this.repo.updateSyncState({
           connector: 'jira',
+          status: 'error',
+          lastAttemptAt: attemptAt,
+          lastError: msg
+        });
+        return { ok: false, message: msg };
+      }
+    } else if (service === 'gitlab') {
+      if (!settings.gitlabUrl || !token) {
+        const msg = 'GitLab URL veya Personal Access Token yapılandırılmadı.';
+        this.repo.updateSyncState({
+          connector: 'gitlab',
+          status: 'not_configured',
+          lastAttemptAt: attemptAt,
+          lastError: msg
+        });
+        return { ok: false, message: msg };
+      }
+
+      try {
+        const resp = await fetch(`${settings.gitlabUrl}/api/v4/user`, {
+          method: 'GET',
+          headers: {
+            'PRIVATE-TOKEN': token,
+            Accept: 'application/json'
+          },
+          signal: AbortSignal.timeout(10_000)
+        });
+
+        if (!resp.ok) {
+          throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
+        }
+        const data = (await resp.json()) as { name?: string; username?: string };
+        const userDisplay = data.name || data.username || settings.gitlabUsername || 'GitLab Kullanıcısı';
+        const msg = `GitLab salt-okunur bağlantısı doğrulandı (${userDisplay}).`;
+        this.repo.updateSyncState({
+          connector: 'gitlab',
+          status: 'connected',
+          lastAttemptAt: attemptAt,
+          lastSuccessAt: attemptAt,
+          lastError: null
+        });
+        return { ok: true, message: msg };
+      } catch (err) {
+        const msg = `GitLab bağlantı hatası: ${(err as Error).message}`;
+        this.repo.updateSyncState({
+          connector: 'gitlab',
           status: 'error',
           lastAttemptAt: attemptAt,
           lastError: msg
@@ -408,6 +456,7 @@ export class IntegrationsService {
     const gitSync = this.repo.getSyncState('git_watcher');
     const aiSync = this.repo.getSyncState('ai_provider');
     const jiraSync = this.repo.getSyncState('jira');
+    const gitlabSync = this.repo.getSyncState('gitlab');
     const jenkinsSync = this.repo.getSyncState('jenkins');
 
     const exePath = this.zoomAdapter.resolveExecutablePath();
@@ -420,6 +469,7 @@ export class IntegrationsService {
     const enabledProjects = this.repo.listProjects().filter((p) => p.enabled).length;
 
     const jiraConfigured = Boolean(settings.jiraUrl && settings.jiraEmail && this.hasEncryptedToken('jira'));
+    const gitlabConfigured = Boolean(settings.gitlabUrl && this.hasEncryptedToken('gitlab'));
     const jenkinsConfigured = Boolean(settings.jenkinsUrl && settings.jenkinsUsername && this.hasEncryptedToken('jenkins'));
     const openaiConfigured = this.hasEncryptedAiToken('openai');
     const anthropicConfigured = this.hasEncryptedAiToken('anthropic');
@@ -478,6 +528,15 @@ export class IntegrationsService {
           : ((jiraSync?.status as 'connected' | 'error' | 'untested') ?? 'untested'),
         lastTestedAt: jiraSync?.lastAttemptAt ?? null,
         lastError: jiraSync?.lastError ?? null
+      },
+      gitlab: {
+        configured: gitlabConfigured,
+        url: settings.gitlabUrl,
+        status: !gitlabConfigured
+          ? 'not_configured'
+          : ((gitlabSync?.status as 'connected' | 'error' | 'untested') ?? 'untested'),
+        lastTestedAt: gitlabSync?.lastAttemptAt ?? null,
+        lastError: gitlabSync?.lastError ?? null
       },
       jenkins: {
         configured: jenkinsConfigured,

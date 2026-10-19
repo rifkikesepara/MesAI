@@ -66,6 +66,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   globalJiraProjectKeys: [],
   jiraUrl: '',
   jiraEmail: '',
+  gitlabUrl: '',
+  gitlabUsername: '',
   jenkinsUrl: '',
   jenkinsUsername: '',
   reportMaxChars: 1000,
@@ -1205,22 +1207,9 @@ export class MesaiRepository {
         continue;
       }
 
-      // Skip Jira keys mentioned only by other teammates in shared Zoom channels unless linked to a report project
-      if (act.sourceType === 'zoom_chat' && items.length > 0) {
-        const lowerSender = (act.sender ?? '').toLowerCase();
-        const isSentByCurrentUser =
-          lowerSender === 'you' ||
-          lowerSender.includes('rifki') ||
-          lowerSender.includes('rıfkı') ||
-          lowerSender.includes('kesepara');
-        const isLinkedToReportProj =
-          (act.projectId && reportProjectIds.has(act.projectId)) ||
-          (act.links ?? []).some(
-            (l) => l.userStatus === 'accepted' && l.projectId && reportProjectIds.has(l.projectId)
-          );
-        if (!isSentByCurrentUser && !isLinkedToReportProj) {
-          continue;
-        }
+      // Never extract Jira keys from zoom_chat or zoom_call activities into the report
+      if (act.sourceType === 'zoom_chat' || act.sourceType === 'zoom_call') {
+        continue;
       }
 
       for (const k of extractJiraKeysFromText(act.title)) keys.add(k);

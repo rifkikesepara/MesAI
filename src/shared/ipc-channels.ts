@@ -159,12 +159,12 @@ export interface MesaiApi {
 
   getIntegrationsHealth(): Promise<IntegrationHealth>;
   saveIntegrationSecret(input: {
-    service: 'jira' | 'jenkins';
+    service: 'jira' | 'gitlab' | 'jenkins';
     url: string;
     usernameOrEmail: string;
     token: string;
   }): Promise<void>;
-  testIntegrationConnection(service: 'jira' | 'jenkins'): Promise<{ ok: boolean; message: string }>;
+  testIntegrationConnection(service: 'jira' | 'gitlab' | 'jenkins'): Promise<{ ok: boolean; message: string }>;
 
   saveAiApiKey(input: {
     provider: 'openai' | 'anthropic' | 'custom';

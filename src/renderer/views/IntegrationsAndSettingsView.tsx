@@ -35,6 +35,10 @@ export const IntegrationsView: React.FC<{
   const [jiraEmail, setJiraEmail] = useState("");
   const [jiraToken, setJiraToken] = useState("");
 
+  const [gitlabUrl, setGitlabUrl] = useState("");
+  const [gitlabUser, setGitlabUser] = useState("");
+  const [gitlabToken, setGitlabToken] = useState("");
+
   const [jenkinsUrl, setJenkinsUrl] = useState("");
   const [jenkinsUser, setJenkinsUser] = useState("");
   const [jenkinsToken, setJenkinsToken] = useState("");
@@ -218,6 +222,7 @@ export const IntegrationsView: React.FC<{
       const h = await window.mesaiApi.getIntegrationsHealth();
       setHealth(h);
       setJiraUrl(h.jira.url || "");
+      setGitlabUrl(h.gitlab.url || "");
       setJenkinsUrl(h.jenkins.url || "");
       setOpenaiModel(h.ai.openaiModel || "gpt-4o-mini");
       setOpenaiBaseUrl(h.ai.openaiBaseUrl || "");
@@ -274,6 +279,32 @@ export const IntegrationsView: React.FC<{
   const handleTestJira = async () => {
     setFeedback("Jira bağlantısı test ediliyor...");
     const res = await window.mesaiApi.testIntegrationConnection("jira");
+    setFeedback(res.message);
+    await loadHealth();
+  };
+
+  const handleSaveGitLab = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      await window.mesaiApi.saveIntegrationSecret({
+        service: "gitlab",
+        url: gitlabUrl,
+        usernameOrEmail: gitlabUser,
+        token: gitlabToken,
+      });
+      setGitlabToken("");
+      setFeedback(
+        "GitLab bilgileri OS DPAPI (safeStorage) ile şifrelenerek kaydedildi.",
+      );
+      await loadHealth();
+    } catch (err) {
+      setFeedback(`Hata: ${(err as Error).message}`);
+    }
+  };
+
+  const handleTestGitLab = async () => {
+    setFeedback("GitLab bağlantısı test ediliyor...");
+    const res = await window.mesaiApi.testIntegrationConnection("gitlab");
     setFeedback(res.message);
     await loadHealth();
   };
@@ -1847,7 +1878,73 @@ export const IntegrationsView: React.FC<{
         <div className="card">
           <div className="card-header">
             <h3 className="card-title">
-              5. Jenkins Entegrasyonu (İsteğe Bağlı / Salt-Okunur)
+              5. GitLab Entegrasyonu (İsteğe Bağlı / Salt-Okunur MR Takibi)
+            </h3>
+            <span
+              className={`badge ${
+                health.gitlab?.status === "connected"
+                  ? "badge-success"
+                  : health.gitlab?.status === "error"
+                    ? "badge-danger"
+                    : "badge-neutral"
+              }`}
+            >
+              {!health.gitlab || health.gitlab.status === "not_configured"
+                ? "Yapılandırılmadı"
+                : health.gitlab.status === "untested"
+                  ? "Doğrulanmadı (Test Bekliyor)"
+                  : health.gitlab.status === "connected"
+                    ? "Bağlantı Doğrulandı"
+                    : "Bağlantı Hatası"}
+            </span>
+          </div>
+          <form
+            onSubmit={handleSaveGitLab}
+            style={{ display: "grid", gap: "8px" }}
+          >
+            <input
+              className="input"
+              placeholder="GitLab URL (Örn: https://gitlab.sirket.local veya https://gitlab.com)"
+              value={gitlabUrl}
+              onChange={(e) => setGitlabUrl(e.target.value)}
+            />
+            <input
+              className="input"
+              placeholder="GitLab Kullanıcı Adı (İsteğe bağlı)"
+              value={gitlabUser}
+              onChange={(e) => setGitlabUser(e.target.value)}
+            />
+            <input
+              type="password"
+              className="input"
+              placeholder="Personal Access Token / read_api (DPAPI ile şifrelenir)"
+              value={gitlabToken}
+              onChange={(e) => setGitlabToken(e.target.value)}
+            />
+            {health.gitlab?.lastError && (
+              <div style={{ fontSize: "12px", color: "var(--danger)" }}>
+                {health.gitlab.lastError}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: "8px" }}>
+              <button type="submit" className="btn btn-sm btn-primary">
+                Şifreli Kaydet
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={handleTestGitLab}
+              >
+                Gerçek Bağlantı Testi Yap
+              </button>
+            </div>
+          </form>
+        </div>
+
+        <div className="card">
+          <div className="card-header">
+            <h3 className="card-title">
+              6. Jenkins Entegrasyonu (İsteğe Bağlı / Salt-Okunur)
             </h3>
             <span
               className={`badge ${

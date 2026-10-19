@@ -365,19 +365,19 @@ export function registerIpcHandlers(deps: {
       throw new Error('Geçersiz entegrasyon verisi.');
     }
     const obj = input as {
-      service: 'jira' | 'jenkins';
+      service: 'jira' | 'gitlab' | 'jenkins';
       url: string;
       usernameOrEmail: string;
       token: string;
     };
-    if (obj.service !== 'jira' && obj.service !== 'jenkins') {
+    if (obj.service !== 'jira' && obj.service !== 'gitlab' && obj.service !== 'jenkins') {
       throw new Error('Geçersiz servis adı.');
     }
     integrations.saveIntegrationCredential(obj);
   });
 
   ipcMain.handle(IPC_CHANNELS.INTEGRATIONS_TEST_CONNECTION, async (_e, service: unknown) => {
-    if (service !== 'jira' && service !== 'jenkins') {
+    if (service !== 'jira' && service !== 'gitlab' && service !== 'jenkins') {
       throw new Error('Geçersiz servis adı.');
     }
     return integrations.testConnection(service);

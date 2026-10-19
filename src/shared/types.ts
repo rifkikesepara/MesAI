@@ -224,7 +224,7 @@ export interface DailyReport {
 }
 
 export interface SyncState {
-  connector: 'zoom_reader' | 'git_watcher' | 'jira' | 'jenkins' | 'ai_provider';
+  connector: 'zoom_reader' | 'git_watcher' | 'jira' | 'gitlab' | 'jenkins' | 'ai_provider';
   status: string;
   cursor: string | null;
   lastAttemptAt: string | null;
@@ -268,6 +268,8 @@ export interface AppSettings {
   globalJiraProjectKeys?: string[];
   jiraUrl: string;
   jiraEmail: string;
+  gitlabUrl: string;
+  gitlabUsername: string;
   jenkinsUrl: string;
   jenkinsUsername: string;
   reportMaxChars?: number;
@@ -330,6 +332,13 @@ export interface IntegrationHealth {
     lastError: string | null;
   };
   jira: {
+    configured: boolean;
+    url: string;
+    status: 'not_configured' | 'connected' | 'error' | 'untested';
+    lastTestedAt: string | null;
+    lastError: string | null;
+  };
+  gitlab: {
     configured: boolean;
     url: string;
     status: 'not_configured' | 'connected' | 'error' | 'untested';

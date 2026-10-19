@@ -557,10 +557,30 @@ function synthesizeHighEffortDevelopmentProse(input: {
       sentences.push(
         'Ortak component ve veri akışı değişiklikleri için bam-shared-lib projesinde gerekli güncellemeler yapılarak uçtan uca testlerin ardından MR açıldı.'
       );
-    } else if (hasMergeCommit || hasCommits) {
-      sentences.push(
-        'Süreç uçtan uca test edilerek ekranların, hata durumlarının ve kullanıcı akışlarının işleyişi doğrulandı; değişiklikler için proje MR’ı açıldı.'
-      );
+    } else {
+      const isReviewFix = cleanCommitMessages.some((m) => {
+        const lower = m.toLowerCase();
+        return (
+          lower.includes('review') ||
+          lower.includes('code review') ||
+          lower.includes('mr review') ||
+          lower.includes('revizyon') ||
+          lower.includes('geri bildirim') ||
+          lower.includes('feedback') ||
+          lower.includes('yorum') ||
+          lower.includes('fix review')
+        );
+      });
+
+      if (isReviewFix) {
+        sentences.push(
+          'Code review ve ekip içi inceleme geri bildirimleri doğrultusunda ilgili bileşenlerdeki tespitler giderilerek MR revizyonları tamamlandı ve güncel branch doğrulandı.'
+        );
+      } else if (hasMergeCommit || hasCommits) {
+        sentences.push(
+          'Süreç uçtan uca test edilerek ekranların, hata durumlarının ve kullanıcı akışlarının işleyişi doğrulandı; değişiklikler için proje MR’ı açıldı.'
+        );
+      }
     }
   } else if (hasFileOrWt) {
     sentences.push(
@@ -1424,10 +1444,18 @@ export class GeminiCliProvider implements AIProvider {
     timeoutMs: number,
     signal?: AbortSignal
   ): Promise<string> {
+    // Windows CreateProcessW limits CLI args to ~32KB.
+    // If prompt is large, pass a compact prompt and stream evidence via stdin or truncate safely.
+    const maxAgyArgPromptLength = 20_000;
+    const safePrompt =
+      prompt.length > maxAgyArgPromptLength
+        ? prompt.slice(0, maxAgyArgPromptLength) + '\n\n[Prompt truncated to stay within OS command-line buffer limits]'
+        : prompt;
+
     return new Promise((resolve, reject) => {
       const child = execFile(
         agyExecutable,
-        ['-p', prompt, '--disable-slash-commands', '--effort', 'low'],
+        ['-p', safePrompt, '--disable-slash-commands', '--effort', 'low'],
         {
           cwd: os.tmpdir(),
           timeout: timeoutMs,
@@ -1636,13 +1664,15 @@ export class CodexCliProvider implements AIProvider {
     }
 
     const effectiveModel = this.getEffectiveModel();
+    // Using '-' as prompt argument tells Codex to read instructions from stdin,
+    // avoiding Windows CreateProcessW 32KB command-line argument limits (spawn ENAMETOOLONG).
     const args = [
       'exec',
       '--skip-git-repo-check',
       '--ephemeral',
       '--dangerously-bypass-approvals-and-sandbox',
       ...(effectiveModel ? ['-m', effectiveModel] : []),
-      prompt
+      '-'
     ];
     const isCmd = process.platform === 'win32' && codexPath.toLowerCase().endsWith('.cmd');
 
@@ -1673,7 +1703,14 @@ export class CodexCliProvider implements AIProvider {
             resolve(stdout);
           }
         );
-        child.stdin?.end();
+
+        if (child.stdin) {
+          child.stdin.on('error', () => {
+            // Ignore EPIPE if child process exits early
+          });
+          child.stdin.write(prompt, 'utf8');
+          child.stdin.end();
+        }
       } catch (err) {
         reject(new Error(`Codex CLI çalıştırma hatası: ${(err as Error).message}`));
       }
@@ -1774,7 +1811,13 @@ export class ClaudeCliProvider implements AIProvider {
       throw new Error('Yerel Claude Code CLI bulunamadı. Lütfen Claude CLI kurun veya API Key kullanın.');
     }
 
-    const args = ['-p', prompt, '--permission-mode', 'non-interactive', '--tools', ''];
+    const maxClaudeArgPromptLength = 20_000;
+    const safePrompt =
+      prompt.length > maxClaudeArgPromptLength
+        ? prompt.slice(0, maxClaudeArgPromptLength) + '\n\n[Prompt truncated to stay within OS command-line buffer limits]'
+        : prompt;
+
+    const args = ['-p', safePrompt, '--permission-mode', 'dontAsk'];
     const isCmd = process.platform === 'win32' && claudePath.toLowerCase().endsWith('.cmd');
 
     return new Promise((resolve, reject) => {
@@ -1900,7 +1943,8 @@ export class OllamaCliProvider implements AIProvider {
     }
 
     const model = this.config.model?.trim() || 'llama3.2';
-    const args = ['run', model, prompt];
+    // Passing prompt via stdin instead of CLI argument prevents Windows 32KB spawn ENAMETOOLONG
+    const args = ['run', model];
 
     return new Promise((resolve, reject) => {
       const child = execFile(
@@ -1927,7 +1971,14 @@ export class OllamaCliProvider implements AIProvider {
           resolve(stdout);
         }
       );
-      child.stdin?.end();
+
+      if (child.stdin) {
+        child.stdin.on('error', () => {
+          // Ignore EPIPE if child process exits early
+        });
+        child.stdin.write(prompt, 'utf8');
+        child.stdin.end();
+      }
     });
   }
 }

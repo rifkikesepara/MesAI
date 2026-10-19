@@ -413,6 +413,7 @@ describe('MesAI Core Verification Suite', () => {
 
     const initialHealth = await integrations.getHealthSummary();
     assert.equal(initialHealth.jira.status, 'not_configured');
+    assert.equal(initialHealth.gitlab.status, 'not_configured');
     assert.equal(initialHealth.jenkins.status, 'not_configured');
 
     integrations.saveIntegrationCredential({
@@ -767,6 +768,177 @@ describe('MesAI Core Verification Suite', () => {
 
     assert.equal(receivedPrompt, customUserPrompt, 'Provider must receive the user promptOverride verbatim');
     assert.ok(customReport.items.some((item) => item.text.includes('Özel prompt ile üretilen madde')));
+
+    db.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('12. Jira keys in reports are extracted strictly from Git activities and never from Zoom chats', () => {
+    const db = new MesaiDatabase(':memory:');
+    const repo = new MesaiRepository(db);
+    const matcher = new MatcherService(repo);
+
+    const proj = repo.upsertDiscoveredProject({
+      name: 'Portal-Service',
+      rootPath: 'C:\\Repos\\Portal-Service',
+      currentBranch: 'main',
+      defaultJiraKeys: ['PORTAL']
+    });
+
+    // 1. Zoom chat mentions ZOOM-9999
+    const zoomAct = repo.ingestZoomSnapshot({
+      schemaVersion: '1.1',
+      status: 'ok',
+      capturedAt: '2026-10-19T10:00:00.000+03:00',
+      windowTitle: 'Zoom Workplace',
+      windowState: 'normal',
+      chatName: 'Dev Ekibi',
+      chatType: 'Channel',
+      sessionId: 'session-zoom-key-test',
+      limitations: [],
+      messages: [
+        {
+          indexInDom: 1,
+          occurrenceIndexInView: 1,
+          fingerprint: 'fp_zoom_key_test',
+          uiaRuntimeId: '99.1.1',
+          persistentMessageId: null,
+          isGroupedFollowUp: false,
+          dateGroup: 'Today',
+          visibleTimestamp: '10:00',
+          sender: 'Teammate',
+          senderResolved: 'Teammate',
+          isSentByMe: false,
+          messageType: 'text',
+          text: 'ZOOM-9999 nolu bulguyu incelediniz mi?',
+          links: ['https://jira.corp/browse/ZOOM-9999'],
+          rawAccessibleLabel: 'ZOOM-9999 nolu bulguyu incelediniz mi?'
+        }
+      ]
+    });
+    for (const actId of zoomAct.newActivityIds) {
+      matcher.matchActivityById(actId);
+    }
+
+    // 2. Git commit mentions COMMIT-1234
+    const commitAct = repo.ingestGitOrFileActivity({
+      projectId: proj.id,
+      projectName: proj.name,
+      sourceType: 'git_commit',
+      dedupKey: 'git:commit:portal:1234',
+      externalId: 'portal1234',
+      branchName: 'feature/COMMIT-1234',
+      occurredAtIso: '2026-10-19T11:00:00+03:00',
+      rawTimestampText: '11:00',
+      title: 'Portal-Service — Commit portal1234',
+      summary: 'COMMIT-1234: Yetkilendirme servisi düzeltildi'
+    });
+    matcher.matchActivityById(commitAct.activityId);
+
+    // 3. Extract Jira keys for 2026-10-19
+    const extractedKeys = repo.extractJiraKeysForDate('2026-10-19');
+
+    assert.ok(extractedKeys.includes('COMMIT-1234'), 'COMMIT-1234 from git commit must be extracted');
+    assert.ok(!extractedKeys.includes('ZOOM-9999'), 'ZOOM-9999 from Zoom chat must NEVER be extracted');
+
+    db.close();
+  });
+
+  it('13. GitLab Integration: credential storage via DPAPI, connection verification, and MR review fix detection in report prose', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mesai-gitlab-test-'));
+    const db = new MesaiDatabase(':memory:');
+    const repo = new MesaiRepository(db);
+    const zoom = new ZoomReaderAdapter(repo, new MatcherService(repo));
+    const git = new GitFileWatcherService(repo, new MatcherService(repo));
+    const rep = new ReportService(repo);
+
+    const mockDpapi = {
+      encrypt: (plain: string) => Buffer.from(`ENC:${plain}`, 'utf8').toString('base64'),
+      decrypt: (cipher: string) => Buffer.from(cipher, 'base64').toString('utf8').replace(/^ENC:/, '')
+    };
+
+    const integrations = new IntegrationsService(repo, zoom, git, rep, {
+      userDataDir: tmpDir,
+      secretProvider: mockDpapi
+    });
+
+    // 1. Initially not_configured
+    let health = await integrations.getHealthSummary();
+    assert.equal(health.gitlab.status, 'not_configured');
+    assert.equal(health.gitlab.configured, false);
+
+    // 2. Save credentials
+    integrations.saveIntegrationCredential({
+      service: 'gitlab',
+      url: 'https://gitlab.example.com',
+      usernameOrEmail: 'rifkik',
+      token: 'glpat-SECRET12345'
+    });
+
+    health = await integrations.getHealthSummary();
+    assert.equal(health.gitlab.configured, true);
+    assert.equal(health.gitlab.status, 'untested');
+
+    // Verify token is NOT written in plaintext to SQLite
+    const settingsRows = JSON.stringify(db.db.prepare('SELECT * FROM settings').all());
+    assert.equal(settingsRows.includes('glpat-SECRET12345'), false);
+
+    // 3. Test connection (mock global fetch)
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async (url: any, init: any) => {
+        if (String(url).includes('/api/v4/user')) {
+          assert.equal(init?.headers?.['PRIVATE-TOKEN'], 'glpat-SECRET12345');
+          return new Response(JSON.stringify({ id: 42, username: 'rifkik', name: 'Rıfkı Kesepara' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+        return new Response('Not found', { status: 404 });
+      };
+
+      const testResult = await integrations.testConnection('gitlab');
+      assert.equal(testResult.ok, true);
+      assert.ok(testResult.message.includes('Rıfkı Kesepara'));
+
+      health = await integrations.getHealthSummary();
+      assert.equal(health.gitlab.status, 'connected');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    // 4. Verify MR review fix commit produces high-effort review revision prose in report
+    const proj = repo.upsertDiscoveredProject({
+      name: 'CustomPortal',
+      rootPath: 'C:\\Repos\\CustomPortal',
+      currentBranch: 'feature/PORTAL-500'
+    });
+
+    const commitReviewFix = repo.ingestGitOrFileActivity({
+      projectId: proj.id,
+      projectName: proj.name,
+      sourceType: 'git_commit',
+      dedupKey: 'git:commit:portal:rev123',
+      externalId: 'rev123',
+      branchName: 'feature/PORTAL-500',
+      occurredAtIso: '2026-10-19T15:00:00+03:00',
+      rawTimestampText: '15:00',
+      title: 'CustomPortal — Commit rev123',
+      summary: 'PORTAL-500: Code review geri bildirimleri düzeltildi ve validasyon güncellendi'
+    });
+    new MatcherService(repo).matchActivityById(commitReviewFix.activityId);
+
+    const generatedReport = await rep.generateReport({
+      reportDate: '2026-10-19',
+      provider: 'local_rule'
+    });
+
+    const portalItem = generatedReport.items.find((i) => i.projectId === proj.id);
+    assert.ok(portalItem, 'Report item for CustomPortal must exist');
+    assert.ok(
+      portalItem.text.includes('Code review ve ekip içi inceleme geri bildirimleri'),
+      'Must contain corporate code review revision prose'
+    );
 
     db.close();
     fs.rmSync(tmpDir, { recursive: true, force: true });
