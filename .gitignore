@@ -12,4 +12,5 @@ readers/**/obj/
 verify-output.json
 Thumbs.db
 .DS_Store
+.codegraph/
 

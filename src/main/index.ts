@@ -33,15 +33,16 @@ let scheduler: SchedulerService | null = null;
 
 const isSmokeVerify = process.argv.includes('--verify-smoke');
 const isUiVerify = process.argv.includes('--verify-ui');
+const isCaptureScreenshots = process.argv.includes('--capture-screenshots');
 
-if (isSmokeVerify || isUiVerify) {
+if (isSmokeVerify || isUiVerify || isCaptureScreenshots) {
   app.disableHardwareAcceleration();
   app.commandLine.appendSwitch('no-sandbox');
   app.commandLine.appendSwitch('disable-gpu');
 }
 
 const gotLock = app.requestSingleInstanceLock();
-if (!gotLock && !isSmokeVerify && !isUiVerify) {
+if (!gotLock && !isSmokeVerify && !isUiVerify && !isCaptureScreenshots) {
   app.quit();
 } else {
   app.on('second-instance', () => {
@@ -248,6 +249,105 @@ if (!gotLock && !isSmokeVerify && !isUiVerify) {
         );
         // eslint-disable-next-line no-console
         console.log(JSON.stringify(payload, null, 2));
+        isQuitting = true;
+        gitWatcher.stopAllWatchers();
+        scheduler?.stopAll();
+        database?.close();
+        app.exit(0);
+      });
+    }
+
+    if (isCaptureScreenshots && mainWindow) {
+      mainWindow.webContents.on('did-finish-load', async () => {
+        const outDir = path.resolve(process.cwd(), 'docs/images');
+        fs.mkdirSync(outDir, { recursive: true });
+
+        const tabs = [
+          { name: '01-dashboard.png', selector: '.nav-list .nav-btn:nth-child(1)' },
+          { name: '02-projects.png', selector: '.nav-list .nav-btn:nth-child(2)' },
+          { name: '03-timeline.png', selector: '.nav-list .nav-btn:nth-child(3)' },
+          { name: '04-daily-report.png', selector: '.nav-list .nav-btn:nth-child(4)' },
+          { name: '05-integrations.png', selector: '.nav-list .nav-btn:nth-child(5)' },
+          { name: '06-settings.png', selector: '.sidebar-nav-bottom .nav-btn' }
+        ];
+
+        // Wait initial render
+        await new Promise((r) => setTimeout(r, 2500));
+
+        // 1. Dashboard
+        const img1 = await mainWindow!.webContents.capturePage();
+        fs.writeFileSync(path.join(outDir, '01-dashboard.png'), img1.toPNG());
+        console.log('Captured 01-dashboard.png');
+
+        // 2. Projects
+        await mainWindow!.webContents.executeJavaScript(`
+          document.querySelector('.nav-list .nav-btn:nth-child(2)')?.click();
+        `);
+        await new Promise((r) => setTimeout(r, 1500));
+        const img2 = await mainWindow!.webContents.capturePage();
+        fs.writeFileSync(path.join(outDir, '02-projects.png'), img2.toPNG());
+        console.log('Captured 02-projects.png');
+
+        // 3. Timeline
+        await mainWindow!.webContents.executeJavaScript(`
+          document.querySelector('.nav-list .nav-btn:nth-child(3)')?.click();
+        `);
+        await new Promise((r) => setTimeout(r, 1500));
+        const img3 = await mainWindow!.webContents.capturePage();
+        fs.writeFileSync(path.join(outDir, '03-timeline.png'), img3.toPNG());
+        console.log('Captured 03-timeline.png');
+
+        // 4. Daily Report (select 2026-10-16 with existing verified items)
+        await mainWindow!.webContents.executeJavaScript(`
+          (async () => {
+            document.querySelector('.nav-list .nav-btn:nth-child(4)')?.click();
+          })();
+        `);
+        await new Promise((r) => setTimeout(r, 1500));
+        await mainWindow!.webContents.executeJavaScript(`
+          (async () => {
+            const dateInput = document.querySelector('input[type="date"]');
+            if (dateInput) {
+              const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+              setter?.call(dateInput, '2026-10-16');
+              dateInput.dispatchEvent(new Event('input', { bubbles: true }));
+              dateInput.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+          })();
+        `);
+        await new Promise((r) => setTimeout(r, 2000));
+        const img4 = await mainWindow!.webContents.capturePage();
+        fs.writeFileSync(path.join(outDir, '04-daily-report.png'), img4.toPNG());
+        console.log('Captured 04-daily-report.png');
+
+        // 5. Integrations (wait for health check)
+        await mainWindow!.webContents.executeJavaScript(`
+          document.querySelector('.nav-list .nav-btn:nth-child(5)')?.click();
+        `);
+        await new Promise((r) => setTimeout(r, 3500));
+        const img5 = await mainWindow!.webContents.capturePage();
+        fs.writeFileSync(path.join(outDir, '05-integrations.png'), img5.toPNG());
+        console.log('Captured 05-integrations.png');
+
+        // 6. Settings
+        await mainWindow!.webContents.executeJavaScript(`
+          document.querySelector('.sidebar-nav-bottom .nav-btn')?.click();
+        `);
+        await new Promise((r) => setTimeout(r, 1500));
+        const img6 = await mainWindow!.webContents.capturePage();
+        fs.writeFileSync(path.join(outDir, '06-settings.png'), img6.toPNG());
+        console.log('Captured 06-settings.png');
+
+        // 7. Light Theme Dashboard
+        await mainWindow!.webContents.executeJavaScript(`
+          document.documentElement.setAttribute('data-theme', 'light');
+          document.querySelector('.nav-list .nav-btn:nth-child(1)')?.click();
+        `);
+        await new Promise((r) => setTimeout(r, 1500));
+        const img7 = await mainWindow!.webContents.capturePage();
+        fs.writeFileSync(path.join(outDir, '07-light-theme.png'), img7.toPNG());
+        console.log('Captured 07-light-theme.png');
+
         isQuitting = true;
         gitWatcher.stopAllWatchers();
         scheduler?.stopAll();
