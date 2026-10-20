@@ -150,14 +150,8 @@ internal static class Win32Desktop
 {
     public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
-    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
-    public static extern IntPtr OpenDesktop(string lpszDesktop, uint dwFlags, bool fInherit, uint dwDesiredAccess);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern bool SetThreadDesktop(IntPtr hDesktop);
-
     [DllImport("user32.dll")]
-    public static extern bool EnumDesktopWindows(IntPtr hDesktop, EnumWindowsProc lpfn, IntPtr lParam);
+    public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
 
     [DllImport("user32.dll")]
     public static extern bool EnumChildWindows(IntPtr hWndParent, EnumWindowsProc lpEnumFunc, IntPtr lParam);
@@ -167,6 +161,9 @@ internal static class Win32Desktop
 
     [DllImport("user32.dll", CharSet = CharSet.Auto)]
     public static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
 
     [DllImport("user32.dll")]
     public static extern bool IsWindowVisible(IntPtr hWnd);
@@ -204,17 +201,11 @@ internal static class Program
         {
             try
             {
-                IntPtr hDesk = Win32Desktop.OpenDesktop("Default", 0, false, 0x01FF);
-                if (hDesk != IntPtr.Zero)
-                {
-                    Win32Desktop.SetThreadDesktop(hDesk);
-                }
-
                 if (compareTwice)
                 {
-                    var first = CaptureZoomChatSafe(hDesk);
+                    var first = CaptureZoomChatSafe();
                     Thread.Sleep(delayMs);
-                    var second = CaptureZoomChatSafe(hDesk);
+                    var second = CaptureZoomChatSafe();
                     if (first.Status == "ok" && second.Status == "ok")
                     {
                         second.Comparison = CompareSnapshots(first, second);
@@ -223,7 +214,7 @@ internal static class Program
                 }
                 else
                 {
-                    var current = CaptureZoomChatSafe(hDesk);
+                    var current = CaptureZoomChatSafe();
                     if (current.Status == "ok" && !string.IsNullOrEmpty(stateFile) && File.Exists(stateFile))
                     {
                         try
@@ -279,7 +270,49 @@ internal static class Program
         return JsonSerializer.Serialize(snapshot, opts);
     }
 
-    private static ChatSnapshot CaptureZoomChatSafe(IntPtr hDesk)
+    private static bool IsMeetingActive(HashSet<uint> zoomPids)
+    {
+        // 1. Zoom video / meeting child host processes
+        try
+        {
+            if (Process.GetProcessesByName("CptHost").Length > 0 ||
+                Process.GetProcessesByName("aomhost64").Length > 0)
+            {
+                return true;
+            }
+        }
+        catch { }
+
+        // 2. Check for active Meeting window ("Zoom Meeting")
+        bool meetingWindowFound = false;
+        try
+        {
+            Win32Desktop.EnumWindows((hWnd, _) =>
+            {
+                Win32Desktop.GetWindowThreadProcessId(hWnd, out uint pid);
+                if (!zoomPids.Contains(pid)) return true;
+
+                if (!Win32Desktop.IsWindowVisible(hWnd)) return true;
+
+                var sbTitle = new StringBuilder(256);
+                Win32Desktop.GetWindowText(hWnd, sbTitle, 256);
+                string title = sbTitle.ToString();
+
+                if (title.StartsWith("Zoom Meeting", StringComparison.OrdinalIgnoreCase) ||
+                    title.Contains("Meeting", StringComparison.OrdinalIgnoreCase) && title.Contains("Zoom", StringComparison.OrdinalIgnoreCase))
+                {
+                    meetingWindowFound = true;
+                    return false;
+                }
+                return true;
+            }, IntPtr.Zero);
+        }
+        catch { }
+
+        return meetingWindowFound;
+    }
+
+    private static ChatSnapshot CaptureZoomChatSafe()
     {
         var snapshot = new ChatSnapshot
         {
@@ -300,11 +333,19 @@ internal static class Program
             return snapshot;
         }
 
+        // Fast meeting check: If meeting is active or launching, gracefully suspend UIA inspection to avoid blocking Zoom
+        if (IsMeetingActive(zoomPids))
+        {
+            snapshot.Status = "meeting_active";
+            snapshot.ErrorMessage = "Zoom toplantısı veya görüşme aktif olduğundan okuyucu geçici olarak duraklatıldı.";
+            return snapshot;
+        }
+
         IntPtr mainHwnd = IntPtr.Zero;
         bool isVisible = false;
         bool isIconic = false;
 
-        Win32Desktop.EnumDesktopWindows(hDesk, (hWnd, _) =>
+        Win32Desktop.EnumWindows((hWnd, _) =>
         {
             Win32Desktop.GetWindowThreadProcessId(hWnd, out uint pid);
             if (!zoomPids.Contains(pid)) return true;

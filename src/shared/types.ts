@@ -3,6 +3,7 @@ export type ZoomReaderStatus =
   | 'zoom_not_running'
   | 'window_minimized_or_hidden'
   | 'chat_panel_not_open'
+  | 'meeting_active'
   | 'error'
   | 'timeout'
   | 'idle';
