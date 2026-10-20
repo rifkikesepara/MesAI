@@ -168,6 +168,18 @@ internal static class Win32Desktop
     [DllImport("user32.dll")]
     public static extern bool IsWindowVisible(IntPtr hWnd);
 
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr OpenDesktop(string lpszDesktop, uint dwFlags, bool fInherit, uint dwDesiredAccess);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool SetThreadDesktop(IntPtr hDesktop);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool CloseDesktop(IntPtr hDesktop);
+
+    [DllImport("user32.dll")]
+    public static extern bool EnumDesktopWindows(IntPtr hDesktop, EnumWindowsProc lpfn, IntPtr lParam);
+
     [DllImport("user32.dll")]
     public static extern bool IsIconic(IntPtr hWnd);
 }
@@ -199,6 +211,9 @@ internal static class Program
 
         var staThread = new Thread(() =>
         {
+            IntPtr hDesk = Win32Desktop.OpenDesktop("Default", 0, false, 0x01FF);
+            if (hDesk != IntPtr.Zero) Win32Desktop.SetThreadDesktop(hDesk);
+
             try
             {
                 if (compareTwice)
@@ -345,7 +360,7 @@ internal static class Program
         bool isVisible = false;
         bool isIconic = false;
 
-        Win32Desktop.EnumWindows((hWnd, _) =>
+        Win32Desktop.EnumWindowsProc findMainProc = (hWnd, _) =>
         {
             Win32Desktop.GetWindowThreadProcessId(hWnd, out uint pid);
             if (!zoomPids.Contains(pid)) return true;
@@ -365,7 +380,17 @@ internal static class Program
                 if (vis && !ico) return false;
             }
             return true;
-        }, IntPtr.Zero);
+        };
+
+        IntPtr hDesk = Win32Desktop.OpenDesktop("Default", 0, false, 0x01FF);
+        if (hDesk != IntPtr.Zero)
+        {
+            Win32Desktop.EnumDesktopWindows(hDesk, findMainProc, IntPtr.Zero);
+        }
+        if (mainHwnd == IntPtr.Zero)
+        {
+            Win32Desktop.EnumWindows(findMainProc, IntPtr.Zero);
+        }
 
         if (mainHwnd == IntPtr.Zero)
         {
@@ -396,13 +421,23 @@ internal static class Program
             try
             {
                 var renderEl = AutomationElement.FromHandle(rHwnd);
-                chatPanel = FindFirstByClassSubstring(renderEl, "_chatPanel_", 12);
+                chatPanel = FindFirst(renderEl, el =>
+                {
+                    string cls = el.Current.ClassName ?? "";
+                    string aid = el.Current.AutomationId ?? "";
+                    return cls.Contains("_chatPanel_") || cls.Contains("_mainPanel_") || aid == "chat-root" || cls.Contains("zm-web-chat-body");
+                }, 12);
                 if (chatPanel != null) break;
             }
             catch { }
         }
 
-        chatPanel ??= FindFirstByClassSubstring(rootEl, "_chatPanel_", 22);
+        chatPanel ??= FindFirst(rootEl, el =>
+        {
+            string cls = el.Current.ClassName ?? "";
+            string aid = el.Current.AutomationId ?? "";
+            return cls.Contains("_chatPanel_") || cls.Contains("_mainPanel_") || aid == "chat-root" || cls.Contains("zm-web-chat-body");
+        }, 22);
         if (chatPanel == null)
         {
             if (!isVisible || isIconic)
@@ -550,50 +585,48 @@ internal static class Program
             }
         }
 
-        var contentWrapper = FindFirstByClassSubstring(msgNode, "_contentWrapper_", 3);
-        if (contentWrapper != null)
+        var contentWrapper = FindFirstByClassSubstring(msgNode, "_contentWrapper_", 3) ?? msgNode;
+
+        accessibleLabel = contentWrapper.Current.Name;
+
+        var senderNode = FindFirstByClassSubstring(contentWrapper, "_senderBold_", 4);
+        if (senderNode != null)
         {
-            accessibleLabel = contentWrapper.Current.Name;
+            headerSender = CollectAllText(senderNode).Trim();
+        }
 
-            var senderNode = FindFirstByClassSubstring(contentWrapper, "_senderBold_", 3);
-            if (senderNode != null)
+        var timeContainer = FindFirstByClassSubstring(contentWrapper, "_headerSubtextContainer_", 4);
+        if (timeContainer != null)
+        {
+            headerTime = ExtractHeaderTime(timeContainer);
+        }
+
+        var longContent = FindFirstByClassSubstring(contentWrapper, "_longMessageContent_", 8);
+        if (longContent != null)
+        {
+            string lcClass = longContent.Current.ClassName ?? "";
+            if (lcClass.Contains("_longMessageContentMine_"))
+                isSentByMe = true;
+
+            var callLabelNode = FindFirstByClassSubstring(longContent, "_callLabel_", 4);
+            if (callLabelNode != null)
             {
-                headerSender = CollectAllText(senderNode).Trim();
+                callStatusText = CollectAllText(callLabelNode).Trim();
+                var callImg = FindFirstByControlType(longContent, ControlType.Image, 3);
+                if (callImg != null)
+                    callIconLabel = (callImg.Current.Name ?? "").Trim();
             }
 
-            var timeContainer = FindFirstByClassSubstring(contentWrapper, "_headerSubtextContainer_", 3);
-            if (timeContainer != null)
+            var textDetail = FindFirstByClassSubstring(longContent, "_textDetail_", 4);
+            if (textDetail != null)
             {
-                headerTime = ExtractHeaderTime(timeContainer);
-            }
-
-            var longContent = FindFirstByClassSubstring(contentWrapper, "_longMessageContent_", 6);
-            if (longContent != null)
-            {
-                string lcClass = longContent.Current.ClassName ?? "";
-                if (lcClass.Contains("_longMessageContentMine_"))
+                if ((textDetail.Current.ClassName ?? "").Contains("_sentByMe_"))
                     isSentByMe = true;
 
-                var callLabelNode = FindFirstByClassSubstring(longContent, "_callLabel_", 4);
-                if (callLabelNode != null)
-                {
-                    callStatusText = CollectAllText(callLabelNode).Trim();
-                    var callImg = FindFirstByControlType(longContent, ControlType.Image, 3);
-                    if (callImg != null)
-                        callIconLabel = (callImg.Current.Name ?? "").Trim();
-                }
-
-                var textDetail = FindFirstByClassSubstring(longContent, "_textDetail_", 3);
-                if (textDetail != null)
-                {
-                    if ((textDetail.Current.ClassName ?? "").Contains("_sentByMe_"))
-                        isSentByMe = true;
-
-                    var textDetailContent = FindFirstByClassSubstring(textDetail, "_textDetailContent_", 3) ?? textDetail;
-                    var sbText = new StringBuilder();
-                    ExtractBodyTextAndLinks(textDetailContent, sbText, links);
-                    bodyText = sbText.ToString().Trim();
-                }
+                var textDetailContent = FindFirstByClassSubstring(textDetail, "_textDetailContent_", 4) ?? textDetail;
+                var sbText = new StringBuilder();
+                ExtractBodyTextAndLinks(textDetailContent, sbText, links);
+                bodyText = sbText.ToString().Trim();
             }
         }
 
@@ -797,6 +830,27 @@ internal static class Program
             NewlyVisibleCount = newlyVisible.Count,
             NewlyVisibleMessages = newlyVisible
         };
+    }
+
+    private static AutomationElement? FindFirst(AutomationElement root, Func<AutomationElement, bool> predicate, int maxDepth)
+    {
+        if (maxDepth < 0 || root == null) return null;
+        try
+        {
+            if (predicate(root)) return root;
+        }
+        catch { }
+        if (maxDepth == 0) return null;
+
+        var walker = TreeWalker.RawViewWalker;
+        var child = walker.GetFirstChild(root);
+        while (child != null)
+        {
+            var found = FindFirst(child, predicate, maxDepth - 1);
+            if (found != null) return found;
+            child = walker.GetNextSibling(child);
+        }
+        return null;
     }
 
     private static AutomationElement? FindFirstByClassSubstring(AutomationElement root, string substring, int maxDepth)
