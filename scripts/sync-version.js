@@ -14,7 +14,7 @@ function getGitTagVersion() {
   }
 
   try {
-    const rawTag = execSync('git describe --tags --abbrev=0', {
+    const rawTag = execSync('git describe --tags --exact-match', {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore']
     }).trim();
@@ -33,8 +33,9 @@ function syncVersion() {
 
   const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
   const tagVersion = getGitTagVersion();
+  const shouldSyncFromTag = Boolean(process.env.GITHUB_REF_TYPE === 'tag' || process.env.MESAI_VERSION);
 
-  if (tagVersion && pkg.version !== tagVersion) {
+  if (shouldSyncFromTag && tagVersion && pkg.version !== tagVersion) {
     console.log(`[sync-version] Updated package.json version from git tag: ${pkg.version} -> ${tagVersion}`);
     pkg.version = tagVersion;
     fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n', 'utf8');

@@ -17,8 +17,10 @@ import type {
   ActivityStatus,
   AiPreviewPayload,
   AIProviderType,
-  DailyReport
+  DailyReport,
+  ReportProgressLog
 } from '../../shared/types';
+import { getNowHhmmss } from './ai-provider';
 
 const CATEGORY_LABELS: Record<ActivityCategory, string> = {
   development: 'Yazılım Geliştirme',
@@ -189,6 +191,7 @@ export class ReportService {
     userConfirmedRemoteSend?: boolean;
     maxChars?: number;
     promptOverride?: string;
+    onProgress?: (log: ReportProgressLog) => void;
   }): Promise<DailyReport> {
     if (typeof input.maxChars === 'number' && input.maxChars >= 120) {
       this.repo.updateSettings({ reportMaxChars: Math.floor(input.maxChars) });
@@ -226,6 +229,29 @@ export class ReportService {
     const remainingBudget = Math.max(0, effectiveMaxChars - userEditedChars);
     const providerBudget = Math.max(120, remainingBudget);
 
+    input.onProgress?.({
+      timestamp: getNowHhmmss(),
+      step: 'init',
+      message: `Rapor oluşturma başlatıldı (${input.reportDate}). Sağlayıcı: ${input.provider}`
+    });
+    input.onProgress?.({
+      timestamp: getNowHhmmss(),
+      step: 'gathering',
+      message: `Günün aktiviteleri filtrelendi (${activities.length} aktivite bulundu).`
+    });
+    if (dayJiraKeys.length > 0) {
+      input.onProgress?.({
+        timestamp: getNowHhmmss(),
+        step: 'context',
+        message: `${dayJiraKeys.length} adet Jira iş anahtarı bağlamı çözümlendi (${dayJiraKeys.join(', ')}).`
+      });
+    }
+    input.onProgress?.({
+      timestamp: getNowHhmmss(),
+      step: 'prompt_prep',
+      message: `Karakter bütçesi hesaplandı (Maks: ${effectiveMaxChars}, AI Bütçesi: ${providerBudget}).`
+    });
+
     const { provider: providerInstance, isCli } = this.getProviderInstance(input.provider);
 
     let effectiveProvider: string = input.provider;
@@ -254,13 +280,19 @@ export class ReportService {
       }
 
       try {
+        input.onProgress?.({
+          timestamp: getNowHhmmss(),
+          step: 'ai_call',
+          message: `${effectiveProvider} modeline bağlanılıyor... Yanıt bekleniyor.`
+        });
         draftItems = await providerInstance.generateReportItems(
           input.reportDate,
           activities,
           providerBudget,
           undefined,
           jiraContextMap,
-          input.promptOverride
+          input.promptOverride,
+          input.onProgress
         );
         this.repo.updateSyncState({
           connector: 'ai_provider',
@@ -278,12 +310,19 @@ export class ReportService {
           lastAttemptAt: attemptAt,
           lastError: `${input.provider} başarısız oldu, yerel kurallı motora geçildi: ${errMsg}`
         });
+        input.onProgress?.({
+          timestamp: getNowHhmmss(),
+          step: 'fallback',
+          message: `${input.provider} hatası: ${errMsg.slice(0, 100)}. Yerel kurallı motora geçiliyor...`
+        });
         draftItems = await this.localProvider.generateReportItems(
           input.reportDate,
           activities,
           providerBudget,
           undefined,
-          jiraContextMap
+          jiraContextMap,
+          undefined,
+          input.onProgress
         );
         effectiveProvider = `local_rule (${input.provider} hata sonrası yerel yedek)`;
       }
@@ -293,7 +332,9 @@ export class ReportService {
         activities,
         providerBudget,
         undefined,
-        jiraContextMap
+        jiraContextMap,
+        undefined,
+        input.onProgress
       );
       this.repo.updateSyncState({
         connector: 'ai_provider',
@@ -325,11 +366,22 @@ export class ReportService {
             userEditedItems.length > 0 ? remainingBudget : effectiveMaxChars
           );
 
-    return this.repo.saveGeneratedReport({
+    input.onProgress?.({
+      timestamp: getNowHhmmss(),
+      step: 'saving',
+      message: `Rapor veritabanına taslak olarak kaydediliyor (${fittedItems.length} madde)...`
+    });
+    const savedReport = this.repo.saveGeneratedReport({
       reportDate: input.reportDate,
       providerUsed: effectiveProvider,
       generatedItems: fittedItems
     });
+    input.onProgress?.({
+      timestamp: getNowHhmmss(),
+      step: 'complete',
+      message: 'Günlük çalışma raporu başarıyla oluşturuldu.'
+    });
+    return savedReport;
   }
 
   public formatReportContent(report: DailyReport, format: 'md' | 'txt' | 'csv'): string {

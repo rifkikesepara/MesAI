@@ -8,7 +8,14 @@ export default defineConfig({
   root: '.',
   build: {
     outDir: 'dist-renderer',
-    emptyOutDir: true
+    emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ['react', 'react-dom']
+        }
+      }
+    }
   },
   resolve: {
     alias: {

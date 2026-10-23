@@ -13,4 +13,5 @@ verify-output.json
 Thumbs.db
 .DS_Store
 .codegraph/
+.github/context-mode/
 

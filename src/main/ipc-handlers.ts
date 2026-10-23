@@ -62,18 +62,12 @@ export function registerIpcHandlers(deps: {
   ipcMain.handle(IPC_CHANNELS.DASHBOARD_GET, async (): Promise<DashboardSummary> => {
     const settings = repo.getSettings();
     const todayDate = getTodayLocalDate();
-    const todayActivities = repo.listActivities({ date: todayDate });
-    const recentActivities = repo.listActivities({}).slice(0, 20);
+    const metrics = repo.getDashboardMetrics(todayDate);
+    const recentActivities = repo.listActivities({ limit: 20 });
     const projects = repo.listProjects();
     const syncStates = repo.listSyncStates();
 
-    const todayZoomMessagesCount = todayActivities.filter((a) =>
-      a.sourceType.startsWith('zoom_')
-    ).length;
-    const todayGitActivitiesCount = todayActivities.filter(
-      (a) => a.sourceType.startsWith('git_') || a.sourceType === 'file_change'
-    ).length;
-
+    
     const pendingMatchSuggestionsCount = recentActivities
       .flatMap((a) => a.links ?? [])
       .filter((l) => l.userStatus === 'pending').length;
@@ -81,9 +75,9 @@ export function registerIpcHandlers(deps: {
     return {
       trackingPaused: settings.trackingPaused,
       todayDate,
-      todayActivitiesCount: todayActivities.length,
-      todayZoomMessagesCount,
-      todayGitActivitiesCount,
+      todayActivitiesCount: metrics.todayActivitiesCount,
+      todayZoomMessagesCount: metrics.todayZoomMessagesCount,
+      todayGitActivitiesCount: metrics.todayGitActivitiesCount,
       activeProjectsCount: projects.filter((p) => p.enabled).length,
       pendingMatchSuggestionsCount,
       recentActivities,
@@ -228,7 +222,7 @@ export function registerIpcHandlers(deps: {
     }
   );
 
-  ipcMain.handle(IPC_CHANNELS.REPORT_GENERATE, async (_e, input: unknown) => {
+  ipcMain.handle(IPC_CHANNELS.REPORT_GENERATE, async (event, input: unknown) => {
     if (!input || typeof input !== 'object') {
       throw new Error('Geçersiz rapor üretim isteği.');
     }
@@ -253,7 +247,14 @@ export function registerIpcHandlers(deps: {
       provider,
       userConfirmedRemoteSend: Boolean(obj.userConfirmedRemoteSend),
       maxChars,
-      promptOverride
+      promptOverride,
+      onProgress: (log) => {
+        try {
+          event.sender.send(IPC_CHANNELS.REPORT_PROGRESS, log);
+        } catch {
+          // ignore
+        }
+      }
     });
   });
 

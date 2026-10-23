@@ -10,8 +10,10 @@ import type {
   DailyReport,
   Evidence,
   Project,
-  ReportItem
+  ReportItem,
+  ReportProgressLog
 } from '../../shared/types';
+import { AgentLogStreamConsole } from '../components/AgentLogStreamConsole';
 import { CATEGORY_LABELS, SOURCE_LABELS, STATUS_LABELS } from './DashboardAndProjectsView';
 import {
   PlusIcon,
@@ -51,13 +53,29 @@ export const TimelineView: React.FC<{
   const [noteProjectId, setNoteProjectId] = useState<string>('');
   const [noteJiraKey, setNoteJiraKey] = useState('');
 
-  const loadActivities = async () => {
-    setLoading(true);
+  const loadActivities = async (showSkeleton = true) => {
+    const scrollContainer = document.querySelector('.content-scroll') as HTMLElement | null;
+    const prevScrollTop = scrollContainer ? scrollContainer.scrollTop : window.scrollY;
+
+    if (showSkeleton) {
+      setLoading(true);
+    }
     try {
       const list = await window.mesaiApi.listActivities(filter);
       setActivities(list);
     } finally {
-      setLoading(false);
+      if (showSkeleton) {
+        setLoading(false);
+      }
+      if (!showSkeleton) {
+        requestAnimationFrame(() => {
+          if (scrollContainer) {
+            scrollContainer.scrollTop = prevScrollTop;
+          } else {
+            window.scrollTo(0, prevScrollTop);
+          }
+        });
+      }
     }
   };
 
@@ -89,8 +107,49 @@ export const TimelineView: React.FC<{
     userStatus: 'accepted' | 'rejected',
     projectId?: string | null
   ) => {
-    await window.mesaiApi.updateActivityLink({ linkId, userStatus, projectId });
-    await loadActivities();
+    const scrollContainer = document.querySelector('.content-scroll') as HTMLElement | null;
+    const prevScrollTop = scrollContainer ? scrollContainer.scrollTop : window.scrollY;
+
+    setActivities((prev) =>
+      prev.map((act) => {
+        const link = act.links?.find((l) => l.id === linkId);
+        if (!link) return act;
+        const updatedLinks = act.links?.map((l) =>
+          l.id === linkId ? { ...l, userStatus } : l
+        );
+        let updatedProjectId = act.projectId;
+        let updatedProjectName = act.projectName;
+        if (userStatus === 'accepted') {
+          updatedProjectId = projectId ?? link.projectId ?? act.projectId;
+          updatedProjectName = link.projectName ?? act.projectName;
+        } else if (userStatus === 'rejected') {
+          if (act.projectId === (projectId ?? link.projectId)) {
+            updatedProjectId = null;
+            updatedProjectName = null;
+          }
+        }
+        return {
+          ...act,
+          projectId: updatedProjectId,
+          projectName: updatedProjectName,
+          links: updatedLinks
+        };
+      })
+    );
+
+    requestAnimationFrame(() => {
+      if (scrollContainer) {
+        scrollContainer.scrollTop = prevScrollTop;
+      } else {
+        window.scrollTo(0, prevScrollTop);
+      }
+    });
+
+    try {
+      await window.mesaiApi.updateActivityLink({ linkId, userStatus, projectId });
+    } finally {
+      await loadActivities(false);
+    }
   };
 
   const uniqueChatsOrRepos = Array.from(
@@ -392,8 +451,12 @@ export const TimelineView: React.FC<{
                       <div className="match-link-actions">
                         {lnk.userStatus !== 'accepted' && (
                           <button
+                            type="button"
                             className="btn btn-sm btn-success"
-                            onClick={() => handleLinkDecision(lnk.id, 'accepted', lnk.projectId)}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              void handleLinkDecision(lnk.id, 'accepted', lnk.projectId);
+                            }}
                             style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
                           >
                             <CheckIcon size={12} />
@@ -402,8 +465,12 @@ export const TimelineView: React.FC<{
                         )}
                         {lnk.userStatus !== 'rejected' && (
                           <button
+                            type="button"
                             className="btn btn-sm btn-danger"
-                            onClick={() => handleLinkDecision(lnk.id, 'rejected', lnk.projectId)}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              void handleLinkDecision(lnk.id, 'rejected', lnk.projectId);
+                            }}
                             style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
                           >
                             <CloseIcon size={12} />
@@ -460,6 +527,8 @@ export const DailyReportView: React.FC<{
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [maxChars, setMaxChars] = useState<number>(1000);
   const [loading, setLoading] = useState(false);
+  const [progressLogs, setProgressLogs] = useState<ReportProgressLog[]>([]);
+  const [streamChunk, setStreamChunk] = useState<string>('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
 
@@ -531,6 +600,16 @@ export const DailyReportView: React.FC<{
     setAiPreview(null);
     setLoading(true);
     setErrorMsg(null);
+    setProgressLogs([]);
+    setStreamChunk('');
+
+    const unsub = window.mesaiApi.onReportProgress((log) => {
+      setProgressLogs((prev) => [...prev, log]);
+      if (log.chunk) {
+        setStreamChunk((prev) => (prev ? `${prev} ${log.chunk}` : log.chunk!));
+      }
+    });
+
     const validMaxChars = Math.max(120, Number(maxChars) || 1000);
     try {
       const generated = await window.mesaiApi.generateDailyReport({
@@ -547,6 +626,7 @@ export const DailyReportView: React.FC<{
     } catch (err) {
       setErrorMsg((err as Error).message);
     } finally {
+      unsub();
       setLoading(false);
     }
   };
@@ -788,7 +868,12 @@ export const DailyReportView: React.FC<{
       </div>
 
       {loading ? (
-        <SkeletonReport />
+        <AgentLogStreamConsole
+          logs={progressLogs}
+          provider={provider}
+          reportDate={reportDate}
+          streamChunk={streamChunk}
+        />
       ) : (
         <>
           {report && (

@@ -17,7 +17,10 @@ export class MesaiDatabase {
     }
     this.db = new DatabaseSync(dbPath);
     this.db.exec('PRAGMA journal_mode = WAL;');
+    this.db.exec('PRAGMA synchronous = NORMAL;');
     this.db.exec('PRAGMA foreign_keys = ON;');
+    this.db.exec('PRAGMA cache_size = -8000;');
+    this.db.exec('PRAGMA temp_store = MEMORY;');
     this.runMigrations();
   }
 

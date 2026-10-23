@@ -146,43 +146,8 @@ export class GitFileWatcherService {
   }
 
   public refreshFileWatchers(): void {
-    const settings = this.repo.getSettings();
-    if (settings.trackingPaused) {
-      this.stopAllWatchers();
-      return;
-    }
-
-    const projects = this.repo.listProjects();
-    const enabledIds = new Set(projects.filter((p) => p.enabled).map((p) => p.id));
-
-    for (const [projId, watcher] of this.watchers.entries()) {
-      if (!enabledIds.has(projId)) {
-        watcher.close();
-        this.watchers.delete(projId);
-      }
-    }
-
-    for (const proj of projects) {
-      if (!proj.enabled || this.watchers.has(proj.id)) continue;
-      if (!fs.existsSync(proj.rootPath)) continue;
-
-      try {
-        const watcher = fs.watch(
-          proj.rootPath,
-          { recursive: true },
-          (_eventType, filename) => {
-            if (!filename) return;
-            this.handleRawFileEvent(proj, filename, true);
-          }
-        );
-        watcher.on('error', () => {
-          // prevent unhandled error events on Windows directory locks
-        });
-        this.watchers.set(proj.id, watcher);
-      } catch {
-        // ignore if recursive watch fails on a path
-      }
-    }
+    // Pure Git-based tracking: OS fs.watch is stopped to eliminate OS file locks and noise.
+    this.stopAllWatchers();
   }
 
   /**
@@ -484,7 +449,7 @@ export class GitFileWatcherService {
           // Group dirty files by their actual modification date (YYYY-MM-DD in local timezone)
           const filesByDate = new Map<
             string,
-            { files: string[]; latestIso: string; latestTimeText: string }
+            { files: string[]; latestIso: string; latestTimeText: string; earliestTimeText: string }
           >();
           const cutoffMs = Date.now() - 14 * 86_400_000;
 
@@ -505,18 +470,23 @@ export class GitFileWatcherService {
 
               const fileLocalIso = toLocalIsoString(stat.mtime);
               const fileDate = fileLocalIso.slice(0, 10);
+              const fileTime = fileLocalIso.slice(11, 16);
               const existingGroup = filesByDate.get(fileDate);
               if (!existingGroup) {
                 filesByDate.set(fileDate, {
                   files: [rawFile],
                   latestIso: fileLocalIso,
-                  latestTimeText: fileLocalIso.slice(11, 16)
+                  latestTimeText: fileTime,
+                  earliestTimeText: fileTime
                 });
               } else {
                 existingGroup.files.push(rawFile);
                 if (fileLocalIso > existingGroup.latestIso) {
                   existingGroup.latestIso = fileLocalIso;
-                  existingGroup.latestTimeText = fileLocalIso.slice(11, 16);
+                  existingGroup.latestTimeText = fileTime;
+                }
+                if (fileTime < existingGroup.earliestTimeText) {
+                  existingGroup.earliestTimeText = fileTime;
                 }
               }
             } catch {
@@ -531,6 +501,14 @@ export class GitFileWatcherService {
             const preview = sortedFiles.slice(0, 6).join(', ');
             const suffix = sortedFiles.length > 6 ? ` (+${sortedFiles.length - 6} dosya)` : '';
 
+            // Extract compact uncommitted code diff
+            const codeDiff = await this.extractCompactWorkingTreeDiff(proj.rootPath);
+
+            const timeLabel =
+              group.earliestTimeText === group.latestTimeText
+                ? `${group.latestTimeText} (Son Değişiklik)`
+                : `${group.earliestTimeText} - ${group.latestTimeText} (Son Değişiklik)`;
+
             const res = this.repo.ingestGitOrFileActivity({
               projectId: proj.id,
               projectName: proj.name,
@@ -539,10 +517,11 @@ export class GitFileWatcherService {
               externalId: branch,
               branchName: branch,
               occurredAtIso: group.latestIso,
-              rawTimestampText: group.latestTimeText,
+              rawTimestampText: timeLabel,
               title: `${proj.name} [${branch}] — Çalışma Ağacı (${sortedFiles.length} dosya)`,
-              summary: `Değişen/eklenen dosyalar: ${preview}${suffix}.`,
+              summary: `Commit edilmemiş çalışma (Son düzenleme: ${group.latestTimeText}). Değişen dosyalar: ${preview}${suffix}.`,
               changedFiles: sortedFiles,
+              codeDiff,
               statusOverride: 'in_progress',
               categoryOverride: 'development'
             });
@@ -654,6 +633,21 @@ export class GitFileWatcherService {
 
       const combined = sections.join('\n\n').trim();
       return combined ? combined.slice(0, 3400) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async extractCompactWorkingTreeDiff(repoPath: string): Promise<string | null> {
+    try {
+      let rawDiff = '';
+      try {
+        rawDiff = await this.execGit(repoPath, ['diff', '-U1', '--no-color', 'HEAD']);
+      } catch {
+        rawDiff = await this.execGit(repoPath, ['diff', '-U1', '--no-color']);
+      }
+      if (!rawDiff || !rawDiff.trim()) return null;
+      return this.compactRawGitPatch(rawDiff, 2400);
     } catch {
       return null;
     }

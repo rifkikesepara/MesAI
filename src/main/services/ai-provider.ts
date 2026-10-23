@@ -2,7 +2,12 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { Activity, ActivityCategory, ActivityStatus, AIProviderType } from '../../shared/types';
+import type { Activity, ActivityCategory, ActivityStatus, AIProviderType, ReportProgressLog } from '../../shared/types';
+
+export function getNowHhmmss(): string {
+  const now = new Date();
+  return now.toTimeString().slice(0, 8);
+}
 
 export interface GeneratedDraftItem {
   workItemId: string | null;
@@ -24,7 +29,8 @@ export interface AIProvider {
     maxChars?: number,
     signal?: AbortSignal,
     jiraContextMap?: Record<string, string>,
-    promptOverride?: string
+    promptOverride?: string,
+    onProgress?: (log: ReportProgressLog) => void
   ): Promise<GeneratedDraftItem[]>;
 }
 
@@ -733,8 +739,10 @@ export class LocalRuleProvider implements AIProvider {
     maxChars = 1000,
     _signal?: AbortSignal,
     jiraContextMap: Record<string, string> = {},
-    _promptOverride?: string
+    _promptOverride?: string,
+    onProgress?: (log: ReportProgressLog) => void
   ): Promise<GeneratedDraftItem[]> {
+    onProgress?.({ timestamp: getNowHhmmss(), step: 'gathering', message: `Yerel kurallı motor: ${rawActivities.length} aktivite işleniyor...` });
     // STRICT DATE FILTER: Only include activities whose occurredAtIso local date matches reportDate
     const activities = rawActivities.filter(
       (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
@@ -810,15 +818,7 @@ export class LocalRuleProvider implements AIProvider {
       const workItemId = firstLinkWithWorkItem?.workItemId ?? null;
       const jiraKey = firstLinkWithWorkItem?.workItemJiraKey ?? null;
 
-      // If the day already has real git commits, skip unlinked background working-tree-only repos
-      if (
-        dayHasAnyCommit &&
-        !hasCommits &&
-        !workItemId &&
-        fileOrWtActs.every((a) => a.sourceType === 'git_working_tree')
-      ) {
-        continue;
-      }
+      // Uncommitted working tree modifications of this date are preserved as in_progress work
 
       const projectId =
         groupActs.find((a) => a.projectId)?.projectId ?? firstLink?.projectId ?? null;
@@ -1059,14 +1059,7 @@ export function buildSanitizedAiPrompt(
       act.sourceType === 'file_change';
 
     if (isDevSource) {
-      // Skip unlinked background working-tree-only noise when the day has real commits
-      if (
-        dayHasAnyCommit &&
-        act.sourceType === 'git_working_tree' &&
-        !acceptedLink?.workItemId
-      ) {
-        continue;
-      }
+      // Uncommitted working tree modifications of this date are preserved as in_progress work
 
       const projName = act.projectName
         ? formatCorporateProjectName(act.projectName)
@@ -1379,8 +1372,10 @@ export class GeminiCliProvider implements AIProvider {
     maxChars = 1000,
     signal?: AbortSignal,
     jiraContextMap: Record<string, string> = {},
-    promptOverride?: string
+    promptOverride?: string,
+    onProgress?: (log: ReportProgressLog) => void
   ): Promise<GeneratedDraftItem[]> {
+    onProgress?.({ timestamp: getNowHhmmss(), step: 'prompt_prep', message: 'Güvenli AI promptu hazırlandı, agy / Gemini CLI sürecine gönderiliyor...' });
     const activities = rawActivities.filter(
       (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
     );
@@ -1395,7 +1390,7 @@ export class GeminiCliProvider implements AIProvider {
 
     const rawOutput = this.customRunner
       ? await this.customRunner(prompt, signal)
-      : await this.runTerminalAiPrompt(prompt, 75_000, signal);
+      : await this.runTerminalAiPrompt(prompt, 75_000, signal, onProgress);
 
     return validateAndParseAiReportJson(rawOutput, validEvidenceIds, maxChars);
   }
@@ -1403,7 +1398,8 @@ export class GeminiCliProvider implements AIProvider {
   private async runTerminalAiPrompt(
     prompt: string,
     timeoutMs: number,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onProgress?: (log: ReportProgressLog) => void
   ): Promise<string> {
     const agyPath = this.resolveAgyCliPath();
     const hasExplicitGeminiApiKey = Boolean(
@@ -1412,7 +1408,7 @@ export class GeminiCliProvider implements AIProvider {
 
     // If Antigravity CLI (agy.exe) is installed, prefer it for zero API key execution
     if (agyPath && !hasExplicitGeminiApiKey) {
-      return this.invokeAgyCli(agyPath, prompt, timeoutMs, signal);
+      return this.invokeAgyCli(agyPath, prompt, timeoutMs, signal, onProgress);
     }
 
     try {
@@ -1428,11 +1424,12 @@ export class GeminiCliProvider implements AIProvider {
         ],
         timeoutMs,
         signal,
-        prompt
+        prompt,
+        onProgress
       );
     } catch (err) {
       if (agyPath) {
-        return this.invokeAgyCli(agyPath, prompt, timeoutMs, signal);
+        return this.invokeAgyCli(agyPath, prompt, timeoutMs, signal, onProgress);
       }
       throw err;
     }
@@ -1442,7 +1439,8 @@ export class GeminiCliProvider implements AIProvider {
     agyExecutable: string,
     prompt: string,
     timeoutMs: number,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onProgress?: (log: ReportProgressLog) => void
   ): Promise<string> {
     // Windows CreateProcessW limits CLI args to ~32KB.
     // If prompt is large, pass a compact prompt and stream evidence via stdin or truncate safely.
@@ -1453,6 +1451,12 @@ export class GeminiCliProvider implements AIProvider {
         : prompt;
 
     return new Promise((resolve, reject) => {
+      onProgress?.({
+        timestamp: getNowHhmmss(),
+        step: 'ai_call',
+        message: 'Antigravity CLI (agy) süreci başlatıldı. Model çıkarımı bekleniyor...'
+      });
+
       const child = execFile(
         agyExecutable,
         ['-p', safePrompt, '--disable-slash-commands', '--effort', 'low'],
@@ -1481,6 +1485,29 @@ export class GeminiCliProvider implements AIProvider {
           resolve(stdout);
         }
       );
+
+      child.stdout?.on('data', (chunk: Buffer | string) => {
+        const text = chunk.toString();
+        onProgress?.({
+          timestamp: getNowHhmmss(),
+          step: 'streaming',
+          message: 'Antigravity yanıt üretiyor...',
+          chunk: text
+        });
+      });
+
+      child.stderr?.on('data', (chunk: Buffer | string) => {
+        const text = chunk.toString().trim();
+        const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l && !l.startsWith('warning:'));
+        for (const line of lines) {
+          onProgress?.({
+            timestamp: getNowHhmmss(),
+            step: 'ai_call',
+            message: `[agy] ${line.slice(0, 140)}`
+          });
+        }
+      });
+
       child.stdin?.end();
     });
   }
@@ -1489,7 +1516,8 @@ export class GeminiCliProvider implements AIProvider {
     args: string[],
     timeoutMs: number,
     signal?: AbortSignal,
-    stdinInput?: string
+    stdinInput?: string,
+    onProgress?: (log: ReportProgressLog) => void
   ): Promise<string> {
     return new Promise((resolve, reject) => {
       const appData = process.env.APPDATA || '';
@@ -1527,6 +1555,12 @@ export class GeminiCliProvider implements AIProvider {
         finalArgs = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', geminiPs1, ...args];
       }
 
+      onProgress?.({
+        timestamp: getNowHhmmss(),
+        step: 'ai_call',
+        message: 'Gemini CLI süreci çalıştırılıyor...'
+      });
+
       const child = execFile(
         executable,
         finalArgs,
@@ -1556,6 +1590,16 @@ export class GeminiCliProvider implements AIProvider {
           resolve(stdout);
         }
       );
+
+      child.stdout?.on('data', (chunk: Buffer | string) => {
+        const text = chunk.toString();
+        onProgress?.({
+          timestamp: getNowHhmmss(),
+          step: 'streaming',
+          message: 'Gemini canlı yanıt akışı...',
+          chunk: text
+        });
+      });
 
       if (stdinInput && child.stdin) {
         child.stdin.on('error', () => {
@@ -1636,8 +1680,10 @@ export class CodexCliProvider implements AIProvider {
     maxChars = 1000,
     signal?: AbortSignal,
     jiraContextMap: Record<string, string> = {},
-    promptOverride?: string
+    promptOverride?: string,
+    onProgress?: (log: ReportProgressLog) => void
   ): Promise<GeneratedDraftItem[]> {
+    onProgress?.({ timestamp: getNowHhmmss(), step: 'prompt_prep', message: 'Codex CLI sürecine bağlanılıyor...' });
     const activities = rawActivities.filter(
       (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
     );
@@ -1652,12 +1698,12 @@ export class CodexCliProvider implements AIProvider {
 
     const rawOutput = this.config.customRunner
       ? await this.config.customRunner(prompt, signal)
-      : await this.runCodexPrompt(prompt, 75_000, signal);
+      : await this.runCodexPrompt(prompt, 75_000, signal, onProgress);
 
     return validateAndParseAiReportJson(rawOutput, validEvidenceIds, maxChars);
   }
 
-  private runCodexPrompt(prompt: string, timeoutMs: number, signal?: AbortSignal): Promise<string> {
+  private runCodexPrompt(prompt: string, timeoutMs: number, signal?: AbortSignal, onProgress?: (log: ReportProgressLog) => void): Promise<string> {
     const codexPath = CodexCliProvider.resolveCodexCliPath();
     if (!codexPath) {
       throw new Error('Yerel Codex CLI (codex.exe) bulunamadı. Lütfen Codex CLI kurun veya API Key kullanın.');
@@ -1703,6 +1749,16 @@ export class CodexCliProvider implements AIProvider {
             resolve(stdout);
           }
         );
+
+        child.stdout?.on('data', (chunk: Buffer | string) => {
+          const text = chunk.toString();
+          onProgress?.({
+            timestamp: getNowHhmmss(),
+            step: 'streaming',
+            message: 'Codex CLI yanıt akışı...',
+            chunk: text
+          });
+        });
 
         if (child.stdin) {
           child.stdin.on('error', () => {
@@ -1784,8 +1840,10 @@ export class ClaudeCliProvider implements AIProvider {
     maxChars = 1000,
     signal?: AbortSignal,
     jiraContextMap: Record<string, string> = {},
-    promptOverride?: string
+    promptOverride?: string,
+    onProgress?: (log: ReportProgressLog) => void
   ): Promise<GeneratedDraftItem[]> {
+    onProgress?.({ timestamp: getNowHhmmss(), step: 'prompt_prep', message: 'Claude CLI sürecine bağlanılıyor...' });
     const activities = rawActivities.filter(
       (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
     );
@@ -1800,12 +1858,12 @@ export class ClaudeCliProvider implements AIProvider {
 
     const rawOutput = this.config.customRunner
       ? await this.config.customRunner(prompt, signal)
-      : await this.runClaudePrompt(prompt, 75_000, signal);
+      : await this.runClaudePrompt(prompt, 75_000, signal, onProgress);
 
     return validateAndParseAiReportJson(rawOutput, validEvidenceIds, maxChars);
   }
 
-  private runClaudePrompt(prompt: string, timeoutMs: number, signal?: AbortSignal): Promise<string> {
+  private runClaudePrompt(prompt: string, timeoutMs: number, signal?: AbortSignal, onProgress?: (log: ReportProgressLog) => void): Promise<string> {
     const claudePath = ClaudeCliProvider.resolveClaudeCliPath();
     if (!claudePath) {
       throw new Error('Yerel Claude Code CLI bulunamadı. Lütfen Claude CLI kurun veya API Key kullanın.');
@@ -1847,6 +1905,16 @@ export class ClaudeCliProvider implements AIProvider {
             resolve(stdout);
           }
         );
+        child.stdout?.on('data', (chunk: Buffer | string) => {
+          const text = chunk.toString();
+          onProgress?.({
+            timestamp: getNowHhmmss(),
+            step: 'streaming',
+            message: 'Claude CLI yanıt akışı...',
+            chunk: text
+          });
+        });
+
         child.stdin?.end();
       } catch (err) {
         reject(new Error(`Claude Code CLI çalıştırma hatası: ${(err as Error).message}`));
@@ -1915,8 +1983,10 @@ export class OllamaCliProvider implements AIProvider {
     maxChars = 1000,
     signal?: AbortSignal,
     jiraContextMap: Record<string, string> = {},
-    promptOverride?: string
+    promptOverride?: string,
+    onProgress?: (log: ReportProgressLog) => void
   ): Promise<GeneratedDraftItem[]> {
+    onProgress?.({ timestamp: getNowHhmmss(), step: 'prompt_prep', message: 'Ollama CLI modeline bağlanılıyor...' });
     const activities = rawActivities.filter(
       (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
     );
@@ -1936,7 +2006,7 @@ export class OllamaCliProvider implements AIProvider {
     return validateAndParseAiReportJson(rawOutput, validEvidenceIds, maxChars);
   }
 
-  private runOllamaPrompt(prompt: string, timeoutMs: number, signal?: AbortSignal): Promise<string> {
+  private runOllamaPrompt(prompt: string, timeoutMs: number, signal?: AbortSignal, onProgress?: (log: ReportProgressLog) => void): Promise<string> {
     const ollamaPath = OllamaCliProvider.resolveOllamaCliPath();
     if (!ollamaPath) {
       throw new Error('Yerel Ollama CLI bulunamadı. Lütfen Ollama kurun veya API uç noktası belirtin.');
@@ -2086,8 +2156,10 @@ export class OpenAiApiProvider implements AIProvider {
     maxChars = 1000,
     signal?: AbortSignal,
     jiraContextMap: Record<string, string> = {},
-    promptOverride?: string
+    promptOverride?: string,
+    onProgress?: (log: ReportProgressLog) => void
   ): Promise<GeneratedDraftItem[]> {
+    onProgress?.({ timestamp: getNowHhmmss(), step: 'ai_call', message: 'OpenAI API uç noktasına istek gönderiliyor...' });
     const activities = rawActivities.filter(
       (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
     );
@@ -2266,8 +2338,10 @@ export class AnthropicApiProvider implements AIProvider {
     maxChars = 1000,
     signal?: AbortSignal,
     jiraContextMap: Record<string, string> = {},
-    promptOverride?: string
+    promptOverride?: string,
+    onProgress?: (log: ReportProgressLog) => void
   ): Promise<GeneratedDraftItem[]> {
+    onProgress?.({ timestamp: getNowHhmmss(), step: 'ai_call', message: 'Anthropic Claude API uç noktasına istek gönderiliyor...' });
     const activities = rawActivities.filter(
       (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
     );

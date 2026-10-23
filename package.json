@@ -1,7 +1,7 @@
 {
   "name": "mesai",
   "productName": "MesAI",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "description": "MesAI (DevTrack AI) — Kanıta Dayalı Günlük Çalışma Raporu ve Aktivite Takip Uygulaması",
   "author": "Rıfkı Kesepara",
   "main": "dist-main/src/main/index.js",

@@ -26,6 +26,15 @@ const mesaiApi: MesaiApi = {
   addReportItem: (input) => ipcRenderer.invoke(IPC_CHANNELS.REPORT_ADD_ITEM, input),
   deleteReportItem: (itemId) => ipcRenderer.invoke(IPC_CHANNELS.REPORT_DELETE_ITEM, itemId),
   approveReport: (reportId, notes) => ipcRenderer.invoke(IPC_CHANNELS.REPORT_APPROVE, reportId, notes),
+  onReportProgress: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, log: unknown) => {
+      callback(log as any);
+    };
+    ipcRenderer.on(IPC_CHANNELS.REPORT_PROGRESS, handler);
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.REPORT_PROGRESS, handler);
+    };
+  },
   exportReport: (input) => ipcRenderer.invoke(IPC_CHANNELS.REPORT_EXPORT, input),
 
   getIntegrationsHealth: () => ipcRenderer.invoke(IPC_CHANNELS.INTEGRATIONS_HEALTH),

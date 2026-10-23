@@ -388,3 +388,24 @@ export interface UpdateState {
   lastCheckedAt: string | null;
 }
 
+
+export type ReportProgressStep =
+  | 'init'
+  | 'gathering'
+  | 'context'
+  | 'prompt_prep'
+  | 'ai_call'
+  | 'streaming'
+  | 'fallback'
+  | 'validating'
+  | 'saving'
+  | 'complete'
+  | 'error';
+
+export interface ReportProgressLog {
+  timestamp: string;
+  step: ReportProgressStep;
+  message: string;
+  detail?: string;
+  chunk?: string;
+}

@@ -377,145 +377,152 @@ export class MesaiRepository {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    for (const msg of snapshot.messages) {
-      // Skip empty non-call messages
-      const textBody = (msg.text ?? '').trim();
-      const isCall = msg.messageType === 'call' || Boolean(msg.callRecord);
-      if (!isCall && !textBody && (!msg.links || msg.links.length === 0)) {
-        continue;
-      }
-
-      const resolvedTs = resolveZoomTimestamp(
-        msg.dateGroup,
-        msg.visibleTimestamp,
-        snapshot.capturedAt
-      );
-
-      const dateAnchor = resolvedTs.resolvedDate ?? (msg.dateGroup || 'unknown-date');
-      const senderKey = (msg.senderResolved || msg.sender || 'unknown-sender').trim();
-      const contentSignature = sha256Hex(
-        `${msg.messageType}|${textBody}|${msg.callRecord?.statusText ?? ''}|${(msg.links ?? []).join(',')}`
-      ).slice(0, 16);
-
-      const dedupKey = msg.persistentMessageId
-        ? `zoom:pid:${msg.persistentMessageId}`
-        : `zoom:${snapshot.sessionId || snapshot.chatName || 'chat'}:${dateAnchor}:${msg.visibleTimestamp || 'notime'}:${senderKey}:${contentSignature}:occ${msg.occurrenceIndexInView || 1}`;
-
-      const existing = checkExistingStmt.get(dedupKey) as { id: string } | undefined;
-      if (existing) {
-        updateSeenStmt.run(snapshot.capturedAt, existing.id);
-        updatedMessagesCount++;
-        continue;
-      }
-
-      const sourceRecordId = `sr_${sha256Hex(dedupKey).slice(0, 16)}`;
-      const sourceType: SourceType = isCall ? 'zoom_call' : 'zoom_chat';
-      const occurredAtIso = resolvedTs.resolvedTimestampIso ?? '';
-
-      insertSourceStmt.run(
-        sourceRecordId,
-        sourceType,
-        dedupKey,
-        msg.persistentMessageId ?? msg.uiaRuntimeId ?? null,
-        snapshot.sessionId ?? null,
-        snapshot.chatName ?? null,
-        msg.sender ?? null,
-        msg.senderResolved ?? null,
-        resolvedTs.rawTimestampText,
-        resolvedTs.resolvedTimestampIso,
-        resolvedTs.confidence,
-        resolvedTs.timezoneOffset,
-        msg.messageType,
-        isCall ? (msg.callRecord?.statusText ?? 'Call') : textBody,
-        JSON.stringify(msg.links ?? []),
-        JSON.stringify(msg),
-        snapshot.capturedAt,
-        snapshot.capturedAt
-      );
-
-      const activityId = `act_${sha256Hex(dedupKey).slice(0, 16)}`;
-      const evidenceId = `ev_${sha256Hex(dedupKey).slice(0, 16)}`;
-      const displaySender = msg.senderResolved || msg.sender || 'Bilinmeyen Gönderen';
-      const chatLabel = snapshot.chatName || 'Zoom Sohbet';
-
-      let category: ActivityCategory = 'technical_discussion';
-      let status: ActivityStatus = 'info';
-      let title = '';
-      let summary = '';
-
-      if (isCall) {
-        category = 'meeting';
-        const dirLabel =
-          msg.callRecord?.direction === 'incoming'
-            ? 'Gelen Arama'
-            : msg.callRecord?.direction === 'outgoing'
-              ? 'Giden Arama'
-              : 'Arama Kaydı';
-        title = `Zoom ${dirLabel} — ${chatLabel}`;
-        summary = `${msg.callRecord?.statusText || 'Arama kaydı'} (${displaySender}). Not: Arama kaydından görüşme içeriği veya süre türetilmemiştir.`;
-      } else {
-        const lower = textBody.toLowerCase();
-        if (lower.includes('analiz') || lower.includes('incele') || lower.includes('review')) {
-          category = 'analysis';
-        } else if (lower.includes('araştır') || lower.includes('poc') || lower.includes('test et')) {
-          category = 'research';
+    this.db.exec('BEGIN;');
+    try {
+      for (const msg of snapshot.messages) {
+        // Skip empty non-call messages
+        const textBody = (msg.text ?? '').trim();
+        const isCall = msg.messageType === 'call' || Boolean(msg.callRecord);
+        if (!isCall && !textBody && (!msg.links || msg.links.length === 0)) {
+          continue;
         }
-        if (lower.includes('karar') || lower.includes('onay') || lower.includes('uygundur')) {
-          status = 'decision';
-        } else if (lower.includes('engel') || lower.includes('hata') || lower.includes('sıkıntı') || lower.includes('sorun')) {
-          status = 'blocker';
+
+        const resolvedTs = resolveZoomTimestamp(
+          msg.dateGroup,
+          msg.visibleTimestamp,
+          snapshot.capturedAt
+        );
+
+        const dateAnchor = resolvedTs.resolvedDate ?? (msg.dateGroup || 'unknown-date');
+        const senderKey = (msg.senderResolved || msg.sender || 'unknown-sender').trim();
+        const contentSignature = sha256Hex(
+          `${msg.messageType}|${textBody}|${msg.callRecord?.statusText ?? ''}|${(msg.links ?? []).join(',')}`
+        ).slice(0, 16);
+
+        const dedupKey = msg.persistentMessageId
+          ? `zoom:pid:${msg.persistentMessageId}`
+          : `zoom:${snapshot.sessionId || snapshot.chatName || 'chat'}:${dateAnchor}:${msg.visibleTimestamp || 'notime'}:${senderKey}:${contentSignature}:occ${msg.occurrenceIndexInView || 1}`;
+
+        const existing = checkExistingStmt.get(dedupKey) as { id: string } | undefined;
+        if (existing) {
+          updateSeenStmt.run(snapshot.capturedAt, existing.id);
+          updatedMessagesCount++;
+          continue;
         }
-        title = `${chatLabel} — ${displaySender}`;
-        summary = textBody;
+
+        const sourceRecordId = `sr_${sha256Hex(dedupKey).slice(0, 16)}`;
+        const sourceType: SourceType = isCall ? 'zoom_call' : 'zoom_chat';
+        const occurredAtIso = resolvedTs.resolvedTimestampIso ?? '';
+
+        insertSourceStmt.run(
+          sourceRecordId,
+          sourceType,
+          dedupKey,
+          msg.persistentMessageId ?? msg.uiaRuntimeId ?? null,
+          snapshot.sessionId ?? null,
+          snapshot.chatName ?? null,
+          msg.sender ?? null,
+          msg.senderResolved ?? null,
+          resolvedTs.rawTimestampText,
+          resolvedTs.resolvedTimestampIso,
+          resolvedTs.confidence,
+          resolvedTs.timezoneOffset,
+          msg.messageType,
+          isCall ? (msg.callRecord?.statusText ?? 'Call') : textBody,
+          JSON.stringify(msg.links ?? []),
+          JSON.stringify(msg),
+          snapshot.capturedAt,
+          snapshot.capturedAt
+        );
+
+        const activityId = `act_${sha256Hex(dedupKey).slice(0, 16)}`;
+        const evidenceId = `ev_${sha256Hex(dedupKey).slice(0, 16)}`;
+        const displaySender = msg.senderResolved || msg.sender || 'Bilinmeyen Gönderen';
+        const chatLabel = snapshot.chatName || 'Zoom Sohbet';
+
+        let category: ActivityCategory = 'technical_discussion';
+        let status: ActivityStatus = 'info';
+        let title = '';
+        let summary = '';
+
+        if (isCall) {
+          category = 'meeting';
+          const dirLabel =
+            msg.callRecord?.direction === 'incoming'
+              ? 'Gelen Arama'
+              : msg.callRecord?.direction === 'outgoing'
+                ? 'Giden Arama'
+                : 'Arama Kaydı';
+          title = `Zoom ${dirLabel} — ${chatLabel}`;
+          summary = `${msg.callRecord?.statusText || 'Arama kaydı'} (${displaySender}). Not: Arama kaydından görüşme içeriği veya süre türetilmemiştir.`;
+        } else {
+          const lower = textBody.toLowerCase();
+          if (lower.includes('analiz') || lower.includes('incele') || lower.includes('review')) {
+            category = 'analysis';
+          } else if (lower.includes('araştır') || lower.includes('poc') || lower.includes('test et')) {
+            category = 'research';
+          }
+          if (lower.includes('karar') || lower.includes('onay') || lower.includes('uygundur')) {
+            status = 'decision';
+          } else if (lower.includes('engel') || lower.includes('hata') || lower.includes('sıkıntı') || lower.includes('sorun')) {
+            status = 'blocker';
+          }
+          title = `${chatLabel} — ${displaySender}`;
+          summary = textBody;
+        }
+
+        insertActivityStmt.run(
+          activityId,
+          null,
+          sourceType,
+          category,
+          status,
+          title,
+          summary,
+          chatLabel,
+          displaySender,
+          resolvedTs.rawTimestampText,
+          occurredAtIso,
+          resolvedTs.confidence,
+          0,
+          null, // Never fabricate duration from chat or call logs
+          resolvedTs.confidence === 'ambiguous' ? 0.65 : 0.9,
+          snapshot.capturedAt
+        );
+
+        insertEvidenceStmt.run(
+          evidenceId,
+          activityId,
+          sourceRecordId,
+          sourceType,
+          msg.persistentMessageId ?? msg.fingerprint,
+          title,
+          summary,
+          resolvedTs.rawTimestampText,
+          resolvedTs.resolvedTimestampIso,
+          resolvedTs.confidence,
+          displaySender,
+          chatLabel,
+          JSON.stringify(msg.links ?? []),
+          snapshot.capturedAt,
+          JSON.stringify({
+            uiaRuntimeId: msg.uiaRuntimeId,
+            occurrenceIndexInView: msg.occurrenceIndexInView,
+            isGroupedFollowUp: msg.isGroupedFollowUp,
+            isThreadReply: msg.isThreadReply ?? false,
+            isUnreadReply: msg.isUnreadReply ?? false,
+            callRecord: msg.callRecord ?? null,
+            sessionId: snapshot.sessionId
+          })
+        );
+
+        newMessagesCount++;
+        newActivityIds.push(activityId);
       }
-
-      insertActivityStmt.run(
-        activityId,
-        null,
-        sourceType,
-        category,
-        status,
-        title,
-        summary,
-        chatLabel,
-        displaySender,
-        resolvedTs.rawTimestampText,
-        occurredAtIso,
-        resolvedTs.confidence,
-        0,
-        null, // Never fabricate duration from chat or call logs
-        resolvedTs.confidence === 'ambiguous' ? 0.65 : 0.9,
-        snapshot.capturedAt
-      );
-
-      insertEvidenceStmt.run(
-        evidenceId,
-        activityId,
-        sourceRecordId,
-        sourceType,
-        msg.persistentMessageId ?? msg.fingerprint,
-        title,
-        summary,
-        resolvedTs.rawTimestampText,
-        resolvedTs.resolvedTimestampIso,
-        resolvedTs.confidence,
-        displaySender,
-        chatLabel,
-        JSON.stringify(msg.links ?? []),
-        snapshot.capturedAt,
-        JSON.stringify({
-          uiaRuntimeId: msg.uiaRuntimeId,
-          occurrenceIndexInView: msg.occurrenceIndexInView,
-          isGroupedFollowUp: msg.isGroupedFollowUp,
-          isThreadReply: msg.isThreadReply ?? false,
-          isUnreadReply: msg.isUnreadReply ?? false,
-          callRecord: msg.callRecord ?? null,
-          sessionId: snapshot.sessionId
-        })
-      );
-
-      newMessagesCount++;
-      newActivityIds.push(activityId);
+      this.db.exec('COMMIT;');
+    } catch (err) {
+      this.db.exec('ROLLBACK;');
+      throw err;
     }
 
     return { newMessagesCount, updatedMessagesCount, newActivityIds };
@@ -602,87 +609,95 @@ export class MesaiRepository {
       codeDiff: input.codeDiff ?? null
     });
 
-    this.db
-      .prepare(`
-        INSERT INTO source_records (
-          id, source_type, dedup_key, external_id, session_id, chat_name,
-          sender, sender_resolved, raw_timestamp_text, resolved_timestamp_iso,
-          timestamp_confidence, timezone_offset, message_type, text_content,
-          links_json, raw_payload_json, first_seen_at, last_seen_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'exact', ?, ?, ?, ?, ?, ?, ?)
-      `)
-      .run(
-        sourceRecordId,
-        input.sourceType,
-        input.dedupKey,
-        input.externalId ?? null,
-        input.branchName ?? null,
-        input.projectName,
-        input.sender ?? null,
-        input.sender ?? null,
-        input.rawTimestampText,
-        input.occurredAtIso,
-        tz,
-        input.sourceType,
-        input.summary,
-        JSON.stringify(input.links ?? []),
-        payloadMetaJson,
-        now,
-        now
-      );
+    this.db.exec('BEGIN;');
+    try {
+      this.db
+        .prepare(`
+          INSERT INTO source_records (
+            id, source_type, dedup_key, external_id, session_id, chat_name,
+            sender, sender_resolved, raw_timestamp_text, resolved_timestamp_iso,
+            timestamp_confidence, timezone_offset, message_type, text_content,
+            links_json, raw_payload_json, first_seen_at, last_seen_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'exact', ?, ?, ?, ?, ?, ?, ?)
+        `)
+        .run(
+          sourceRecordId,
+          input.sourceType,
+          input.dedupKey,
+          input.externalId ?? null,
+          input.branchName ?? null,
+          input.projectName,
+          input.sender ?? null,
+          input.sender ?? null,
+          input.rawTimestampText,
+          input.occurredAtIso,
+          tz,
+          input.sourceType,
+          input.summary,
+          JSON.stringify(input.links ?? []),
+          payloadMetaJson,
+          now,
+          now
+        );
 
-    this.db
-      .prepare(`
-        INSERT INTO activities (
-          id, project_id, source_type, category, status, title, summary,
-          chat_or_repo_name, sender, raw_timestamp_text, occurred_at_iso,
-          timestamp_confidence, is_time_estimated, duration_minutes, confidence, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'exact', 0, NULL, 1.0, ?)
-      `)
-      .run(
-        activityId,
-        input.projectId,
-        input.sourceType,
-        category,
-        status,
-        input.title,
-        input.summary,
-        input.projectName,
-        input.sender ?? null,
-        input.rawTimestampText,
-        input.occurredAtIso,
-        now
-      );
+      this.db
+        .prepare(`
+          INSERT INTO activities (
+            id, project_id, source_type, category, status, title, summary,
+            chat_or_repo_name, sender, raw_timestamp_text, occurred_at_iso,
+            timestamp_confidence, is_time_estimated, duration_minutes, confidence, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'exact', 0, NULL, 1.0, ?)
+        `)
+        .run(
+          activityId,
+          input.projectId,
+          input.sourceType,
+          category,
+          status,
+          input.title,
+          input.summary,
+          input.projectName,
+          input.sender ?? null,
+          input.rawTimestampText,
+          input.occurredAtIso,
+          now
+        );
 
-    this.db
-      .prepare(`
-        INSERT INTO evidences (
-          id, activity_id, source_record_id, source_type, external_ref,
-          title, snippet, raw_timestamp_text, resolved_timestamp_iso,
-          timestamp_confidence, sender, chat_or_repo_name, links_json,
-          collected_at, metadata_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'exact', ?, ?, ?, ?, ?)
-      `)
-      .run(
-        evidenceId,
-        activityId,
-        sourceRecordId,
-        input.sourceType,
-        input.externalId ?? null,
-        input.title,
-        input.summary,
-        input.rawTimestampText,
-        input.occurredAtIso,
-        input.sender ?? null,
-        input.projectName,
-        JSON.stringify(input.links ?? []),
-        now,
-        payloadMetaJson
-      );
+      this.db
+        .prepare(`
+          INSERT INTO evidences (
+            id, activity_id, source_record_id, source_type, external_ref,
+            title, snippet, raw_timestamp_text, resolved_timestamp_iso,
+            timestamp_confidence, sender, chat_or_repo_name, links_json,
+            collected_at, metadata_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'exact', ?, ?, ?, ?, ?)
+        `)
+        .run(
+          evidenceId,
+          activityId,
+          sourceRecordId,
+          input.sourceType,
+          input.externalId ?? null,
+          input.title,
+          input.summary,
+          input.rawTimestampText,
+          input.occurredAtIso,
+          input.sender ?? null,
+          input.projectName,
+          JSON.stringify(input.links ?? []),
+          now,
+          payloadMetaJson
+        );
 
-    this.db
-      .prepare('UPDATE projects SET last_activity_at = ? WHERE id = ?')
-      .run(input.occurredAtIso, input.projectId);
+      this.db
+        .prepare('UPDATE projects SET last_activity_at = ? WHERE id = ?')
+        .run(input.occurredAtIso, input.projectId);
+
+      this.db.exec('COMMIT;');
+    } catch (err) {
+      this.db.exec('ROLLBACK;');
+      throw err;
+    }
 
     return { created: true, activityId };
   }
@@ -764,8 +779,8 @@ export class MesaiRepository {
     const params: Array<string | number> = [];
 
     if (filter.date) {
-      conditions.push('length(a.occurred_at_iso) >= 10 AND substr(a.occurred_at_iso, 1, 10) = ?');
-      params.push(filter.date);
+      conditions.push('a.occurred_at_iso >= ? AND a.occurred_at_iso <= (? || \'~\')');
+      params.push(filter.date, filter.date);
     }
     if (filter.projectId) {
       conditions.push('a.project_id = ?');
@@ -789,6 +804,7 @@ export class MesaiRepository {
       params.push(q, q, q);
     }
 
+    const limit = Math.max(1, Math.min(filter.limit ?? 500, 1000));
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
     const rows = this.db
       .prepare(`
@@ -797,16 +813,108 @@ export class MesaiRepository {
         LEFT JOIN projects p ON p.id = a.project_id
         ${whereClause}
         ORDER BY a.occurred_at_iso DESC
-        LIMIT 500
+        LIMIT ${limit}
       `)
       .all(...params) as Array<Record<string, unknown>>;
 
-    return rows.map((row) => {
-      const act = this.mapActivityRow(row);
-      act.evidences = this.getEvidencesForActivity(act.id);
-      act.links = this.getLinksForActivity(act.id);
-      return act;
-    });
+    if (rows.length === 0) return [];
+
+    const activities = rows.map((row) => this.mapActivityRow(row));
+    const activityIds = activities.map((a) => a.id);
+
+    // Batch fetch evidences in single query (with chunking for SQLite param limits)
+    const evidenceMap = new Map<string, Evidence[]>();
+    for (let i = 0; i < activityIds.length; i += 400) {
+      const chunk = activityIds.slice(i, i + 400);
+      const placeholders = chunk.map(() => '?').join(',');
+      const evRows = this.db
+        .prepare(`SELECT * FROM evidences WHERE activity_id IN (${placeholders}) ORDER BY collected_at ASC`)
+        .all(...chunk) as Array<Record<string, unknown>>;
+      for (const r of evRows) {
+        const ev = this.mapEvidenceRow(r);
+        const list = evidenceMap.get(ev.activityId);
+        if (list) {
+          list.push(ev);
+        } else {
+          evidenceMap.set(ev.activityId, [ev]);
+        }
+      }
+    }
+
+    // Batch fetch links in single query
+    const linksMap = new Map<string, ActivityLink[]>();
+    for (let i = 0; i < activityIds.length; i += 400) {
+      const chunk = activityIds.slice(i, i + 400);
+      const placeholders = chunk.map(() => '?').join(',');
+      const linkRows = this.db
+        .prepare(`
+          SELECT
+            l.*,
+            w.jira_key AS work_item_jira_key,
+            w.title AS work_item_title,
+            p.name AS project_name
+          FROM activity_links l
+          LEFT JOIN work_items w ON w.id = l.work_item_id
+          LEFT JOIN projects p ON p.id = l.project_id
+          WHERE l.activity_id IN (${placeholders})
+          ORDER BY l.confidence DESC
+        `)
+        .all(...chunk) as Array<Record<string, unknown>>;
+      for (const row of linkRows) {
+        const lnk: ActivityLink = {
+          id: String(row.id),
+          activityId: String(row.activity_id),
+          workItemId: row.work_item_id ? String(row.work_item_id) : null,
+          projectId: row.project_id ? String(row.project_id) : null,
+          workItemJiraKey: row.work_item_jira_key ? String(row.work_item_jira_key) : null,
+          workItemTitle: row.work_item_title ? String(row.work_item_title) : null,
+          projectName: row.project_name ? String(row.project_name) : null,
+          matchReason: String(row.match_reason),
+          matchType: row.match_type as 'deterministic' | 'suggested',
+          confidence: Number(row.confidence),
+          userStatus: row.user_status as 'accepted' | 'pending' | 'rejected',
+          createdAt: String(row.created_at)
+        };
+        const list = linksMap.get(lnk.activityId);
+        if (list) {
+          list.push(lnk);
+        } else {
+          linksMap.set(lnk.activityId, [lnk]);
+        }
+      }
+    }
+
+    for (const act of activities) {
+      act.evidences = evidenceMap.get(act.id) ?? [];
+      act.links = linksMap.get(act.id) ?? [];
+    }
+
+    return activities;
+  }
+
+  public getDashboardMetrics(todayDate: string): {
+    todayActivitiesCount: number;
+    todayZoomMessagesCount: number;
+    todayGitActivitiesCount: number;
+  } {
+    const row = this.db
+      .prepare(`
+        SELECT
+          COUNT(*) as total_count,
+          SUM(CASE WHEN source_type LIKE 'zoom_%' THEN 1 ELSE 0 END) as zoom_count,
+          SUM(CASE WHEN source_type LIKE 'git_%' OR source_type = 'file_change' THEN 1 ELSE 0 END) as git_count
+        FROM activities
+        WHERE occurred_at_iso >= ? AND occurred_at_iso <= (? || '~')
+      `)
+      .get(todayDate, todayDate) as
+      | { total_count?: number; zoom_count?: number; git_count?: number }
+      | undefined;
+
+    return {
+      todayActivitiesCount: Number(row?.total_count ?? 0),
+      todayZoomMessagesCount: Number(row?.zoom_count ?? 0),
+      todayGitActivitiesCount: Number(row?.git_count ?? 0)
+    };
   }
 
   public getEvidencesForActivity(activityId: string): Evidence[] {
@@ -1361,6 +1469,23 @@ export class MesaiRepository {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
       `);
 
+      const validProjectIds = new Set(
+        (this.db.prepare('SELECT id FROM projects').all() as Array<{ id: string }>).map((p) => p.id)
+      );
+      const validWorkItems = this.db.prepare('SELECT id, jira_key FROM work_items').all() as Array<{
+        id: string;
+        jira_key: string | null;
+      }>;
+      const validWorkItemIds = new Set(validWorkItems.map((w) => w.id));
+      const jiraKeyToWorkItemId = new Map(
+        validWorkItems.filter((w) => w.jira_key).map((w) => [w.jira_key!, w.id])
+      );
+      const projectNameToId = new Map(
+        (this.db.prepare('SELECT id, name FROM projects').all() as Array<{ id: string; name: string }>).map(
+          (p) => [p.name.toLowerCase().trim(), p.id]
+        )
+      );
+
       for (const gen of input.generatedItems) {
         // If all evidences of this generated item are already covered by a user-edited item, skip duplicating it
         const hasUncoveredEvidence =
@@ -1372,11 +1497,29 @@ export class MesaiRepository {
         orderIdx++;
         const cleanText = gen.text.replace(/^[-•*]\s*/, '').trim();
         const itemId = `ri_${sha256Hex(`${reportId}|${orderIdx}|${cleanText}|${now}`).slice(0, 14)}`;
+        let resolvedProjectId: string | null = null;
+        if (gen.projectId) {
+          if (validProjectIds.has(gen.projectId)) {
+            resolvedProjectId = gen.projectId;
+          } else if (projectNameToId.has(gen.projectId.toLowerCase().trim())) {
+            resolvedProjectId = projectNameToId.get(gen.projectId.toLowerCase().trim())!;
+          }
+        }
+
+        let resolvedWorkItemId: string | null = null;
+        if (gen.workItemId) {
+          if (validWorkItemIds.has(gen.workItemId)) {
+            resolvedWorkItemId = gen.workItemId;
+          } else if (jiraKeyToWorkItemId.has(gen.workItemId)) {
+            resolvedWorkItemId = jiraKeyToWorkItemId.get(gen.workItemId)!;
+          }
+        }
+
         insertItemStmt.run(
           itemId,
           reportId,
-          gen.workItemId,
-          gen.projectId,
+          resolvedWorkItemId,
+          resolvedProjectId,
           gen.category,
           gen.itemStatus,
           cleanText,

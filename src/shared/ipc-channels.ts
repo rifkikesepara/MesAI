@@ -11,6 +11,7 @@ import type {
   Project,
   SyncState,
   UpdateState,
+  ReportProgressLog,
   WorkItem
 } from './types';
 
@@ -40,6 +41,7 @@ export const IPC_CHANNELS = {
   REPORT_DELETE_ITEM: 'mesai:report:deleteItem',
   REPORT_APPROVE: 'mesai:report:approve',
   REPORT_EXPORT: 'mesai:report:export',
+  REPORT_PROGRESS: 'mesai:report:progress',
 
   INTEGRATIONS_HEALTH: 'mesai:integrations:health',
   INTEGRATIONS_SAVE_SECRET: 'mesai:integrations:saveSecret',
@@ -87,6 +89,7 @@ export interface ActivityFilter {
   category?: string;
   chatOrRepoName?: string;
   search?: string;
+  limit?: number;
 }
 
 export interface ManualNoteInput {
@@ -152,6 +155,7 @@ export interface MesaiApi {
   }): Promise<DailyReport>;
   deleteReportItem(itemId: string): Promise<DailyReport>;
   approveReport(reportId: string, notes?: string): Promise<DailyReport>;
+  onReportProgress(callback: (log: ReportProgressLog) => void): () => void;
   exportReport(input: {
     reportId: string;
     format: 'md' | 'txt' | 'csv';

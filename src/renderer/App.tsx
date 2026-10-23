@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { Suspense, useEffect, useState } from 'react';
 import type { DashboardSummary } from '../shared/ipc-channels';
 import type { AppSettings, Evidence, Project, UpdateState } from '../shared/types';
 import {
@@ -7,10 +7,27 @@ import {
   SOURCE_LABELS,
   ZOOM_STATUS_LABELS
 } from './views/DashboardAndProjectsView';
-import { DailyReportView, TimelineView } from './views/TimelineAndReportView';
-import { IntegrationsView, SettingsView } from './views/IntegrationsAndSettingsView';
+import {
+  SkeletonActivityList,
+  SkeletonIntegrations,
+  SkeletonReport,
+  SkeletonSettings
+} from './components/Skeleton';
 import { CustomMenuBar } from './components/CustomMenuBar';
 import { MESAI_ICON_DATA_URL } from './assets/logo';
+
+const TimelineView = React.lazy(() =>
+  import('./views/TimelineAndReportView').then((m) => ({ default: m.TimelineView }))
+);
+const DailyReportView = React.lazy(() =>
+  import('./views/TimelineAndReportView').then((m) => ({ default: m.DailyReportView }))
+);
+const IntegrationsView = React.lazy(() =>
+  import('./views/IntegrationsAndSettingsView').then((m) => ({ default: m.IntegrationsView }))
+);
+const SettingsView = React.lazy(() =>
+  import('./views/IntegrationsAndSettingsView').then((m) => ({ default: m.SettingsView }))
+);
 import {
   DashboardIcon,
   ProjectsIcon,
@@ -46,8 +63,10 @@ export const App: React.FC = () => {
     setTimeout(() => setToastMessage(null), 4000);
   };
 
-  const refreshCoreData = async () => {
-    setLoading(true);
+  const refreshCoreData = async (showLoading = true) => {
+    if (showLoading) {
+      setLoading(true);
+    }
     try {
       const [dash, projList, cfg] = await Promise.all([
         window.mesaiApi.getDashboard(),
@@ -58,7 +77,9 @@ export const App: React.FC = () => {
       setProjects(projList);
       setSettings(cfg);
     } finally {
-      setLoading(false);
+      if (showLoading) {
+        setLoading(false);
+      }
     }
   };
 
@@ -75,10 +96,10 @@ export const App: React.FC = () => {
       setSettings((prev) => (prev ? { ...prev, trackingPaused: newPaused } : null));
       setSummary((prev) => (prev ? { ...prev, trackingPaused: newPaused } : null));
       showToast(newPaused ? '⏸ Takip duraklatıldı (Görev Çubuğu)' : '● Takip aktif (Görev Çubuğu)');
-      void refreshCoreData();
+      void refreshCoreData(false);
     });
     const interval = setInterval(() => {
-      void refreshCoreData();
+      void refreshCoreData(false);
     }, 15_000);
     return () => {
       clearInterval(interval);
@@ -355,24 +376,30 @@ export const App: React.FC = () => {
           )}
 
           {activeTab === 'timeline' && (
-            <TimelineView
-              projects={projects}
-              onInspectEvidence={(ev) => setInspectedEvidence(ev)}
-            />
+            <Suspense fallback={<SkeletonActivityList count={5} />}>
+              <TimelineView
+                projects={projects}
+                onInspectEvidence={(ev) => setInspectedEvidence(ev)}
+              />
+            </Suspense>
           )}
 
           {activeTab === 'report' && (
-            <DailyReportView
-              projects={projects}
-              onInspectEvidence={(ev) => setInspectedEvidence(ev)}
-            />
+            <Suspense fallback={<SkeletonReport />}>
+              <DailyReportView
+                projects={projects}
+                onInspectEvidence={(ev) => setInspectedEvidence(ev)}
+              />
+            </Suspense>
           )}
 
           {activeTab === 'integrations' && (
-            <IntegrationsView
-              onPollZoom={handlePollZoomNow}
-              onPollGit={handlePollGitNow}
-            />
+            <Suspense fallback={<SkeletonIntegrations />}>
+              <IntegrationsView
+                onPollZoom={handlePollZoomNow}
+                onPollGit={handlePollGitNow}
+              />
+            </Suspense>
           )}
 
           {activeTab === 'settings' && (
