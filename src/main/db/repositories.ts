@@ -587,6 +587,26 @@ export class MesaiRepository {
       const actRow = this.db
         .prepare('SELECT activity_id FROM evidences WHERE source_record_id = ? LIMIT 1')
         .get(existing.id) as { activity_id: string } | undefined;
+
+      if (input.sourceType === 'git_working_tree' && actRow?.activity_id) {
+        this.db
+          .prepare(
+            `UPDATE activities 
+             SET occurred_at_iso = ?, 
+                 raw_timestamp_text = ?, 
+                 title = ?, 
+                 summary = ? 
+             WHERE id = ?`
+          )
+          .run(
+            input.occurredAtIso,
+            input.rawTimestampText,
+            input.title,
+            input.summary,
+            actRow.activity_id
+          );
+      }
+
       return { created: false, activityId: actRow?.activity_id ?? '' };
     }
 

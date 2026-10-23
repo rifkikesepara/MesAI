@@ -22,8 +22,14 @@ export function shouldExcludeFilePath(
 
   for (const seg of segments) {
     const lowerSeg = seg.toLowerCase();
-    // Always exclude .git directory and any dot-prefixed hidden directories/files (including .env*)
-    if (lowerSeg === '.git' || lowerSeg.startsWith('.env') || lowerSeg.startsWith('.')) {
+    // Always exclude .git directory, secrets (.env*), and known hidden IDE/system directories
+    if (
+      lowerSeg === '.git' ||
+      lowerSeg.startsWith('.env') ||
+      lowerSeg === '.vscode' ||
+      lowerSeg === '.idea' ||
+      lowerSeg === '.ds_store'
+    ) {
       return true;
     }
     if (allExclusions.has(lowerSeg)) {
@@ -451,53 +457,66 @@ export class GitFileWatcherService {
             string,
             { files: string[]; latestIso: string; latestTimeText: string; earliestTimeText: string }
           >();
-          const cutoffMs = Date.now() - 14 * 86_400_000;
 
           for (const sl of statusLines) {
-            const rawFile = sl.slice(3).trim().replace(/^"|"$/g, '');
+            let rawFile = sl.slice(3).trim();
+            if (rawFile.includes(' -> ')) {
+              const parts = rawFile.split(' -> ');
+              rawFile = parts[parts.length - 1].trim();
+            }
+            rawFile = rawFile.replace(/^"|"$/g, '').replace(/\/$/, '');
+            if (!rawFile) continue;
+
             if (shouldExcludeFilePath(rawFile, settings.globalExclusions, proj.excludedPaths)) {
               continue;
             }
 
             const fullPath = path.join(proj.rootPath, rawFile);
+            let fileMtime: Date;
             try {
-              if (!fs.existsSync(fullPath)) continue;
-              const stat = fs.statSync(fullPath);
-              // Ignore directories / git submodules
-              if (!stat.isFile()) continue;
-              // Ignore untouched dirty files older than 14 days
-              if (stat.mtimeMs < cutoffMs) continue;
-
-              const fileLocalIso = toLocalIsoString(stat.mtime);
-              const fileDate = fileLocalIso.slice(0, 10);
-              const fileTime = fileLocalIso.slice(11, 16);
-              const existingGroup = filesByDate.get(fileDate);
-              if (!existingGroup) {
-                filesByDate.set(fileDate, {
-                  files: [rawFile],
-                  latestIso: fileLocalIso,
-                  latestTimeText: fileTime,
-                  earliestTimeText: fileTime
-                });
+              if (fs.existsSync(fullPath)) {
+                const stat = fs.statSync(fullPath);
+                fileMtime = stat.mtime;
               } else {
-                existingGroup.files.push(rawFile);
-                if (fileLocalIso > existingGroup.latestIso) {
-                  existingGroup.latestIso = fileLocalIso;
-                  existingGroup.latestTimeText = fileTime;
-                }
-                if (fileTime < existingGroup.earliestTimeText) {
-                  existingGroup.earliestTimeText = fileTime;
+                const parentDir = path.dirname(fullPath);
+                if (fs.existsSync(parentDir)) {
+                  fileMtime = fs.statSync(parentDir).mtime;
+                } else {
+                  fileMtime = fs.existsSync(proj.rootPath)
+                    ? fs.statSync(proj.rootPath).mtime
+                    : new Date();
                 }
               }
             } catch {
-              // ignore stat error on deleted/locked file
+              fileMtime = new Date();
+            }
+
+            const fileLocalIso = toLocalIsoString(fileMtime);
+            const fileDate = fileLocalIso.slice(0, 10);
+            const fileTime = fileLocalIso.slice(11, 16);
+            const existingGroup = filesByDate.get(fileDate);
+            if (!existingGroup) {
+              filesByDate.set(fileDate, {
+                files: [rawFile],
+                latestIso: fileLocalIso,
+                latestTimeText: fileTime,
+                earliestTimeText: fileTime
+              });
+            } else {
+              existingGroup.files.push(rawFile);
+              if (fileLocalIso > existingGroup.latestIso) {
+                existingGroup.latestIso = fileLocalIso;
+                existingGroup.latestTimeText = fileTime;
+              }
+              if (fileTime < existingGroup.earliestTimeText) {
+                existingGroup.earliestTimeText = fileTime;
+              }
             }
           }
 
           for (const [fileDate, group] of filesByDate.entries()) {
-            const sortedFiles = group.files.sort();
-            const dirtySig = sha256Hex(`${branch}|${sortedFiles.join(',')}`).slice(0, 14);
-            const dedupKey = `git:wt:${proj.id}:${fileDate}:${dirtySig}`;
+            const sortedFiles = Array.from(new Set(group.files)).sort();
+            const dedupKey = `git:wt:${proj.id}:${branch || 'HEAD'}:${fileDate}`;
             const preview = sortedFiles.slice(0, 6).join(', ');
             const suffix = sortedFiles.length > 6 ? ` (+${sortedFiles.length - 6} dosya)` : '';
 
@@ -705,10 +724,10 @@ export class GitFileWatcherService {
     return new Promise((resolve, reject) => {
       execFile(
         'git',
-        args,
+        ['-c', 'safe.directory=*', ...args],
         {
           cwd,
-          timeout: 3500,
+          timeout: 6000,
           maxBuffer: 5 * 1024 * 1024,
           windowsHide: true
         },
