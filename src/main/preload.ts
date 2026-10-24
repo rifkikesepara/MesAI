@@ -25,6 +25,10 @@ const mesaiApi: MesaiApi = {
   updateReportItem: (input) => ipcRenderer.invoke(IPC_CHANNELS.REPORT_UPDATE_ITEM, input),
   addReportItem: (input) => ipcRenderer.invoke(IPC_CHANNELS.REPORT_ADD_ITEM, input),
   deleteReportItem: (itemId) => ipcRenderer.invoke(IPC_CHANNELS.REPORT_DELETE_ITEM, itemId),
+  removeReportJiraKey: (reportDate, jiraKey) =>
+    ipcRenderer.invoke(IPC_CHANNELS.REPORT_REMOVE_JIRA_KEY, reportDate, jiraKey),
+  resetReportJiraKeys: (reportDate) =>
+    ipcRenderer.invoke(IPC_CHANNELS.REPORT_RESET_JIRA_KEYS, reportDate),
   approveReport: (reportId, notes) => ipcRenderer.invoke(IPC_CHANNELS.REPORT_APPROVE, reportId, notes),
   onReportProgress: (callback) => {
     const handler = (_event: Electron.IpcRendererEvent, log: unknown) => {

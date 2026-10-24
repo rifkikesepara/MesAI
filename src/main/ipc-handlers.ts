@@ -302,6 +302,20 @@ export function registerIpcHandlers(deps: {
     return repo.deleteReportItem(assertNonEmptyString(itemId, 'madde ID'));
   });
 
+  ipcMain.handle(
+    IPC_CHANNELS.REPORT_REMOVE_JIRA_KEY,
+    async (_e, reportDate: unknown, jiraKey: unknown) => {
+      const date = assertDateYmd(reportDate);
+      const key = assertNonEmptyString(jiraKey, 'Jira anahtarı');
+      return repo.removeReportJiraKey(date, key);
+    }
+  );
+
+  ipcMain.handle(IPC_CHANNELS.REPORT_RESET_JIRA_KEYS, async (_e, reportDate: unknown) => {
+    const date = assertDateYmd(reportDate);
+    return repo.resetReportJiraKeys(date);
+  });
+
   ipcMain.handle(IPC_CHANNELS.REPORT_APPROVE, async (_e, reportId: unknown, notes: unknown) => {
     return repo.approveReport(
       assertNonEmptyString(reportId, 'rapor ID'),

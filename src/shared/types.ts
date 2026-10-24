@@ -184,6 +184,7 @@ export interface WorkItem {
   title: string;
   description: string | null;
   status: string;
+  isUserAssignee?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -220,6 +221,7 @@ export interface DailyReport {
   notes: string | null;
   items: ReportItem[];
   jiraKeys?: string[];
+  excludedJiraKeys?: string[];
   formattedSummary?: string;
   maxChars?: number;
 }

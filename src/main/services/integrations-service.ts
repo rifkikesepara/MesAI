@@ -550,9 +550,37 @@ export class IntegrationsService {
     };
   }
 
+  private cachedJiraMyself: Record<string, string> | null = null;
+
+  public async getJiraMyself(): Promise<Record<string, string> | null> {
+    if (this.cachedJiraMyself) return this.cachedJiraMyself;
+    const settings = this.repo.getSettings();
+    const token = this.getDecryptedToken('jira');
+    if (!settings.jiraUrl || !settings.jiraEmail || !token) return null;
+
+    try {
+      const auth = Buffer.from(`${settings.jiraEmail}:${token}`, 'utf8').toString('base64');
+      const resp = await fetch(`${settings.jiraUrl}/rest/api/2/myself`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Basic ${auth}`,
+          Accept: 'application/json'
+        },
+        signal: AbortSignal.timeout(6_000)
+      });
+      if (!resp.ok) return null;
+      const data = (await resp.json()) as Record<string, string>;
+      this.cachedJiraMyself = data;
+      return data;
+    } catch {
+      return null;
+    }
+  }
+
   /**
-   * Fetches read-only issue summary & description from Jira REST API for the given keys
-   * when Jira credentials are configured, storing them in local `work_items`.
+   * Fetches read-only issue summary, description, and assignee history from Jira REST API
+   * for the given keys when Jira credentials are configured, storing them in local `work_items`.
+   * Checks whether the authenticated user was EVER assigned to this issue (currently or in history changelog).
    */
   public async syncJiraIssuesIfConfigured(jiraKeys: string[]): Promise<void> {
     if (!jiraKeys || jiraKeys.length === 0) return;
@@ -563,17 +591,38 @@ export class IntegrationsService {
     const auth = Buffer.from(`${settings.jiraEmail}:${token}`, 'utf8').toString('base64');
     const uniqueKeys = Array.from(new Set(jiraKeys.map((k) => k.trim().toUpperCase()).filter(Boolean)));
 
+    const myself = await this.getJiraMyself();
+    const userIdentifiers = new Set<string>();
+    if (settings.jiraEmail) {
+      userIdentifiers.add(settings.jiraEmail.toLowerCase().trim());
+      const localPart = settings.jiraEmail.split('@')[0].toLowerCase().trim();
+      if (localPart) userIdentifiers.add(localPart);
+    }
+    if (myself) {
+      for (const val of Object.values(myself)) {
+        if (typeof val === 'string' && val.trim()) {
+          userIdentifiers.add(val.toLowerCase().trim());
+        }
+      }
+    }
+
+    const matchesUser = (val?: unknown): boolean => {
+      if (typeof val !== 'string' || !val.trim()) return false;
+      const lower = val.toLowerCase().trim();
+      return userIdentifiers.has(lower);
+    };
+
     for (const key of uniqueKeys) {
       try {
         const resp = await fetch(
-          `${settings.jiraUrl}/rest/api/2/issue/${encodeURIComponent(key)}?fields=summary,description,status`,
+          `${settings.jiraUrl}/rest/api/2/issue/${encodeURIComponent(key)}?expand=changelog&fields=summary,description,status,assignee`,
           {
             method: 'GET',
             headers: {
               Authorization: `Basic ${auth}`,
               Accept: 'application/json'
             },
-            signal: AbortSignal.timeout(5_000)
+            signal: AbortSignal.timeout(6_000)
           }
         );
         if (!resp.ok) continue;
@@ -583,8 +632,19 @@ export class IntegrationsService {
             summary?: string;
             description?: unknown;
             status?: { name?: string };
+            assignee?: Record<string, unknown> | null;
+          };
+          changelog?: {
+            histories?: Array<{
+              items?: Array<{
+                field?: string;
+                to?: string | null;
+                toString?: string | null;
+              }>;
+            }>;
           };
         };
+
         const summary = typeof data.fields?.summary === 'string' ? data.fields.summary.trim() : '';
         let descriptionText: string | null = null;
         if (typeof data.fields?.description === 'string') {
@@ -594,15 +654,44 @@ export class IntegrationsService {
         }
         const statusName = data.fields?.status?.name ?? undefined;
 
-        if (summary || descriptionText) {
-          this.repo.upsertWorkItem({
-            jiraKey: key,
-            projectId: null,
-            title: summary || 'Otomatik tespit edilen iş anahtarı',
-            description: descriptionText,
-            status: statusName
-          });
+        // 1. Check current assignee
+        let isUserAssignee = false;
+        const curAssignee = data.fields?.assignee;
+        if (curAssignee && typeof curAssignee === 'object') {
+          if (
+            matchesUser(curAssignee.name) ||
+            matchesUser(curAssignee.key) ||
+            matchesUser(curAssignee.emailAddress) ||
+            matchesUser(curAssignee.displayName) ||
+            matchesUser(curAssignee.accountId)
+          ) {
+            isUserAssignee = true;
+          }
         }
+
+        // 2. Check changelog history if not currently assigned
+        if (!isUserAssignee && Array.isArray(data.changelog?.histories)) {
+          for (const hist of data.changelog.histories) {
+            for (const item of hist.items ?? []) {
+              if (item.field === 'assignee') {
+                if (matchesUser(item.to) || matchesUser(item.toString)) {
+                  isUserAssignee = true;
+                  break;
+                }
+              }
+            }
+            if (isUserAssignee) break;
+          }
+        }
+
+        this.repo.upsertWorkItem({
+          jiraKey: key,
+          projectId: null,
+          title: summary || `${key} İşi`,
+          description: descriptionText,
+          status: statusName,
+          isUserAssignee
+        });
       } catch {
         // Ignore network/timeout errors for individual issues so report generation never fails
       }

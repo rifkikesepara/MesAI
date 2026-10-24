@@ -1,4 +1,5 @@
 import type { MesaiRepository } from '../db/repositories';
+import { extractJiraKeys } from './matcher-service';
 import {
   AIProvider,
   AnthropicApiProvider,
@@ -207,14 +208,26 @@ export class ReportService {
       .listActivities({ date: input.reportDate })
       .filter((a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === input.reportDate);
 
-    const dayJiraKeys = this.repo.extractJiraKeysForDate(input.reportDate);
-    if (this.jiraIssueSyncer && dayJiraKeys.length > 0) {
+    // Collect candidate Jira keys from this date's activities (git, zoom, notes) to sync & verify assignee with Jira
+    const candidateJiraKeys = new Set<string>();
+    for (const act of activities) {
+      for (const k of extractJiraKeys(act.title + ' ' + act.summary)) candidateJiraKeys.add(k);
+      for (const ev of act.evidences ?? []) {
+        for (const k of extractJiraKeys(ev.title + ' ' + ev.snippet + ' ' + (ev.externalRef ?? '') + ' ' + ev.links.join(' '))) {
+          candidateJiraKeys.add(k);
+        }
+      }
+    }
+
+    if (this.jiraIssueSyncer && candidateJiraKeys.size > 0) {
       try {
-        await this.jiraIssueSyncer(dayJiraKeys);
+        await this.jiraIssueSyncer(Array.from(candidateJiraKeys));
       } catch {
         // non-blocking
       }
     }
+
+    const dayJiraKeys = this.repo.extractJiraKeysForDate(input.reportDate);
     const jiraContextMap = this.repo.getJiraContextMap(dayJiraKeys);
 
     const attemptAt = toLocalIsoString(new Date());

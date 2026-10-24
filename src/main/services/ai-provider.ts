@@ -1121,18 +1121,24 @@ export function buildSanitizedAiPrompt(
       }
       const chatName = (act.chatOrRepoName || 'Genel Sohbet').trim();
       let conv = zoomConversationsMap.get(chatName);
+      // Only attach linkedJiraKey to a Zoom conversation if that Jira key is verified in jiraContextMap
+      const verifiedKey =
+        acceptedLink?.workItemJiraKey && jiraContextMap[acceptedLink.workItemJiraKey] !== undefined
+          ? acceptedLink.workItemJiraKey
+          : null;
+
       if (!conv) {
         conv = {
           chatName,
           chatType: classifyZoomChatType(chatName),
-          linkedJiraKey: acceptedLink?.workItemJiraKey ?? null,
+          linkedJiraKey: verifiedKey,
           messages: [],
           evidenceIds: new Set<string>()
         };
         zoomConversationsMap.set(chatName, conv);
       }
-      if (acceptedLink?.workItemJiraKey && !conv.linkedJiraKey) {
-        conv.linkedJiraKey = acceptedLink.workItemJiraKey;
+      if (verifiedKey && !conv.linkedJiraKey) {
+        conv.linkedJiraKey = verifiedKey;
       }
       conv.messages.push({
         sender: act.sender,
@@ -1214,6 +1220,11 @@ export function buildSanitizedAiPrompt(
     '- `zoomConversations` listesindeki Grup/Kanal sohbetleri (`chatType: "group_channel"`) ile Özel Birebir mesajlaşmalar (`chatType: "direct_message"`) arasında zorlama bağlantı KURMA.',
     '- Her sohbeti kendi konusu ve bağlamı içinde AYRI değerlendir. Yalnızca iki sohbette gerçekten aynı Jira numarası veya birebir aynı teknik konu konuşuluyorsa birleştir.',
     '- Sohbetlerde kişi isimlerini ("Yasin", "Seda", "Bahar", "Enes" vb.) rapora yazma; konuşulan teknik konuyu ve varılan çözümü/yönlendirmeyi kurumsal mühendislik diliyle özetle.',
+    '',
+    'KRİTİK KURAL 3 — AKTİVİTELER ARASI NEDENSELLİK VE BİLEŞEN KÖPRÜLEME (HİKAYE KURGUSU):',
+    '- Zoom sohbetlerinde geçen bir teknik problem/tartışma ile Git kod geliştirmesi aynı bileşene veya konuya (`changedComponents`, dosya adları veya Jira anahtarı) aitse, bunları birbirinden kopuk iki ayrı madde yapmak yerine TEK bir akıcı mühendislik maddesinde birleştir:',
+    '  * Format: [Problem/Tespit (Zoom)] + [Teknik Çözüm (Git Diff/Commit)] + [Doğrulama ve MR (Git/Zoom)]',
+    '- Zoom sohbetlerinde ekip arkadaşlarının bahsettiği ancak geliştiriciye atanmamış olan veya Git aktivitesi bulunmayan yabancı Jira biletlerini KESİNLİKLE geliştiricinin işi gibi gösterme ve madde metnine Jira numarası olarak bağlama.',
     '',
     'YAZIM FORMATI VE ÖRNEK ÜSLUP:',
     '- Maddelerin başına "[Proje - BAM-123]" gibi köşeli parantezler, Jira numaraları veya ham dosya uzantıları EKLEME.',
@@ -1670,7 +1681,8 @@ export class CodexCliProvider implements AIProvider {
   public getEffectiveModel(): string | undefined {
     const m = this.config.model?.trim();
     if (!m) return undefined;
-    if (m === '6.1sol') return 'gpt-6.1-sol';
+    const lower = m.toLowerCase();
+    if (lower === '6.1sol' || lower === '6.1-sol' || lower === 'gpt-6.1' || lower === 'gpt-6.1sol') return 'gpt-6.1-sol';
     return m;
   }
 
@@ -1698,7 +1710,7 @@ export class CodexCliProvider implements AIProvider {
 
     const rawOutput = this.config.customRunner
       ? await this.config.customRunner(prompt, signal)
-      : await this.runCodexPrompt(prompt, 75_000, signal, onProgress);
+      : await this.runCodexPrompt(prompt, 180_000, signal, onProgress);
 
     return validateAndParseAiReportJson(rawOutput, validEvidenceIds, maxChars);
   }
@@ -1717,6 +1729,8 @@ export class CodexCliProvider implements AIProvider {
       '--skip-git-repo-check',
       '--ephemeral',
       '--dangerously-bypass-approvals-and-sandbox',
+      '-c',
+      'model_reasoning_effort="low"',
       ...(effectiveModel ? ['-m', effectiveModel] : []),
       '-'
     ];
@@ -1737,13 +1751,36 @@ export class CodexCliProvider implements AIProvider {
           },
           (error, stdout, stderr) => {
             if (error) {
-              const cleanStderr = (stderr || '')
+              const rawLines = `${stderr || ''}\n${stdout || ''}`
                 .split(/\r?\n/)
                 .map((l) => l.trim())
-                .filter((l) => l && !l.startsWith('Reading additional input') && !l.startsWith('warning:'))
-                .slice(0, 3)
-                .join(' | ');
-              reject(new Error(`Codex CLI hatası: ${(cleanStderr || error.message).slice(0, 300)}`));
+                .filter(Boolean);
+
+              const nonBannerLines = rawLines.filter((l) => {
+                const lower = l.toLowerCase();
+                return (
+                  !lower.startsWith('reading additional input') &&
+                  !lower.startsWith('warning:') &&
+                  !lower.startsWith('openai codex') &&
+                  !lower.startsWith('--------') &&
+                  !lower.startsWith('workdir:') &&
+                  !lower.startsWith('model:') &&
+                  !lower.startsWith('provider:') &&
+                  !lower.startsWith('approval:') &&
+                  !lower.startsWith('sandbox:') &&
+                  !lower.startsWith('reasoning effort:') &&
+                  !lower.startsWith('reasoning summaries:') &&
+                  !lower.startsWith('session id:') &&
+                  lower !== 'user'
+                );
+              });
+
+              // Look for explicit error lines first (e.g. ERROR: {...} or Error: ...)
+              const explicitErrorLines = nonBannerLines.filter((l) => /^(error|fatal)/i.test(l));
+              const chosenLines = explicitErrorLines.length > 0 ? explicitErrorLines : nonBannerLines;
+              const cleanError = chosenLines.slice(-3).join(' | ');
+
+              reject(new Error(`Codex CLI hatası: ${(cleanError || error.message).slice(0, 300)}`));
               return;
             }
             resolve(stdout);
@@ -1787,6 +1824,12 @@ export class ClaudeCliProvider implements AIProvider {
       customRunner?: (prompt: string, signal?: AbortSignal) => Promise<string>;
     } = {}
   ) {}
+
+  public getEffectiveModel(): string | undefined {
+    const m = this.config.model?.trim();
+    if (!m || m.toLowerCase() === 'auto') return undefined;
+    return m;
+  }
 
   public static resolveClaudeCliPath(): string | null {
     const extraPaths = [
@@ -1869,13 +1912,22 @@ export class ClaudeCliProvider implements AIProvider {
       throw new Error('Yerel Claude Code CLI bulunamadı. Lütfen Claude CLI kurun veya API Key kullanın.');
     }
 
-    const maxClaudeArgPromptLength = 20_000;
+    // On Windows cmd.exe / CreateProcess, max command-line string length is 8191 chars.
+    // If claudePath is a .cmd wrapper running via shell, passing >7000 chars throws "The command line is too long."
+    const maxClaudeArgPromptLength = process.platform === 'win32' ? 6_000 : 20_000;
     const safePrompt =
       prompt.length > maxClaudeArgPromptLength
         ? prompt.slice(0, maxClaudeArgPromptLength) + '\n\n[Prompt truncated to stay within OS command-line buffer limits]'
         : prompt;
 
-    const args = ['-p', safePrompt, '--permission-mode', 'dontAsk'];
+    const effectiveModel = this.getEffectiveModel();
+    const args = [
+      '-p',
+      safePrompt,
+      '--permission-mode',
+      'dontAsk',
+      ...(effectiveModel ? ['--model', effectiveModel] : [])
+    ];
     const isCmd = process.platform === 'win32' && claudePath.toLowerCase().endsWith('.cmd');
 
     return new Promise((resolve, reject) => {

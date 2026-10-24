@@ -943,6 +943,236 @@ describe('MesAI Core Verification Suite', () => {
     db.close();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
+
+  it('14. Jira API Assignee Verification: Filters unassigned Zoom tickets while keeping tickets where user is assignee (currently or in changelog history)', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mesai-jira-assignee-test-'));
+    const db = new MesaiDatabase(':memory:');
+    const repo = new MesaiRepository(db);
+    const zoom = new ZoomReaderAdapter(repo, new MatcherService(repo));
+    const git = new GitFileWatcherService(repo, new MatcherService(repo));
+    const rep = new ReportService(repo);
+
+    const mockDpapi = {
+      encrypt: (plain: string) => Buffer.from(`ENC:${plain}`, 'utf8').toString('base64'),
+      decrypt: (cipher: string) => Buffer.from(cipher, 'base64').toString('utf8').replace(/^ENC:/, '')
+    };
+
+    const integrations = new IntegrationsService(repo, zoom, git, rep, {
+      userDataDir: tmpDir,
+      secretProvider: mockDpapi
+    });
+
+    // Configure Jira
+    integrations.saveIntegrationCredential({
+      service: 'jira',
+      url: 'https://jira.company.com',
+      usernameOrEmail: 'test.user@company.com',
+      token: 'jira-secret-api-token'
+    });
+
+    // Mock fetch for Jira API
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async (url: any) => {
+        const urlStr = String(url);
+        if (urlStr.includes('/rest/api/2/myself')) {
+          return new Response(
+            JSON.stringify({
+              name: 'test.user',
+              displayName: 'Test User',
+              emailAddress: 'test.user@company.com',
+              accountId: 'acc-12345'
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+
+        if (urlStr.includes('/rest/api/2/issue/BAM-100')) {
+          // BAM-100: User is currently assigned
+          return new Response(
+            JSON.stringify({
+              key: 'BAM-100',
+              fields: {
+                summary: 'Giriş ekranı tasarımı',
+                status: { name: 'In Progress' },
+                assignee: {
+                  displayName: 'Test User',
+                  emailAddress: 'test.user@company.com'
+                }
+              },
+              changelog: { histories: [] }
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+
+        if (urlStr.includes('/rest/api/2/issue/BAM-200')) {
+          // BAM-200: User was past assignee in changelog history
+          return new Response(
+            JSON.stringify({
+              key: 'BAM-200',
+              fields: {
+                summary: 'Yetki modülü refactor',
+                status: { name: 'Closed' },
+                assignee: {
+                  displayName: 'Other Teammate',
+                  emailAddress: 'other@company.com'
+                }
+              },
+              changelog: {
+                histories: [
+                  {
+                    items: [
+                      {
+                        field: 'assignee',
+                        from: 'third.party',
+                        fromString: 'Third Party',
+                        to: 'test.user',
+                        toString: 'Test User'
+                      }
+                    ]
+                  }
+                ]
+              }
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+
+        if (urlStr.includes('/rest/api/2/issue/BAM-300')) {
+          // BAM-300: User was NEVER assignee
+          return new Response(
+            JSON.stringify({
+              key: 'BAM-300',
+              fields: {
+                summary: 'Raporlama servisi hatası',
+                status: { name: 'Open' },
+                assignee: {
+                  displayName: 'Other Teammate',
+                  emailAddress: 'other@company.com'
+                }
+              },
+              changelog: {
+                histories: [
+                  {
+                    items: [
+                      {
+                        field: 'assignee',
+                        from: 'teammate1',
+                        fromString: 'Teammate 1',
+                        to: 'teammate2',
+                        toString: 'Teammate 2'
+                      }
+                    ]
+                  }
+                ]
+              }
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+
+        return new Response('Not found', { status: 404 });
+      };
+
+      // Ingest Zoom chats that mention BAM-100, BAM-200, and BAM-300
+      repo.ingestZoomSnapshot(
+        createSampleSnapshot({
+          chatName: 'Frontend Ekibi',
+          capturedAt: '2026-10-24T10:00:00.000+03:00',
+          messages: [
+            {
+              indexInDom: 1,
+              occurrenceIndexInView: 1,
+              fingerprint: 'fp_zoom_bam_100',
+              uiaRuntimeId: '100.1',
+              persistentMessageId: null,
+              isGroupedFollowUp: false,
+              dateGroup: 'Today',
+              visibleTimestamp: '10:00',
+              sender: 'Teammate A',
+              senderResolved: 'Teammate A',
+              isSentByMe: false,
+              messageType: 'text',
+              text: 'BAM-100 biletindeki gereksinimleri güncelledim.',
+              links: ['https://jira.company.com/browse/BAM-100'],
+              rawAccessibleLabel: 'BAM-100 biletindeki gereksinimleri güncelledim.'
+            },
+            {
+              indexInDom: 2,
+              occurrenceIndexInView: 2,
+              fingerprint: 'fp_zoom_bam_200',
+              uiaRuntimeId: '100.2',
+              persistentMessageId: null,
+              isGroupedFollowUp: false,
+              dateGroup: 'Today',
+              visibleTimestamp: '10:15',
+              sender: 'Teammate B',
+              senderResolved: 'Teammate B',
+              isSentByMe: false,
+              messageType: 'text',
+              text: 'BAM-200 refactor işi ne durumdaydı?',
+              links: ['https://jira.company.com/browse/BAM-200'],
+              rawAccessibleLabel: 'BAM-200 refactor işi ne durumdaydı?'
+            },
+            {
+              indexInDom: 3,
+              occurrenceIndexInView: 3,
+              fingerprint: 'fp_zoom_bam_300',
+              uiaRuntimeId: '100.3',
+              persistentMessageId: null,
+              isGroupedFollowUp: false,
+              dateGroup: 'Today',
+              visibleTimestamp: '10:30',
+              sender: 'Teammate C',
+              senderResolved: 'Teammate C',
+              isSentByMe: false,
+              messageType: 'text',
+              text: 'BAM-300 nolu raporlama hatasına kim bakacak?',
+              links: ['https://jira.company.com/browse/BAM-300'],
+              rawAccessibleLabel: 'BAM-300 nolu raporlama hatasına kim bakacak?'
+            }
+          ]
+        })
+      );
+
+      // Run Jira sync via integrations service
+      await integrations.syncJiraIssuesIfConfigured(['BAM-100', 'BAM-200', 'BAM-300']);
+
+      // Check is_user_assignee in DB
+      assert.equal(repo.isUserAssigneeForJiraKey('BAM-100'), true, 'BAM-100 (current assignee) must be verified');
+      assert.equal(repo.isUserAssigneeForJiraKey('BAM-200'), true, 'BAM-200 (history assignee) must be verified');
+      assert.equal(repo.isUserAssigneeForJiraKey('BAM-300'), false, 'BAM-300 (never assignee) must be false');
+
+      // Generate report and check extracted Jira keys
+      const report = await rep.generateReport({
+        reportDate: '2026-10-24',
+        provider: 'local_rule'
+      });
+
+      const extractedKeys = report.jiraKeys ?? repo.extractJiraKeysForDate('2026-10-24', report.items);
+
+      assert.ok(extractedKeys.includes('BAM-100'), 'BAM-100 must be in report jira keys');
+      assert.ok(extractedKeys.includes('BAM-200'), 'BAM-200 must be in report jira keys');
+      assert.ok(!extractedKeys.includes('BAM-300'), 'BAM-300 (not assigned to user) must NEVER be in report jira keys');
+
+      // 5. User removes BAM-100 from report
+      const updatedReport = repo.removeReportJiraKey('2026-10-24', 'BAM-100');
+      assert.ok(!updatedReport.jiraKeys?.includes('BAM-100'), 'BAM-100 must be removed from report.jiraKeys');
+      assert.ok(updatedReport.jiraKeys?.includes('BAM-200'), 'BAM-200 must remain in report.jiraKeys');
+      assert.ok(updatedReport.excludedJiraKeys?.includes('BAM-100'), 'BAM-100 must be in excludedJiraKeys');
+
+      // 6. User resets removed Jira keys
+      const resetReport = repo.resetReportJiraKeys('2026-10-24');
+      assert.ok(resetReport.jiraKeys?.includes('BAM-100'), 'BAM-100 must be restored');
+      assert.ok(resetReport.jiraKeys?.includes('BAM-200'), 'BAM-200 must be present');
+      assert.equal(resetReport.excludedJiraKeys?.length, 0, 'excludedJiraKeys must be empty');
+    } finally {
+      globalThis.fetch = originalFetch;
+      db.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
 
 

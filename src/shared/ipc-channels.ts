@@ -42,6 +42,8 @@ export const IPC_CHANNELS = {
   REPORT_APPROVE: 'mesai:report:approve',
   REPORT_EXPORT: 'mesai:report:export',
   REPORT_PROGRESS: 'mesai:report:progress',
+  REPORT_REMOVE_JIRA_KEY: 'mesai:report:removeJiraKey',
+  REPORT_RESET_JIRA_KEYS: 'mesai:report:resetJiraKeys',
 
   INTEGRATIONS_HEALTH: 'mesai:integrations:health',
   INTEGRATIONS_SAVE_SECRET: 'mesai:integrations:saveSecret',
@@ -154,6 +156,8 @@ export interface MesaiApi {
     projectId: string | null;
   }): Promise<DailyReport>;
   deleteReportItem(itemId: string): Promise<DailyReport>;
+  removeReportJiraKey(reportDate: string, jiraKey: string): Promise<DailyReport>;
+  resetReportJiraKeys(reportDate: string): Promise<DailyReport>;
   approveReport(reportId: string, notes?: string): Promise<DailyReport>;
   onReportProgress(callback: (log: ReportProgressLog) => void): () => void;
   exportReport(input: {

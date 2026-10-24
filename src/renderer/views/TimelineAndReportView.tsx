@@ -699,6 +699,28 @@ export const DailyReportView: React.FC<{
     setStatusBanner(`Jira numaraları panoya kopyalandı: ${extractedJiraKeys.join(', ')}`);
   };
 
+  const handleRemoveJiraKey = async (jiraKey: string) => {
+    if (!report) return;
+    try {
+      const updated = await window.mesaiApi.removeReportJiraKey(report.reportDate, jiraKey);
+      setReport(updated);
+      setStatusBanner(`${jiraKey} rapordan kaldırıldı.`);
+    } catch (err) {
+      setErrorBanner(`Jira numarası kaldırılamadı: ${(err as Error).message}`);
+    }
+  };
+
+  const handleResetJiraKeys = async () => {
+    if (!report) return;
+    try {
+      const updated = await window.mesaiApi.resetReportJiraKeys(report.reportDate);
+      setReport(updated);
+      setStatusBanner('Kaldırılan Jira numaraları geri yüklendi.');
+    } catch (err) {
+      setErrorBanner(`Jira numaraları geri yüklenemedi: ${(err as Error).message}`);
+    }
+  };
+
   const handleExport = async (format: 'md' | 'txt' | 'csv') => {
     if (!report) return;
     const res = await window.mesaiApi.exportReport({ reportId: report.id, format });
@@ -939,23 +961,68 @@ export const DailyReportView: React.FC<{
               <h3 className="card-title" style={{ margin: 0 }}>
                 Raporda Kullanılan Jira Numaraları ({extractedJiraKeys.length})
               </h3>
-              <button
-                className="btn btn-sm"
-                onClick={handleCopyJiraKeysClipboard}
-                disabled={extractedJiraKeys.length === 0}
-                style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-              >
-                <CopyIcon size={13} />
-                <span>Jira No Kopyala</span>
-              </button>
+              <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+                {report.excludedJiraKeys && report.excludedJiraKeys.length > 0 && (
+                  <button
+                    className="btn btn-sm btn-secondary"
+                    onClick={handleResetJiraKeys}
+                    title="Kaldırılan numaraları geri yükle"
+                    style={{ fontSize: '12px' }}
+                  >
+                    Kaldırılanları Geri Yükle ({report.excludedJiraKeys.length})
+                  </button>
+                )}
+                <button
+                  className="btn btn-sm"
+                  onClick={handleCopyJiraKeysClipboard}
+                  disabled={extractedJiraKeys.length === 0}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                >
+                  <CopyIcon size={13} />
+                  <span>Jira No Kopyala</span>
+                </button>
+              </div>
             </div>
 
             {extractedJiraKeys.length > 0 ? (
               <div style={{ display: 'grid', gap: '10px' }}>
-                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
                   {extractedJiraKeys.map((jk) => (
-                    <span key={jk} className="badge badge-success" style={{ fontSize: '13px' }}>
-                      {jk}
+                    <span
+                      key={jk}
+                      className="badge badge-success"
+                      style={{
+                        fontSize: '13px',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        padding: '4px 8px'
+                      }}
+                    >
+                      <span>{jk}</span>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveJiraKey(jk)}
+                        title={`${jk} numarasını rapordan kaldır`}
+                        aria-label={`${jk} kaldır`}
+                        style={{
+                          background: 'rgba(0, 0, 0, 0.15)',
+                          border: 'none',
+                          borderRadius: '50%',
+                          width: '16px',
+                          height: '16px',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          cursor: 'pointer',
+                          color: 'inherit',
+                          fontSize: '12px',
+                          lineHeight: '1',
+                          padding: 0
+                        }}
+                      >
+                        ×
+                      </button>
                     </span>
                   ))}
                 </div>
@@ -969,7 +1036,9 @@ export const DailyReportView: React.FC<{
               </div>
             ) : (
               <div style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>
-                Bu tarihteki ({report.reportDate}) aktivitelerde Jira numarası tespit edilmedi.
+                {report.excludedJiraKeys && report.excludedJiraKeys.length > 0
+                  ? 'Tüm Jira numaraları rapordan kaldırıldı.'
+                  : `Bu tarihteki (${report.reportDate}) aktivitelerde Jira numarası tespit edilmedi.`}
               </div>
             )}
           </div>

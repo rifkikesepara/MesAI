@@ -457,24 +457,61 @@ body {
 }
 
 /* Datepicker native calendar icon styling */
-input[type="date"]::-webkit-calendar-picker-indicator {
+input[type="date"],
+.input[type="date"] {
+  color-scheme: light;
+}
+
+[data-theme="dark"] input[type="date"],
+:root[data-theme="dark"] input[type="date"],
+[data-theme="dark"] .input[type="date"] {
+  color-scheme: dark !important;
+}
+
+[data-theme="light"] input[type="date"],
+:root[data-theme="light"] input[type="date"],
+[data-theme="light"] .input[type="date"] {
+  color-scheme: light !important;
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator,
+.input[type="date"]::-webkit-calendar-picker-indicator {
   cursor: pointer;
-  opacity: 0.75;
-  transition: opacity 0.15s ease, filter 0.15s ease;
-  padding: 2px;
+  padding: 4px;
   border-radius: 4px;
 }
 
-input[type="date"]::-webkit-calendar-picker-indicator:hover {
-  opacity: 1;
+/* Explicit SVG calendar background icon for 100% reliable theme rendering */
+[data-theme="dark"] input[type="date"]::-webkit-calendar-picker-indicator,
+:root[data-theme="dark"] input[type="date"]::-webkit-calendar-picker-indicator,
+[data-theme="dark"] .input[type="date"]::-webkit-calendar-picker-indicator {
+  background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="%23f1f5f9" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>') !important;
+  background-repeat: no-repeat !important;
+  background-position: center !important;
+  background-size: 16px 16px !important;
+  opacity: 0.9 !important;
 }
 
-[data-theme="dark"] input[type="date"]::-webkit-calendar-picker-indicator {
-  filter: invert(0.9) brightness(1.2);
+[data-theme="dark"] input[type="date"]::-webkit-calendar-picker-indicator:hover,
+:root[data-theme="dark"] input[type="date"]::-webkit-calendar-picker-indicator:hover,
+[data-theme="dark"] .input[type="date"]::-webkit-calendar-picker-indicator:hover {
+  opacity: 1 !important;
 }
 
-[data-theme="light"] input[type="date"]::-webkit-calendar-picker-indicator {
-  filter: none;
+[data-theme="light"] input[type="date"]::-webkit-calendar-picker-indicator,
+:root[data-theme="light"] input[type="date"]::-webkit-calendar-picker-indicator,
+[data-theme="light"] .input[type="date"]::-webkit-calendar-picker-indicator {
+  background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="%23334155" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>') !important;
+  background-repeat: no-repeat !important;
+  background-position: center !important;
+  background-size: 16px 16px !important;
+  opacity: 0.75 !important;
+}
+
+[data-theme="light"] input[type="date"]::-webkit-calendar-picker-indicator:hover,
+:root[data-theme="light"] input[type="date"]::-webkit-calendar-picker-indicator:hover,
+[data-theme="light"] .input[type="date"]::-webkit-calendar-picker-indicator:hover {
+  opacity: 1 !important;
 }
 
 .textarea {

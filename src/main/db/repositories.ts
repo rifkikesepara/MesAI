@@ -1021,6 +1021,7 @@ export class MesaiRepository {
     title: string;
     description?: string | null;
     status?: string;
+    isUserAssignee?: boolean;
   }): WorkItem {
     const now = new Date().toISOString();
     if (input.jiraKey) {
@@ -1033,6 +1034,10 @@ export class MesaiRepository {
         const isGenericIncoming =
           !incomingTitle || incomingTitle === 'Otomatik tespit edilen iş anahtarı';
         const nextTitle = isGenericIncoming && existingTitle ? existingTitle : incomingTitle || existingTitle;
+        const nextIsUserAssignee =
+          input.isUserAssignee !== undefined
+            ? (input.isUserAssignee ? 1 : 0)
+            : Number(existing.is_user_assignee ?? 0);
 
         this.db
           .prepare(`
@@ -1041,6 +1046,7 @@ export class MesaiRepository {
                 title = ?,
                 description = COALESCE(?, description),
                 status = COALESCE(?, status),
+                is_user_assignee = ?,
                 updated_at = ?
             WHERE id = ?
           `)
@@ -1049,6 +1055,7 @@ export class MesaiRepository {
             nextTitle,
             input.description ?? null,
             input.status ?? null,
+            nextIsUserAssignee,
             now,
             String(existing.id)
           );
@@ -1061,10 +1068,11 @@ export class MesaiRepository {
     const existingById = this.getWorkItemById(id);
     if (existingById) return existingById;
 
+    const isUserAssigneeVal = input.isUserAssignee ? 1 : 0;
     this.db
       .prepare(`
-        INSERT INTO work_items (id, project_id, jira_key, title, description, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO work_items (id, project_id, jira_key, title, description, status, is_user_assignee, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         id,
@@ -1073,6 +1081,7 @@ export class MesaiRepository {
         input.title,
         input.description ?? null,
         input.status ?? 'open',
+        isUserAssigneeVal,
         now,
         now
       );
@@ -1169,6 +1178,7 @@ export class MesaiRepository {
       title: String(row.title),
       description: row.description ? String(row.description) : null,
       status: String(row.status),
+      isUserAssignee: Number(row.is_user_assignee ?? 0) === 1,
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at)
     };
@@ -1191,9 +1201,18 @@ export class MesaiRepository {
       title: String(row.title),
       description: row.description ? String(row.description) : null,
       status: String(row.status),
+      isUserAssignee: Number(row.is_user_assignee ?? 0) === 1,
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at)
     }));
+  }
+
+  public isUserAssigneeForJiraKey(jiraKey: string): boolean | null {
+    const row = this.db
+      .prepare('SELECT is_user_assignee FROM work_items WHERE jira_key = ?')
+      .get(jiraKey.trim().toUpperCase()) as { is_user_assignee?: number | null } | undefined;
+    if (!row || row.is_user_assignee === null || row.is_user_assignee === undefined) return null;
+    return Number(row.is_user_assignee) === 1;
   }
 
   public upsertActivityLink(input: {
@@ -1304,27 +1323,44 @@ export class MesaiRepository {
 
   // ==================== DAILY REPORTS ====================
   public extractJiraKeysForDate(reportDate: string, items: ReportItem[] = []): string[] {
-    const keys = new Set<string>();
+    const candidateKeys = new Set<string>();
     const reportProjectIds = new Set<string>();
+    const gitKeys = new Set<string>();
 
     for (const item of items) {
       if (item.projectId) reportProjectIds.add(item.projectId);
       if (item.jiraKey) {
-        for (const k of extractJiraKeysFromText(item.jiraKey)) keys.add(k);
+        for (const k of extractJiraKeysFromText(item.jiraKey)) candidateKeys.add(k);
       }
-      for (const k of extractJiraKeysFromText(item.text)) keys.add(k);
+      for (const k of extractJiraKeysFromText(item.text)) candidateKeys.add(k);
       for (const ev of item.evidences ?? []) {
-        for (const k of extractJiraKeysFromText(ev.externalRef)) keys.add(k);
-        for (const k of extractJiraKeysFromText(ev.title)) keys.add(k);
-        for (const k of extractJiraKeysFromText(ev.snippet)) keys.add(k);
+        for (const k of extractJiraKeysFromText(ev.externalRef)) candidateKeys.add(k);
+        for (const k of extractJiraKeysFromText(ev.title)) candidateKeys.add(k);
+        for (const k of extractJiraKeysFromText(ev.snippet)) candidateKeys.add(k);
         for (const linkUrl of ev.links ?? []) {
-          for (const k of extractJiraKeysFromText(linkUrl)) keys.add(k);
+          for (const k of extractJiraKeysFromText(linkUrl)) candidateKeys.add(k);
         }
       }
     }
 
     const dayActivities = this.listActivities({ date: reportDate });
     for (const act of dayActivities) {
+      // Record any keys definitively coming from user's git commits or working trees
+      if (act.sourceType === 'git_commit' || act.sourceType === 'git_working_tree') {
+        for (const k of extractJiraKeysFromText(act.title)) gitKeys.add(k);
+        for (const k of extractJiraKeysFromText(act.summary)) gitKeys.add(k);
+        for (const lnk of act.links ?? []) {
+          if (lnk.userStatus !== 'rejected' && lnk.workItemJiraKey) {
+            for (const k of extractJiraKeysFromText(lnk.workItemJiraKey)) gitKeys.add(k);
+          }
+        }
+        for (const ev of act.evidences ?? []) {
+          for (const k of extractJiraKeysFromText(ev.externalRef)) gitKeys.add(k);
+          const branch = String(ev.metadata?.branchName ?? '');
+          for (const k of extractJiraKeysFromText(branch)) gitKeys.add(k);
+        }
+      }
+
       // Skip background git_working_tree / file_change activities if their project isn't in the report
       if (
         (act.sourceType === 'git_working_tree' || act.sourceType === 'file_change') &&
@@ -1340,24 +1376,51 @@ export class MesaiRepository {
         continue;
       }
 
-      for (const k of extractJiraKeysFromText(act.title)) keys.add(k);
-      for (const k of extractJiraKeysFromText(act.summary)) keys.add(k);
+      for (const k of extractJiraKeysFromText(act.title)) candidateKeys.add(k);
+      for (const k of extractJiraKeysFromText(act.summary)) candidateKeys.add(k);
       for (const lnk of act.links ?? []) {
         if (lnk.userStatus !== 'rejected' && lnk.workItemJiraKey) {
-          for (const k of extractJiraKeysFromText(lnk.workItemJiraKey)) keys.add(k);
+          for (const k of extractJiraKeysFromText(lnk.workItemJiraKey)) candidateKeys.add(k);
         }
       }
       for (const ev of act.evidences ?? []) {
-        for (const k of extractJiraKeysFromText(ev.externalRef)) keys.add(k);
-        for (const k of extractJiraKeysFromText(ev.title)) keys.add(k);
-        for (const k of extractJiraKeysFromText(ev.snippet)) keys.add(k);
+        for (const k of extractJiraKeysFromText(ev.externalRef)) candidateKeys.add(k);
+        for (const k of extractJiraKeysFromText(ev.title)) candidateKeys.add(k);
+        for (const k of extractJiraKeysFromText(ev.snippet)) candidateKeys.add(k);
         for (const linkUrl of ev.links ?? []) {
-          for (const k of extractJiraKeysFromText(linkUrl)) keys.add(k);
+          for (const k of extractJiraKeysFromText(linkUrl)) candidateKeys.add(k);
         }
       }
     }
 
-    return Array.from(keys).sort();
+    // Filter candidateKeys strictly based on Git provenance and Jira API assignee verification:
+    // 1. All git keys from user's commits/branches on this date are verified.
+    // 2. If Jira API has verified that the user is/was assignee (is_user_assignee === 1): include.
+    // 3. If Jira API is configured and checked is_user_assignee === 0: exclude.
+    // 4. If Jira API is not configured: only keep keys that came from user's git activities.
+    const settings = this.getSettings();
+    const isJiraConfigured = Boolean(settings.jiraUrl && settings.jiraEmail);
+
+    const verifiedKeys = new Set<string>();
+
+    for (const gk of gitKeys) {
+      verifiedKeys.add(gk);
+    }
+
+    for (const cand of candidateKeys) {
+      if (gitKeys.has(cand)) {
+        verifiedKeys.add(cand);
+        continue;
+      }
+      if (isJiraConfigured) {
+        const isAssignee = this.isUserAssigneeForJiraKey(cand);
+        if (isAssignee === true) {
+          verifiedKeys.add(cand);
+        }
+      }
+    }
+
+    return Array.from(verifiedKeys).sort();
   }
 
   public getDailyReport(reportDate: string): DailyReport | null {
@@ -1401,7 +1464,12 @@ export class MesaiRepository {
       };
     });
 
-    const jiraKeys = this.extractJiraKeysForDate(reportDate, items);
+    const excludedJiraKeysList: string[] = JSON.parse(
+      String(row.excluded_jira_keys_json || '[]')
+    );
+    const excludedJiraKeys = new Set<string>(excludedJiraKeysList);
+    const rawJiraKeys = this.extractJiraKeysForDate(reportDate, items);
+    const jiraKeys = rawJiraKeys.filter((k) => !excludedJiraKeys.has(k));
     const formattedSummary = items
       .map((i) => `- ${i.text.replace(/^[-•*]\s*/, '').trim()}`)
       .join('\n');
@@ -1417,9 +1485,39 @@ export class MesaiRepository {
       notes: row.notes ? String(row.notes) : null,
       items,
       jiraKeys,
+      excludedJiraKeys: excludedJiraKeysList,
       formattedSummary,
       maxChars: settings.reportMaxChars ?? 1000
     };
+  }
+
+  public removeReportJiraKey(reportDate: string, jiraKey: string): DailyReport {
+    const cleanKey = jiraKey.trim().toUpperCase();
+    const row = this.db
+      .prepare('SELECT id, excluded_jira_keys_json FROM daily_reports WHERE report_date = ?')
+      .get(reportDate) as { id: string; excluded_jira_keys_json?: string } | undefined;
+    if (!row) throw new Error('Rapor bulunamadı.');
+
+    const current: string[] = JSON.parse(String(row.excluded_jira_keys_json || '[]'));
+    if (!current.includes(cleanKey)) {
+      current.push(cleanKey);
+      this.db
+        .prepare('UPDATE daily_reports SET excluded_jira_keys_json = ? WHERE id = ?')
+        .run(JSON.stringify(current), row.id);
+    }
+    return this.getDailyReport(reportDate)!;
+  }
+
+  public resetReportJiraKeys(reportDate: string): DailyReport {
+    const row = this.db
+      .prepare('SELECT id FROM daily_reports WHERE report_date = ?')
+      .get(reportDate) as { id: string } | undefined;
+    if (!row) throw new Error('Rapor bulunamadı.');
+
+    this.db
+      .prepare('UPDATE daily_reports SET excluded_jira_keys_json = ? WHERE id = ?')
+      .run('[]', row.id);
+    return this.getDailyReport(reportDate)!;
   }
 
   /**

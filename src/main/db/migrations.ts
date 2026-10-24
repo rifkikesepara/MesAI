@@ -176,5 +176,19 @@ export const MIGRATIONS: Migration[] = [
         updated_at TEXT NOT NULL
       );
     `
+  },
+  {
+    version: 2,
+    name: '002_add_is_user_assignee_to_work_items',
+    upSql: `
+      ALTER TABLE work_items ADD COLUMN is_user_assignee INTEGER DEFAULT 0;
+    `
+  },
+  {
+    version: 3,
+    name: '003_add_excluded_jira_keys_to_daily_reports',
+    upSql: `
+      ALTER TABLE daily_reports ADD COLUMN excluded_jira_keys_json TEXT NOT NULL DEFAULT '[]';
+    `
   }
 ];
