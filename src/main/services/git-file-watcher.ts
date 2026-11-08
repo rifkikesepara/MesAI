@@ -64,12 +64,59 @@ export class GitFileWatcherService {
   private pendingFiles = new Map<string, Set<string>>();
   private isScanningGit = false;
   private cachedGitVersion: string | null = null;
+  private readonly cachedOsUser: string;
+  private userIdentityCache = new Map<
+    string,
+    { name: string; email: string; expiresAt: number }
+  >();
+  private lastScannedHeadByProject = new Map<string, { branch: string; headHash: string }>();
+  private lastWorkingTreeSigByKey = new Map<string, string>();
 
   constructor(
     private readonly repo: MesaiRepository,
     private readonly matcher: MatcherService,
     private readonly debounceMs = 4000
-  ) {}
+  ) {
+    try {
+      this.cachedOsUser = os.userInfo().username.trim().toLowerCase();
+    } catch {
+      this.cachedOsUser = '';
+    }
+  }
+
+  public clearCaches(): void {
+    this.userIdentityCache.clear();
+    this.lastScannedHeadByProject.clear();
+    this.lastWorkingTreeSigByKey.clear();
+  }
+
+  private async getProjectGitIdentity(
+    repoPath: string
+  ): Promise<{ name: string; email: string }> {
+    const now = Date.now();
+    const cached = this.userIdentityCache.get(repoPath);
+    if (cached && cached.expiresAt > now) {
+      return { name: cached.name, email: cached.email };
+    }
+    let name = '';
+    let email = '';
+    try {
+      name = (await this.execGit(repoPath, ['config', 'user.name'])).trim().toLowerCase();
+    } catch {
+      // ignore
+    }
+    try {
+      email = (await this.execGit(repoPath, ['config', 'user.email'])).trim().toLowerCase();
+    } catch {
+      // ignore
+    }
+    this.userIdentityCache.set(repoPath, {
+      name,
+      email,
+      expiresAt: now + 5 * 60_000
+    });
+    return { name, email };
+  }
 
   public async getGitVersion(): Promise<string | null> {
     if (this.cachedGitVersion) return this.cachedGitVersion;
@@ -276,171 +323,185 @@ export class GitFileWatcherService {
         if (!fs.existsSync(proj.rootPath)) continue;
         scannedProjects++;
 
-        // 1. Read active branch
+        // 1. Read active branch and HEAD commit hash in one subprocess
         let branch = proj.currentBranch ?? 'main';
+        let headHash = '';
         try {
-          branch =
-            (await this.execGit(proj.rootPath, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim() ||
-            branch;
-          this.repo.upsertDiscoveredProject({
-            name: proj.name,
-            rootPath: proj.rootPath,
-            currentBranch: branch
-          });
+          const revOut = (
+            await this.execGit(proj.rootPath, ['rev-parse', '--abbrev-ref', 'HEAD', 'HEAD'])
+          )
+            .trim()
+            .split(/\r?\n/);
+          if (revOut[0]) {
+            branch = revOut[0].trim() || branch;
+          }
+          if (revOut[1]) {
+            headHash = revOut[1].trim();
+          }
+          if (branch !== proj.currentBranch) {
+            this.repo.upsertDiscoveredProject({
+              name: proj.name,
+              rootPath: proj.rootPath,
+              currentBranch: branch
+            });
+          }
         } catch {
           // ignore if empty repo without HEAD
         }
 
         // 2. Read recent commits (last 14 days so earlier report dates are also populated)
-        try {
-          let gitUserName = '';
-          let gitUserEmail = '';
+        const prevHead = this.lastScannedHeadByProject.get(proj.id);
+        const headUnchanged =
+          Boolean(headHash) &&
+          prevHead !== undefined &&
+          prevHead.branch === branch &&
+          prevHead.headHash === headHash;
+
+        if (!headUnchanged) {
           try {
-            gitUserName = (await this.execGit(proj.rootPath, ['config', 'user.name']))
-              .trim()
-              .toLowerCase();
-          } catch {
-            // ignore
-          }
-          try {
-            gitUserEmail = (await this.execGit(proj.rootPath, ['config', 'user.email']))
-              .trim()
-              .toLowerCase();
-          } catch {
-            // ignore
-          }
-          let osUser = '';
-          try {
-            osUser = os.userInfo().username.trim().toLowerCase();
-          } catch {
-            // ignore
-          }
+            const { name: gitUserName, email: gitUserEmail } = await this.getProjectGitIdentity(
+              proj.rootPath
+            );
+            const osUser = this.cachedOsUser;
 
-          const logOut = await this.execGit(proj.rootPath, [
-            'log',
-            '--since=14.days.ago',
-            '-n',
-            '50',
-            '-m',
-            '--first-parent',
-            '--name-only',
-            '--pretty=format:__COMMIT__|%H|%an|%ae|%aI|%s'
-          ]);
+            const logOut = await this.execGit(proj.rootPath, [
+              'log',
+              '--since=14.days.ago',
+              '-n',
+              '50',
+              '-m',
+              '--first-parent',
+              '--name-only',
+              '--pretty=format:__COMMIT__|%H|%an|%ae|%aI|%s'
+            ]);
 
-          interface ParsedCommit {
-            hash: string;
-            author: string;
-            email: string;
-            rawIsoDate: string;
-            subject: string;
-            changedFiles: string[];
-          }
+            interface ParsedCommit {
+              hash: string;
+              author: string;
+              email: string;
+              rawIsoDate: string;
+              subject: string;
+              changedFiles: string[];
+            }
 
-          const parsedCommits: ParsedCommit[] = [];
-          let currentCommit: ParsedCommit | null = null;
+            const parsedCommits: ParsedCommit[] = [];
+            let currentCommit: ParsedCommit | null = null;
 
-          for (const rawLine of logOut.split(/\r?\n/)) {
-            const line = rawLine.trim();
-            if (!line) continue;
-            if (line.startsWith('__COMMIT__|')) {
-              if (currentCommit) {
-                parsedCommits.push(currentCommit);
+            for (const rawLine of logOut.split(/\r?\n/)) {
+              const line = rawLine.trim();
+              if (!line) continue;
+              if (line.startsWith('__COMMIT__|')) {
+                if (currentCommit) {
+                  parsedCommits.push(currentCommit);
+                }
+                const parts = line.slice('__COMMIT__|'.length).split('|');
+                if (parts.length < 5) {
+                  currentCommit = null;
+                  continue;
+                }
+                const [hash, author, email, rawIsoDate, ...subjectParts] = parts;
+                currentCommit = {
+                  hash,
+                  author: author.trim(),
+                  email: email.trim(),
+                  rawIsoDate: rawIsoDate.trim(),
+                  subject: subjectParts.join('|').trim(),
+                  changedFiles: []
+                };
+              } else if (currentCommit) {
+                const normalizedFile = line.replace(/\\/g, '/');
+                if (
+                  normalizedFile.includes('bam-shared-lib') ||
+                  !shouldExcludeFilePath(
+                    normalizedFile,
+                    settings.globalExclusions,
+                    proj.excludedPaths
+                  )
+                ) {
+                  currentCommit.changedFiles.push(normalizedFile);
+                }
               }
-              const parts = line.slice('__COMMIT__|'.length).split('|');
-              if (parts.length < 5) {
-                currentCommit = null;
+            }
+            if (currentCommit) {
+              parsedCommits.push(currentCommit);
+            }
+
+            const userTokens = Array.from(
+              new Set(
+                [
+                  gitUserName,
+                  ...gitUserName.split(/\s+/),
+                  gitUserEmail.split('@')[0] ?? '',
+                  osUser
+                ]
+                  .map((t) => t.trim().toLowerCase())
+                  .filter((t) => t.length >= 3)
+              )
+            );
+
+            for (const c of parsedCommits) {
+              // Skip upstream sync pulls ("Merge remote-tracking branch 'origin/uat' into ...")
+              if (/^merge\s+remote-tracking\s+branch/i.test(c.subject)) {
                 continue;
               }
-              const [hash, author, email, rawIsoDate, ...subjectParts] = parts;
-              currentCommit = {
-                hash,
-                author: author.trim(),
-                email: email.trim(),
-                rawIsoDate: rawIsoDate.trim(),
-                subject: subjectParts.join('|').trim(),
-                changedFiles: []
-              };
-            } else if (currentCommit) {
-              const normalizedFile = line.replace(/\\/g, '/');
-              if (
-                normalizedFile.includes('bam-shared-lib') ||
-                !shouldExcludeFilePath(normalizedFile, settings.globalExclusions, proj.excludedPaths)
-              ) {
-                currentCommit.changedFiles.push(normalizedFile);
+
+              const lowerAuthor = c.author.toLowerCase();
+              const lowerEmail = c.email.toLowerCase();
+              const lowerSubj = c.subject.toLowerCase();
+
+              const isOwnCommit =
+                userTokens.length === 0 ||
+                userTokens.some(
+                  (tok) =>
+                    lowerAuthor.includes(tok) ||
+                    lowerEmail.includes(tok) ||
+                    lowerSubj.includes(`'${tok}'`) ||
+                    lowerSubj.includes(`/${tok}`)
+                );
+
+              if (!isOwnCommit) {
+                continue;
+              }
+
+              const dedupKey = `git:commit:${proj.id}:${c.hash}`;
+              if (this.repo.hasCommitWithDiff(dedupKey, c.changedFiles.length > 0)) {
+                continue;
+              }
+
+              const shortHash = c.hash.slice(0, 8);
+              const localCommitIso = toLocalIsoString(c.rawIsoDate);
+              const codeDiff = await this.extractCompactCommitDiff(proj.rootPath, c.hash);
+
+              const res = this.repo.ingestGitOrFileActivity({
+                projectId: proj.id,
+                projectName: proj.name,
+                sourceType: 'git_commit',
+                dedupKey,
+                externalId: shortHash,
+                branchName: branch,
+                sender: c.author,
+                occurredAtIso: localCommitIso,
+                rawTimestampText: localCommitIso.slice(11, 16),
+                title: `${proj.name} [${branch}] — Commit ${shortHash}`,
+                summary: c.subject,
+                changedFiles: c.changedFiles,
+                codeDiff,
+                statusOverride: 'completed',
+                categoryOverride: 'development'
+              });
+
+              if (res.created) {
+                newActivities++;
+                this.matcher.matchActivityById(res.activityId);
               }
             }
-          }
-          if (currentCommit) {
-            parsedCommits.push(currentCommit);
-          }
 
-          const userTokens = Array.from(
-            new Set(
-              [
-                gitUserName,
-                ...gitUserName.split(/\s+/),
-                gitUserEmail.split('@')[0] ?? '',
-                osUser
-              ]
-                .map((t) => t.trim().toLowerCase())
-                .filter((t) => t.length >= 3)
-            )
-          );
-
-          for (const c of parsedCommits) {
-            // Skip upstream sync pulls ("Merge remote-tracking branch 'origin/uat' into ...")
-            if (/^merge\s+remote-tracking\s+branch/i.test(c.subject)) {
-              continue;
+            if (headHash) {
+              this.lastScannedHeadByProject.set(proj.id, { branch, headHash });
             }
-
-            const lowerAuthor = c.author.toLowerCase();
-            const lowerEmail = c.email.toLowerCase();
-            const lowerSubj = c.subject.toLowerCase();
-
-            const isOwnCommit =
-              userTokens.length === 0 ||
-              userTokens.some(
-                (tok) =>
-                  lowerAuthor.includes(tok) ||
-                  lowerEmail.includes(tok) ||
-                  lowerSubj.includes(`'${tok}'`) ||
-                  lowerSubj.includes(`/${tok}`)
-              );
-
-            if (!isOwnCommit) {
-              continue;
-            }
-
-            const shortHash = c.hash.slice(0, 8);
-            const localCommitIso = toLocalIsoString(c.rawIsoDate);
-            const dedupKey = `git:commit:${proj.id}:${c.hash}`;
-            const codeDiff = await this.extractCompactCommitDiff(proj.rootPath, c.hash);
-
-            const res = this.repo.ingestGitOrFileActivity({
-              projectId: proj.id,
-              projectName: proj.name,
-              sourceType: 'git_commit',
-              dedupKey,
-              externalId: shortHash,
-              branchName: branch,
-              sender: c.author,
-              occurredAtIso: localCommitIso,
-              rawTimestampText: localCommitIso.slice(11, 16),
-              title: `${proj.name} [${branch}] — Commit ${shortHash}`,
-              summary: c.subject,
-              changedFiles: c.changedFiles,
-              codeDiff,
-              statusOverride: 'completed',
-              categoryOverride: 'development'
-            });
-
-            if (res.created) {
-              newActivities++;
-              this.matcher.matchActivityById(res.activityId);
-            }
+          } catch {
+            // ignore if repo has no commits yet
           }
-        } catch {
-          // ignore if repo has no commits yet
         }
 
         // 3. Read uncommitted working tree changes grouped by actual file modification date (mtime)
@@ -514,9 +575,16 @@ export class GitFileWatcherService {
             }
           }
 
+          const activeWtKeys = new Set<string>();
           for (const [fileDate, group] of filesByDate.entries()) {
             const sortedFiles = Array.from(new Set(group.files)).sort();
             const dedupKey = `git:wt:${proj.id}:${branch || 'HEAD'}:${fileDate}`;
+            activeWtKeys.add(dedupKey);
+            const wtSig = `${sortedFiles.join('|')}@${group.latestIso}@${group.earliestTimeText}`;
+            if (this.lastWorkingTreeSigByKey.get(dedupKey) === wtSig) {
+              continue;
+            }
+
             const preview = sortedFiles.slice(0, 6).join(', ');
             const suffix = sortedFiles.length > 6 ? ` (+${sortedFiles.length - 6} dosya)` : '';
 
@@ -545,9 +613,18 @@ export class GitFileWatcherService {
               categoryOverride: 'development'
             });
 
+            this.lastWorkingTreeSigByKey.set(dedupKey, wtSig);
+
             if (res.created) {
               newActivities++;
               this.matcher.matchActivityById(res.activityId);
+            }
+          }
+
+          const wtPrefix = `git:wt:${proj.id}:`;
+          for (const cachedKey of Array.from(this.lastWorkingTreeSigByKey.keys())) {
+            if (cachedKey.startsWith(wtPrefix) && !activeWtKeys.has(cachedKey)) {
+              this.lastWorkingTreeSigByKey.delete(cachedKey);
             }
           }
         } catch {

@@ -12,7 +12,7 @@ import { GeminiCliProvider, buildSanitizedAiPrompt } from '../src/main/services/
 import { ReportService } from '../src/main/services/report-service';
 import { ZoomReaderAdapter } from '../src/main/services/zoom-adapter';
 import { IntegrationsService } from '../src/main/services/integrations-service';
-import { isNewerVersion, parseSemver } from '../src/main/services/update-service';
+import { isNewerVersion, parseSemver, UpdateService } from '../src/main/services/update-service';
 import type { ZoomChatSnapshot } from '../src/shared/types';
 
 function createSampleSnapshot(overrides?: Partial<ZoomChatSnapshot>): ZoomChatSnapshot {
@@ -571,7 +571,7 @@ describe('MesAI Core Verification Suite', () => {
     db.close();
   });
 
-  it('9. Version comparison, update detection, and autoCheckUpdatesOnStartup setting persistence', () => {
+  it('9. Version comparison, update detection, and autoCheckUpdatesOnStartup setting persistence', async () => {
     // 1. Semver parsing
     assert.deepEqual(parseSemver('1.0.0'), [1, 0, 0]);
     assert.deepEqual(parseSemver('v1.2.34-beta.1'), [1, 2, 34]);
@@ -602,6 +602,39 @@ describe('MesAI Core Verification Suite', () => {
 
     const reloaded = repo.getSettings();
     assert.equal(reloaded.autoCheckUpdatesOnStartup, false);
+
+    // 4. UpdateService resolves package.json version and falls back when api.github.com returns 403
+    const origFetch = globalThis.fetch;
+    try {
+      const updater = new UpdateService(() => null);
+      assert.notEqual(updater.getState().currentVersion, '0.0.0', 'currentVersion must resolve from package.json');
+
+      globalThis.fetch = (async (input: string | URL | Request) => {
+        const u = String(input);
+        if (u.includes('api.github.com')) {
+          return new Response('rate limit exceeded', { status: 403, statusText: 'Forbidden' });
+        }
+        if (u.endsWith('/releases/latest')) {
+          return new Response(JSON.stringify({ tag_name: 'v9.9.9' }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' }
+          });
+        }
+        if (u.endsWith('/latest.yml')) {
+          return new Response("version: 9.9.9\npath: MesAI-Setup-9.9.9.exe\nreleaseDate: '2026-11-08T12:00:00.000Z'\n", {
+            status: 200
+          });
+        }
+        return new Response('not found', { status: 404 });
+      }) as typeof fetch;
+
+      const state = await updater.checkForUpdates();
+      assert.equal(state.status, 'available');
+      assert.equal(state.updateInfo?.version, '9.9.9');
+      assert.ok(state.updateInfo?.downloadUrl?.endsWith('MesAI-Setup-9.9.9.exe'));
+    } finally {
+      globalThis.fetch = origFetch;
+    }
 
     db.close();
   });
@@ -719,6 +752,16 @@ describe('MesAI Core Verification Suite', () => {
 
     const activities = repo.listActivities({});
     const prompt = buildSanitizedAiPrompt(today, activities, 1000);
+    assert.ok(
+      prompt.includes('Maksimum Karakter Sınırı: 1000 karakter'),
+      'Prompt must include exact user maxChars limit (1000)'
+    );
+
+    const prompt750 = buildSanitizedAiPrompt(today, activities, 750);
+    assert.ok(
+      prompt750.includes('Maksimum Karakter Sınırı: 750 karakter'),
+      'Prompt must include exact user maxChars limit (750)'
+    );
 
     // 1. untrusted_evidence_json tags must exist and match
     const openTag = '<untrusted_evidence_json>';
@@ -768,6 +811,18 @@ describe('MesAI Core Verification Suite', () => {
 
     assert.equal(receivedPrompt, customUserPrompt, 'Provider must receive the user promptOverride verbatim');
     assert.ok(customReport.items.some((item) => item.text.includes('Özel prompt ile üretilen madde')));
+
+    // 3. When promptOverride is not provided, generateReport passes exact maxChars into AI prompt
+    await reportService.generateReport({
+      reportDate: today,
+      provider: 'gemini_cli',
+      userConfirmedRemoteSend: true,
+      maxChars: 650
+    });
+    assert.ok(
+      receivedPrompt.includes('Maksimum Karakter Sınırı: 650 karakter'),
+      'AI provider must receive exact maxChars (650) in generated prompt'
+    );
 
     db.close();
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -907,38 +962,100 @@ describe('MesAI Core Verification Suite', () => {
       globalThis.fetch = originalFetch;
     }
 
-    // 4. Verify MR review fix commit produces high-effort review revision prose in report
+    // 4. Verify GitLab REST API MR review fix detection (both AI prompt preview and local report prose)
+    // even when the local git activity message does NOT explicitly say "review"
     const proj = repo.upsertDiscoveredProject({
       name: 'CustomPortal',
       rootPath: 'C:\\Repos\\CustomPortal',
+      repositoryUrl: 'https://gitlab.example.com/corp/custom-portal.git',
       currentBranch: 'feature/PORTAL-500'
     });
 
-    const commitReviewFix = repo.ingestGitOrFileActivity({
+    const wtReviewFix = repo.ingestGitOrFileActivity({
       projectId: proj.id,
       projectName: proj.name,
-      sourceType: 'git_commit',
-      dedupKey: 'git:commit:portal:rev123',
-      externalId: 'rev123',
+      sourceType: 'git_working_tree',
+      dedupKey: 'git:wt:portal:500',
+      externalId: 'wt500',
       branchName: 'feature/PORTAL-500',
       occurredAtIso: '2026-10-19T15:00:00+03:00',
       rawTimestampText: '15:00',
-      title: 'CustomPortal — Commit rev123',
-      summary: 'PORTAL-500: Code review geri bildirimleri düzeltildi ve validasyon güncellendi'
+      title: 'CustomPortal — Çalışma Ağacı (feature/PORTAL-500)',
+      summary: 'Değişen dosyalar: src/services/auth.ts, src/validators/input.ts',
+      changedFiles: ['src/services/auth.ts', 'src/validators/input.ts'],
+      codeDiff: 'diff --git a/src/services/auth.ts b/src/services/auth.ts\n+if (!token) throw new Error("Token eksik");'
     });
-    new MatcherService(repo).matchActivityById(commitReviewFix.activityId);
+    new MatcherService(repo).matchActivityById(wtReviewFix.activityId);
 
-    const generatedReport = await rep.generateReport({
-      reportDate: '2026-10-19',
-      provider: 'local_rule'
-    });
+    const originalFetch2 = globalThis.fetch;
+    try {
+      globalThis.fetch = async (url: any) => {
+        const u = String(url);
+        if (u.includes('/merge_requests/88/notes')) {
+          return new Response(
+            JSON.stringify([
+              {
+                id: 901,
+                body: 'added 1 commit',
+                system: true,
+                author: { username: 'rifkik', name: 'Rıfkı Kesepara' }
+              },
+              {
+                id: 902,
+                body: 'Token doğrulama katmanında null-check ve hata mesajı iyileştirilmeli.',
+                system: false,
+                type: 'DiffNote',
+                author: { username: 'reviewer1', name: 'Kıdemli İncelemeci' },
+                position: {
+                  new_path: 'src/services/auth.ts',
+                  old_path: 'src/services/auth.ts'
+                }
+              }
+            ]),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (u.includes('/merge_requests')) {
+          return new Response(
+            JSON.stringify([
+              {
+                iid: 88,
+                title: 'PORTAL-500: Yetkilendirme modülü geliştirmesi',
+                state: 'opened',
+                source_branch: 'feature/PORTAL-500',
+                web_url: 'https://gitlab.example.com/corp/custom-portal/-/merge_requests/88'
+              }
+            ]),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        return new Response('Not found', { status: 404 });
+      };
 
-    const portalItem = generatedReport.items.find((i) => i.projectId === proj.id);
-    assert.ok(portalItem, 'Report item for CustomPortal must exist');
-    assert.ok(
-      portalItem.text.includes('Code review ve ekip içi inceleme geri bildirimleri'),
-      'Must contain corporate code review revision prose'
-    );
+      // Verify AI preview payload includes gitlabMrReview context and selected model
+      const preview = await rep.previewAiPayload('2026-10-19', 1000, 'gemini_cli', 'gemini-3.8-flash-high');
+      assert.equal(preview.model, 'gemini-3.8-flash-high');
+      assert.equal(repo.getSettings().aiGeminiModel, 'gemini-3.8-flash-high');
+      assert.ok(
+        preview.sanitizedPromptPreview.includes('"mrIid": 88') &&
+          preview.sanitizedPromptPreview.includes('"isReviewFix": true'),
+        'AI prompt preview must embed GitLab MR !88 review fix context inside <untrusted_evidence_json>'
+      );
+
+      const generatedReport = await rep.generateReport({
+        reportDate: '2026-10-19',
+        provider: 'local_rule'
+      });
+
+      const portalItem = generatedReport.items.find((i) => i.projectId === proj.id);
+      assert.ok(portalItem, 'Report item for CustomPortal must exist');
+      assert.ok(
+        portalItem.text.includes('!88') && portalItem.text.includes('code review geri bildirimleri'),
+        `Report item must mention GitLab MR !88 review fix, got: ${portalItem.text}`
+      );
+    } finally {
+      globalThis.fetch = originalFetch2;
+    }
 
     db.close();
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -1172,6 +1289,87 @@ describe('MesAI Core Verification Suite', () => {
       db.close();
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  it('15. Battery & DB optimizations: settings cache isolation, commit diff deduplication, and foreign-key indexes', () => {
+    const db = new MesaiDatabase(':memory:');
+    const repo = new MesaiRepository(db);
+
+    // 1. Verify Migration v4 indexes exist
+    const indexes = db.db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'index'")
+      .all() as Array<{ name: string }>;
+    const indexNames = indexes.map((i) => i.name);
+    assert.ok(
+      indexNames.includes('idx_evidences_source_record_id'),
+      'Migration v4 idx_evidences_source_record_id must exist'
+    );
+    assert.ok(
+      indexNames.includes('idx_activity_links_work_item_id'),
+      'Migration v4 idx_activity_links_work_item_id must exist'
+    );
+
+    // 2. Verify settings cache returns fresh clones and invalidates on updateSettings
+    const s1 = repo.getSettings();
+    s1.globalExclusions.push('mutated_in_memory_only');
+    const s2 = repo.getSettings();
+    assert.ok(
+      !s2.globalExclusions.includes('mutated_in_memory_only'),
+      'Mutating returned settings array must not corrupt internal cache'
+    );
+
+    repo.updateSettings({ zoomPollIntervalSeconds: 45 });
+    assert.equal(repo.getSettings().zoomPollIntervalSeconds, 45);
+
+    // 3. Verify hasCommitWithDiff deduplication check
+    const proj = repo.upsertDiscoveredProject({
+      name: 'OptTest',
+      rootPath: 'C:\\Repos\\OptTest',
+      currentBranch: 'main'
+    });
+    const dedupKey = `git:commit:${proj.id}:deadbeef1234`;
+    assert.equal(repo.hasCommitWithDiff(dedupKey, true), false);
+
+    // Ingest commit without diff first -> expectsDiff=true should still return false so backfill works
+    repo.ingestGitOrFileActivity({
+      projectId: proj.id,
+      projectName: proj.name,
+      sourceType: 'git_commit',
+      dedupKey,
+      externalId: 'deadbeef',
+      branchName: 'main',
+      occurredAtIso: '2026-10-25T10:00:00+03:00',
+      rawTimestampText: '10:00',
+      title: 'OptTest — Commit deadbeef',
+      summary: 'Initial commit without diff',
+      changedFiles: ['src/index.ts'],
+      codeDiff: null
+    });
+    assert.equal(repo.hasCommitWithDiff(dedupKey, false), true);
+    assert.equal(
+      repo.hasCommitWithDiff(dedupKey, true),
+      false,
+      'Commit missing codeDiff must allow backfill'
+    );
+
+    // Backfill codeDiff -> now hasCommitWithDiff(dedupKey, true) must return true
+    repo.ingestGitOrFileActivity({
+      projectId: proj.id,
+      projectName: proj.name,
+      sourceType: 'git_commit',
+      dedupKey,
+      externalId: 'deadbeef',
+      branchName: 'main',
+      occurredAtIso: '2026-10-25T10:00:00+03:00',
+      rawTimestampText: '10:00',
+      title: 'OptTest — Commit deadbeef',
+      summary: 'Initial commit without diff',
+      changedFiles: ['src/index.ts'],
+      codeDiff: 'FILE: src/index.ts\n+ console.log(1);'
+    });
+    assert.equal(repo.hasCommitWithDiff(dedupKey, true), true);
+
+    db.close();
   });
 });
 

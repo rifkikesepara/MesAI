@@ -19,6 +19,7 @@ export class ZoomReaderAdapter {
   private activeProcess: ChildProcess | null = null;
   private isPolling = false;
   private lastSnapshot: ZoomChatSnapshot | null = null;
+  private lastIngestedSnapshotKey: string | null = null;
   private readonly stateFilePath: string;
   private readonly customExePath?: string;
 
@@ -30,6 +31,10 @@ export class ZoomReaderAdapter {
     const baseDir = options?.stateDir ?? process.cwd();
     this.stateFilePath = path.join(baseDir, 'zoom_last_snapshot.json');
     this.customExePath = options?.customExePath;
+  }
+
+  public clearCaches(): void {
+    this.lastIngestedSnapshotKey = null;
   }
 
   public resolveExecutablePath(): string {
@@ -126,7 +131,7 @@ export class ZoomReaderAdapter {
 
     this.isPolling = true;
     try {
-      const stdout = await this.runReaderProcess(exePath, ['--state-file', this.stateFilePath], timeoutMs);
+      const stdout = await this.runReaderProcess(exePath, [], timeoutMs);
       let snapshot: ZoomChatSnapshot;
       try {
         snapshot = JSON.parse(stdout) as ZoomChatSnapshot;
@@ -179,10 +184,33 @@ export class ZoomReaderAdapter {
         };
       }
 
-      // Ingest messages and run matching for newly created activities
-      const ingested = this.repo.ingestZoomSnapshot(snapshot);
-      for (const actId of ingested.newActivityIds) {
-        this.matcher.matchActivityById(actId);
+      // Skip redundant SQLite ingestion if viewport messages are identical to the previous poll
+      const captureDay = (snapshot.capturedAt || attemptAt).slice(0, 10);
+      const msgsSig = (snapshot.messages ?? [])
+        .map(
+          (m) =>
+            `${m.persistentMessageId ?? m.fingerprint ?? ''}|${m.dateGroup ?? ''}|${m.visibleTimestamp ?? ''}|${m.senderResolved ?? m.sender ?? ''}|${m.occurrenceIndexInView ?? 1}|${m.messageType}|${m.text ?? ''}|${m.callRecord?.statusText ?? ''}`
+        )
+        .join('\n');
+      const snapshotKey = `${captureDay}::${snapshot.sessionId ?? ''}::${snapshot.chatName ?? ''}::${snapshot.chatType ?? ''}::${msgsSig}`;
+
+      let ingested: {
+        newMessagesCount: number;
+        updatedMessagesCount: number;
+        newActivityIds: string[];
+      };
+      if (this.lastIngestedSnapshotKey === snapshotKey) {
+        ingested = {
+          newMessagesCount: 0,
+          updatedMessagesCount: snapshot.messages.length,
+          newActivityIds: []
+        };
+      } else {
+        ingested = this.repo.ingestZoomSnapshot(snapshot);
+        for (const actId of ingested.newActivityIds) {
+          this.matcher.matchActivityById(actId);
+        }
+        this.lastIngestedSnapshotKey = snapshotKey;
       }
 
       const prevSync = this.repo.getSyncState('zoom_reader');

@@ -133,10 +133,17 @@ export interface MesaiApi {
   listWorkItems(): Promise<WorkItem[]>;
 
   getDailyReport(reportDate: string): Promise<DailyReport | null>;
-  previewAiPayload(reportDate: string, maxChars?: number, providerOverride?: AIProviderType): Promise<AiPreviewPayload>;
+  previewAiPayload(
+    reportDate: string,
+    maxChars?: number,
+    providerOverride?: AIProviderType,
+    modelOverride?: string,
+    fastLocal?: boolean
+  ): Promise<AiPreviewPayload>;
   generateDailyReport(input: {
     reportDate: string;
     provider: AIProviderType;
+    model?: string;
     userConfirmedRemoteSend?: boolean;
     maxChars?: number;
     promptOverride?: string;
@@ -175,7 +182,7 @@ export interface MesaiApi {
   testIntegrationConnection(service: 'jira' | 'gitlab' | 'jenkins'): Promise<{ ok: boolean; message: string }>;
 
   saveAiApiKey(input: {
-    provider: 'openai' | 'anthropic' | 'custom';
+    provider: 'gemini_cli' | 'openai' | 'anthropic' | 'custom';
     apiKey?: string;
     model?: string;
     customBaseUrl?: string;
@@ -183,7 +190,7 @@ export interface MesaiApi {
   }): Promise<void>;
   testAiConnection(provider: 'openai' | 'anthropic' | 'custom'): Promise<{ ok: boolean; message: string }>;
   fetchAiModels(input: {
-    provider: 'openai' | 'anthropic' | 'custom';
+    provider: 'gemini_cli' | 'openai' | 'anthropic' | 'custom';
     apiKey?: string;
     customBaseUrl?: string;
   }): Promise<{ ok: boolean; models: string[]; error?: string }>;
@@ -208,4 +215,3 @@ export interface MesaiApi {
   onTrackingStateChanged(callback: (isPaused: boolean) => void): () => void;
   openExternalUrl(url: string): Promise<void>;
 }
-

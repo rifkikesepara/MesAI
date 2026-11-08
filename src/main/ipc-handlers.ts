@@ -209,7 +209,14 @@ export function registerIpcHandlers(deps: {
 
   ipcMain.handle(
     IPC_CHANNELS.REPORT_PREVIEW_AI,
-    async (_e, reportDate: unknown, maxChars: unknown, providerOverride: unknown) => {
+    async (
+      _e,
+      reportDate: unknown,
+      maxChars: unknown,
+      providerOverride: unknown,
+      modelOverride: unknown,
+      fastLocal: unknown
+    ) => {
       const date = assertDateYmd(reportDate);
       const parsedMax =
         typeof maxChars === 'number' && !Number.isNaN(maxChars) ? maxChars : undefined;
@@ -218,7 +225,9 @@ export function registerIpcHandlers(deps: {
         ['local_rule', 'gemini_cli', 'openai', 'anthropic', 'custom'].includes(providerOverride)
           ? (providerOverride as AIProviderType)
           : undefined;
-      return reportService.previewAiPayload(date, parsedMax, parsedProvider);
+      const parsedModel =
+        typeof modelOverride === 'string' && modelOverride.trim() ? modelOverride.trim() : undefined;
+      return reportService.previewAiPayload(date, parsedMax, parsedProvider, parsedModel, Boolean(fastLocal));
     }
   );
 
@@ -229,6 +238,7 @@ export function registerIpcHandlers(deps: {
     const obj = input as {
       reportDate: string;
       provider: AIProviderType;
+      model?: string;
       userConfirmedRemoteSend?: boolean;
       maxChars?: number;
       promptOverride?: string;
@@ -236,6 +246,7 @@ export function registerIpcHandlers(deps: {
     const reportDate = assertDateYmd(obj.reportDate);
     const validProviders: AIProviderType[] = ['local_rule', 'gemini_cli', 'openai', 'anthropic', 'custom'];
     const provider: AIProviderType = validProviders.includes(obj.provider) ? obj.provider : 'local_rule';
+    const model = typeof obj.model === 'string' && obj.model.trim() ? obj.model.trim() : undefined;
     const maxChars =
       typeof obj.maxChars === 'number' && !Number.isNaN(obj.maxChars) ? obj.maxChars : undefined;
     const promptOverride =
@@ -245,6 +256,7 @@ export function registerIpcHandlers(deps: {
     return reportService.generateReport({
       reportDate,
       provider,
+      model,
       userConfirmedRemoteSend: Boolean(obj.userConfirmedRemoteSend),
       maxChars,
       promptOverride,
@@ -403,13 +415,13 @@ export function registerIpcHandlers(deps: {
       throw new Error('Geçersiz AI entegrasyon verisi.');
     }
     const obj = input as {
-      provider: 'openai' | 'anthropic' | 'custom';
+      provider: 'gemini_cli' | 'openai' | 'anthropic' | 'custom';
       apiKey?: string;
       model?: string;
       customBaseUrl?: string;
       mode?: 'auto' | 'cli' | 'api';
     };
-    if (!['openai', 'anthropic', 'custom'].includes(obj.provider)) {
+    if (!['gemini_cli', 'openai', 'anthropic', 'custom'].includes(obj.provider)) {
       throw new Error('Geçersiz AI sağlayıcısı.');
     }
     integrations.saveAiCredential(obj);
@@ -427,11 +439,11 @@ export function registerIpcHandlers(deps: {
       throw new Error('Geçersiz istek.');
     }
     const obj = input as {
-      provider: 'openai' | 'anthropic' | 'custom';
+      provider: 'gemini_cli' | 'openai' | 'anthropic' | 'custom';
       apiKey?: string;
       customBaseUrl?: string;
     };
-    if (!['openai', 'anthropic', 'custom'].includes(obj.provider)) {
+    if (!['gemini_cli', 'openai', 'anthropic', 'custom'].includes(obj.provider)) {
       throw new Error('Geçersiz AI sağlayıcısı.');
     }
     return integrations.fetchAiModels(obj);
@@ -478,6 +490,8 @@ export function registerIpcHandlers(deps: {
 
   ipcMain.handle(IPC_CHANNELS.DATA_CLEAR_ALL, async () => {
     repo.clearAllData();
+    gitWatcher.clearCaches();
+    zoomAdapter.clearCaches();
   });
 
   ipcMain.handle(IPC_CHANNELS.UPDATER_GET_STATE, async () => {

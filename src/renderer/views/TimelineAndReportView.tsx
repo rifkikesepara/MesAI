@@ -544,6 +544,49 @@ export const DailyReportView: React.FC<{
   const [newItemStatus, setNewItemStatus] = useState<ActivityStatus>('completed');
   const [newItemProjectId, setNewItemProjectId] = useState<string>('');
   const [customPrompt, setCustomPrompt] = useState('');
+  const [syncingPreviewContext, setSyncingPreviewContext] = useState(false);
+
+  const [selectedModel, setSelectedModel] = useState<string>('');
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [loadingModels, setLoadingModels] = useState<boolean>(false);
+  const [showManualModel, setShowManualModel] = useState<boolean>(false);
+
+  const getSavedModelForProvider = (prov: AIProviderType, s: AppSettings | null): string => {
+    if (prov === 'gemini_cli') return s?.aiGeminiModel || 'gemini-4-argon-medium';
+    if (prov === 'openai') return s?.aiOpenaiModel || s?.aiModel || 'gpt-6.1-sol';
+    if (prov === 'anthropic') return s?.aiAnthropicModel || s?.aiModel || 'claude-3-5-sonnet-20241022';
+    if (prov === 'custom') return s?.aiCustomModel || s?.aiModel || 'llama3.2';
+    return '';
+  };
+
+  const loadModelsForProvider = async (prov: AIProviderType, currentSettings: AppSettings | null) => {
+    if (prov === 'local_rule') {
+      setAvailableModels([]);
+      setSelectedModel('');
+      return;
+    }
+    const saved = getSavedModelForProvider(prov, currentSettings);
+    setSelectedModel((prev) => prev || saved);
+    setLoadingModels(true);
+    try {
+      const res = await window.mesaiApi.fetchAiModels({ provider: prov });
+      const fetched = res.ok && Array.isArray(res.models) ? res.models : [];
+      const merged = Array.from(new Set([...(saved ? [saved] : []), ...fetched]));
+      setAvailableModels(merged);
+      if (saved && merged.includes(saved)) {
+        setSelectedModel(saved);
+      } else if (merged.length > 0) {
+        setSelectedModel(merged[0]);
+      }
+    } catch {
+      if (saved) {
+        setAvailableModels([saved]);
+        setSelectedModel(saved);
+      }
+    } finally {
+      setLoadingModels(false);
+    }
+  };
 
   useEffect(() => {
     void window.mesaiApi.getSettings().then((s) => {
@@ -551,11 +594,42 @@ export const DailyReportView: React.FC<{
       if (s.reportMaxChars && s.reportMaxChars >= 120) {
         setMaxChars(s.reportMaxChars);
       }
-      if (s.aiProvider) {
-        setProvider(s.aiProvider);
-      }
+      const initialProv = s.aiProvider || 'local_rule';
+      setProvider(initialProv);
+      const initialModel = getSavedModelForProvider(initialProv, s);
+      setSelectedModel(initialModel);
+      void loadModelsForProvider(initialProv, s);
     });
   }, []);
+
+  const handleProviderChange = async (nextProv: AIProviderType) => {
+    setProvider(nextProv);
+    setShowManualModel(false);
+    const nextSavedModel = getSavedModelForProvider(nextProv, settings);
+    setSelectedModel(nextSavedModel);
+    void loadModelsForProvider(nextProv, settings);
+    try {
+      const updated = await window.mesaiApi.updateSettings({ aiProvider: nextProv });
+      setSettings(updated);
+    } catch {
+      // non-blocking
+    }
+  };
+
+  const handleModelChange = async (nextModel: string) => {
+    setSelectedModel(nextModel);
+    if (provider === 'local_rule' || !nextModel.trim()) return;
+    try {
+      await window.mesaiApi.saveAiApiKey({
+        provider,
+        model: nextModel.trim()
+      });
+      const updated = await window.mesaiApi.getSettings();
+      setSettings(updated);
+    } catch {
+      // non-blocking
+    }
+  };
 
   const loadReport = async (date: string) => {
     setLoading(true);
@@ -563,9 +637,6 @@ export const DailyReportView: React.FC<{
     try {
       const r = await window.mesaiApi.getDailyReport(date);
       setReport(r);
-      if (r?.maxChars && r.maxChars >= 120) {
-        setMaxChars(r.maxChars);
-      }
     } catch (err) {
       setErrorMsg((err as Error).message);
     } finally {
@@ -575,6 +646,10 @@ export const DailyReportView: React.FC<{
 
   useEffect(() => {
     void loadReport(reportDate);
+    // Warm up Jira & GitLab MR cache for this date in the background so modal opens with fresh data
+    void window.mesaiApi
+      .previewAiPayload(reportDate, undefined, undefined, undefined, false)
+      .catch(() => undefined);
   }, [reportDate]);
 
   const handleGenerateClick = async () => {
@@ -583,9 +658,30 @@ export const DailyReportView: React.FC<{
     const validMaxChars = Math.max(120, Number(maxChars) || 1000);
 
     if (provider !== 'local_rule') {
-      const preview = await window.mesaiApi.previewAiPayload(reportDate, validMaxChars, provider);
-      setAiPreview(preview);
-      setCustomPrompt(preview.sanitizedPromptPreview);
+      const modelParam = selectedModel.trim() || undefined;
+      // 1. Open modal immediately using local SQLite + in-memory cache (0ms network wait)
+      const fastPreview = await window.mesaiApi.previewAiPayload(
+        reportDate,
+        validMaxChars,
+        provider,
+        modelParam,
+        true
+      );
+      setAiPreview(fastPreview);
+      setCustomPrompt(fastPreview.sanitizedPromptPreview);
+
+      // 2. Refresh live Jira / GitLab MR review context in the background without blocking modal
+      setSyncingPreviewContext(true);
+      void window.mesaiApi
+        .previewAiPayload(reportDate, validMaxChars, provider, modelParam, false)
+        .then((enriched) => {
+          setAiPreview((current) => (current ? enriched : null));
+          setCustomPrompt((prev) =>
+            prev === fastPreview.sanitizedPromptPreview ? enriched.sanitizedPromptPreview : prev
+          );
+        })
+        .catch(() => undefined)
+        .finally(() => setSyncingPreviewContext(false));
       return;
     }
 
@@ -615,6 +711,7 @@ export const DailyReportView: React.FC<{
       const generated = await window.mesaiApi.generateDailyReport({
         reportDate,
         provider: selectedProvider,
+        model: selectedProvider !== 'local_rule' ? selectedModel.trim() || undefined : undefined,
         userConfirmedRemoteSend: confirmedRemote,
         maxChars: validMaxChars,
         promptOverride: promptOverride?.trim() || undefined
@@ -789,23 +886,83 @@ export const DailyReportView: React.FC<{
             </label>
             <select
               className="select"
-              style={{ width: '290px' }}
+              style={{ width: '250px' }}
               value={provider}
-              onChange={(e) => setProvider(e.target.value as AIProviderType)}
+              onChange={(e) => void handleProviderChange(e.target.value as AIProviderType)}
             >
-              <option value="local_rule">Yerel Kurallı Motor (Varsayılan — %100 Çevrimdışı)</option>
-              <option value="gemini_cli">Antigravity / Gemini CLI (agy — Veri Önizlemeli)</option>
+              <option value="local_rule">Yerel Kurallı Motor (%100 Çevrimdışı)</option>
+              <option value="gemini_cli">Antigravity / Gemini CLI (agy)</option>
               <option value="openai">
-                OpenAI / Codex ({settings?.aiOpenaiMode === 'api' ? 'API' : 'Yerel Codex CLI'} — {settings?.aiOpenaiModel || 'gpt-6.1-sol'})
+                OpenAI / Codex ({settings?.aiOpenaiMode === 'api' ? 'Uzak API' : 'Yerel Codex CLI'})
               </option>
               <option value="anthropic">
-                Anthropic Claude ({settings?.aiAnthropicMode === 'api' ? 'API' : 'Yerel Claude CLI'} — {settings?.aiAnthropicModel || 'claude-3-5-sonnet'})
+                Anthropic Claude ({settings?.aiAnthropicMode === 'api' ? 'Uzak API' : 'Yerel Claude CLI'})
               </option>
               <option value="custom">
-                Özel / Yerel LLM ({settings?.aiCustomMode === 'api' ? 'API' : 'Ollama CLI'} — {settings?.aiCustomModel || settings?.aiCustomBaseUrl || 'Yerel'})
+                Özel / Yerel LLM ({settings?.aiCustomMode === 'api' ? 'Uzak API' : 'Ollama CLI'})
               </option>
             </select>
           </div>
+
+          {provider !== 'local_rule' && (
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
+                <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block' }}>
+                  AI Modeli {loadingModels ? '(Yükleniyor...)' : ''}
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setShowManualModel((prev) => !prev)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: 'var(--accent)',
+                    fontSize: '11px',
+                    cursor: 'pointer',
+                    padding: 0,
+                    textDecoration: 'underline'
+                  }}
+                >
+                  {showManualModel ? 'Listeden Seç' : 'Manuel Yaz'}
+                </button>
+              </div>
+              <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                {!showManualModel && availableModels.length > 0 ? (
+                  <select
+                    className="select"
+                    style={{ width: '230px' }}
+                    value={availableModels.includes(selectedModel) ? selectedModel : availableModels[0]}
+                    onChange={(e) => void handleModelChange(e.target.value)}
+                  >
+                    {availableModels.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    className="input"
+                    style={{ width: '230px' }}
+                    placeholder="Model ID (ör: gpt-4o-mini)"
+                    value={selectedModel}
+                    onChange={(e) => setSelectedModel(e.target.value)}
+                    onBlur={(e) => void handleModelChange(e.target.value)}
+                  />
+                )}
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  disabled={loadingModels}
+                  onClick={() => void loadModelsForProvider(provider, settings)}
+                  title="Seçili sağlayıcının kullanılabilir modellerini yenile"
+                  style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px' }}
+                >
+                  <RefreshIcon size={13} />
+                </button>
+              </div>
+            </div>
+          )}
 
           <div style={{ marginTop: '18px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
             <button
@@ -1297,12 +1454,12 @@ export const DailyReportView: React.FC<{
           <div className="modal-panel" style={{ maxWidth: '920px', width: '95%' }}>
             <h3 style={{ marginTop: 0 }}>
               {provider === 'gemini_cli'
-                ? 'Gemini CLI'
+                ? `Antigravity / Gemini CLI (${aiPreview.model || selectedModel || 'gemini-4-argon-medium'})`
                 : provider === 'openai'
-                  ? `OpenAI (${settings?.aiOpenaiMode === 'api' ? 'API' : 'Yerel Codex CLI'} — ${settings?.aiOpenaiModel || 'gpt-6.1-sol'})`
+                  ? `OpenAI (${settings?.aiOpenaiMode === 'api' ? 'API' : 'Yerel Codex CLI'} — ${aiPreview.model || selectedModel || 'gpt-6.1-sol'})`
                   : provider === 'anthropic'
-                    ? `Anthropic Claude (${settings?.aiAnthropicMode === 'api' ? 'API' : 'Yerel Claude CLI'} — ${settings?.aiAnthropicModel || 'claude-3-5-sonnet'})`
-                    : `Özel LLM (${settings?.aiCustomMode === 'api' ? 'API' : 'Ollama CLI'} — ${settings?.aiCustomModel || 'Yerel'})`}{' '}
+                    ? `Anthropic Claude (${settings?.aiAnthropicMode === 'api' ? 'API' : 'Yerel Claude CLI'} — ${aiPreview.model || selectedModel || 'claude-3-5-sonnet'})`
+                    : `Özel LLM (${settings?.aiCustomMode === 'api' ? 'API' : 'Ollama CLI'} — ${aiPreview.model || selectedModel || 'Yerel'})`}{' '}
               — Gönderilecek Prompt ve Kanıt Önizlemesi
             </h3>
             <div className="alert-banner alert-warning">
@@ -1329,8 +1486,13 @@ export const DailyReportView: React.FC<{
                 fontSize: '12px'
               }}
             >
-              <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>
-                Yapay Zekaya Gönderilecek Prompt Metni:
+              <span style={{ fontWeight: 600, color: 'var(--text-secondary)', display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+                <span>Yapay Zekaya Gönderilecek Prompt Metni:</span>
+                {syncingPreviewContext && (
+                  <span className="badge badge-info" style={{ fontSize: '10.5px', fontWeight: 500 }}>
+                    ⟳ Jira / GitLab MR bağlamı güncelleniyor...
+                  </span>
+                )}
               </span>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <span style={{ color: 'var(--text-muted)' }}>
@@ -1389,7 +1551,13 @@ export const DailyReportView: React.FC<{
               </button>
               <button
                 className="btn btn-primary"
-                onClick={() => executeGenerate(provider, true, customPrompt)}
+                onClick={() =>
+                  executeGenerate(
+                    provider,
+                    true,
+                    customPrompt !== aiPreview.sanitizedPromptPreview ? customPrompt : undefined
+                  )
+                }
               >
                 {customPrompt !== aiPreview.sanitizedPromptPreview ? 'Düzenlenen Prompt' : 'Onayla'} ve{' '}
                 {provider === 'gemini_cli'

@@ -190,5 +190,13 @@ export const MIGRATIONS: Migration[] = [
     upSql: `
       ALTER TABLE daily_reports ADD COLUMN excluded_jira_keys_json TEXT NOT NULL DEFAULT '[]';
     `
+  },
+  {
+    version: 4,
+    name: '004_add_missing_foreign_key_indexes',
+    upSql: `
+      CREATE INDEX IF NOT EXISTS idx_evidences_source_record_id ON evidences(source_record_id);
+      CREATE INDEX IF NOT EXISTS idx_activity_links_work_item_id ON activity_links(work_item_id);
+    `
   }
 ];

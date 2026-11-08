@@ -2,7 +2,14 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { Activity, ActivityCategory, ActivityStatus, AIProviderType, ReportProgressLog } from '../../shared/types';
+import type {
+  Activity,
+  ActivityCategory,
+  ActivityStatus,
+  AIProviderType,
+  GitLabMrReviewContext,
+  ReportProgressLog
+} from '../../shared/types';
 
 export function getNowHhmmss(): string {
   const now = new Date();
@@ -30,7 +37,8 @@ export interface AIProvider {
     signal?: AbortSignal,
     jiraContextMap?: Record<string, string>,
     promptOverride?: string,
-    onProgress?: (log: ReportProgressLog) => void
+    onProgress?: (log: ReportProgressLog) => void,
+    gitlabMrContextMap?: Record<string, GitLabMrReviewContext>
   ): Promise<GeneratedDraftItem[]>;
 }
 
@@ -441,6 +449,7 @@ function synthesizeHighEffortDevelopmentProse(input: {
   displayProj: string;
   jiraKey: string | null;
   jiraContext: string | null;
+  gitlabMrReview?: GitLabMrReviewContext | null;
   hasCommits: boolean;
   hasFileOrWt: boolean;
   hasMergeCommit: boolean;
@@ -453,6 +462,7 @@ function synthesizeHighEffortDevelopmentProse(input: {
   const {
     displayProj,
     jiraContext,
+    gitlabMrReview,
     hasCommits,
     hasFileOrWt,
     hasMergeCommit,
@@ -542,6 +552,22 @@ function synthesizeHighEffortDevelopmentProse(input: {
       ? `${techLayers.join(', ')} katmanlarında`
       : 'ekran, iş mantığı ve doğrulama katmanlarında';
 
+  const isCommitReviewFix = cleanCommitMessages.some((m) => {
+    const lower = m.toLowerCase();
+    return (
+      lower.includes('review') ||
+      lower.includes('code review') ||
+      lower.includes('mr review') ||
+      lower.includes('revizyon') ||
+      lower.includes('geri bildirim') ||
+      lower.includes('feedback') ||
+      lower.includes('yorum') ||
+      lower.includes('fix review')
+    );
+  });
+  const isGitLabMrReviewFix = Boolean(gitlabMrReview?.isReviewFix);
+  const isReviewFix = isCommitReviewFix || isGitLabMrReviewFix;
+
   const sentences: string[] = [];
 
   if (hasCommits) {
@@ -559,39 +585,45 @@ function synthesizeHighEffortDevelopmentProse(input: {
       );
     }
 
-    if (touchedSharedLib) {
+    if (touchedSharedLib && !isReviewFix) {
       sentences.push(
         'Ortak component ve veri akışı değişiklikleri için bam-shared-lib projesinde gerekli güncellemeler yapılarak uçtan uca testlerin ardından MR açıldı.'
       );
-    } else {
-      const isReviewFix = cleanCommitMessages.some((m) => {
-        const lower = m.toLowerCase();
-        return (
-          lower.includes('review') ||
-          lower.includes('code review') ||
-          lower.includes('mr review') ||
-          lower.includes('revizyon') ||
-          lower.includes('geri bildirim') ||
-          lower.includes('feedback') ||
-          lower.includes('yorum') ||
-          lower.includes('fix review')
-        );
-      });
-
-      if (isReviewFix) {
-        sentences.push(
-          'Code review ve ekip içi inceleme geri bildirimleri doğrultusunda ilgili bileşenlerdeki tespitler giderilerek MR revizyonları tamamlandı ve güncel branch doğrulandı.'
-        );
-      } else if (hasMergeCommit || hasCommits) {
-        sentences.push(
-          'Süreç uçtan uca test edilerek ekranların, hata durumlarının ve kullanıcı akışlarının işleyişi doğrulandı; değişiklikler için proje MR’ı açıldı.'
-        );
-      }
+    } else if (isReviewFix) {
+      const mrLabel = gitlabMrReview?.mrIid ? `MR (!${gitlabMrReview.mrIid})` : 'MR';
+      const reviewNoteDetail =
+        gitlabMrReview && gitlabMrReview.reviewerNotes.length > 0
+          ? ` (${gitlabMrReview.reviewerNotes
+              .slice(0, 2)
+              .map((n) => n.replace(/^\[[^\]]+\]\s*/, '').replace(/\s*\(Çözüldü\)$/i, '').replace(/\.+$/, ''))
+              .join('; ')})`
+          : '';
+      sentences.push(
+        `Açılan ${mrLabel} üzerindeki code review ve ekip içi inceleme geri bildirimleri${reviewNoteDetail} doğrultusunda ilgili bileşenlerdeki tespitler giderilerek MR revizyonları tamamlandı ve güncel branch doğrulandı.`
+      );
+    } else if (hasMergeCommit || hasCommits) {
+      sentences.push(
+        'Süreç uçtan uca test edilerek ekranların, hata durumlarının ve kullanıcı akışlarının işleyişi doğrulandı; değişiklikler için proje MR’ı açıldı.'
+      );
     }
   } else if (hasFileOrWt) {
-    sentences.push(
-      `${displayProj} kapsamında ${compList} bileşenleri üzerinde teknik analiz yapılarak ${layerText} geliştirme ve doğrulama çalışmaları yürütüldü.`
-    );
+    if (isReviewFix) {
+      const mrLabel = gitlabMrReview?.mrIid ? `MR (!${gitlabMrReview.mrIid})` : 'MR';
+      const reviewNoteDetail =
+        gitlabMrReview && gitlabMrReview.reviewerNotes.length > 0
+          ? ` (${gitlabMrReview.reviewerNotes
+              .slice(0, 2)
+              .map((n) => n.replace(/^\[[^\]]+\]\s*/, '').replace(/\s*\(Çözüldü\)$/i, '').replace(/\.+$/, ''))
+              .join('; ')})`
+          : '';
+      sentences.push(
+        `${displayProj} kapsamında açılan ${mrLabel} üzerindeki code review geri bildirimleri${reviewNoteDetail} doğrultusunda ${compList} bileşenlerinde ve ${layerText} MR review düzeltme çalışmaları yürütüldü.`
+      );
+    } else {
+      sentences.push(
+        `${displayProj} kapsamında ${compList} bileşenleri üzerinde teknik analiz yapılarak ${layerText} geliştirme ve doğrulama çalışmaları yürütüldü.`
+      );
+    }
     if (touchedSharedLib) {
       sentences.push(
         'Ortak bileşen standartlarıyla uyumluluk için bam-shared-lib üzerindeki karşılıkları incelenerek gerekli entegrasyon adımları kurgulandı.'
@@ -740,7 +772,8 @@ export class LocalRuleProvider implements AIProvider {
     _signal?: AbortSignal,
     jiraContextMap: Record<string, string> = {},
     _promptOverride?: string,
-    onProgress?: (log: ReportProgressLog) => void
+    onProgress?: (log: ReportProgressLog) => void,
+    gitlabMrContextMap: Record<string, GitLabMrReviewContext> = {}
   ): Promise<GeneratedDraftItem[]> {
     onProgress?.({ timestamp: getNowHhmmss(), step: 'gathering', message: `Yerel kurallı motor: ${rawActivities.length} aktivite işleniyor...` });
     // STRICT DATE FILTER: Only include activities whose occurredAtIso local date matches reportDate
@@ -881,10 +914,16 @@ export class LocalRuleProvider implements AIProvider {
       }
 
       const jiraContext = jiraKey ? jiraContextMap[jiraKey] ?? null : null;
+      const gitlabMrReview =
+        (jiraKey ? gitlabMrContextMap[`jira:${jiraKey.toUpperCase()}`] : undefined) ??
+        (projectId ? gitlabMrContextMap[`id:${projectId}`] : undefined) ??
+        distinctProjNames.map((p) => gitlabMrContextMap[`proj:${p}`]).find(Boolean) ??
+        null;
       const finalProse = synthesizeHighEffortDevelopmentProse({
         displayProj,
         jiraKey,
         jiraContext,
+        gitlabMrReview,
         hasCommits,
         hasFileOrWt,
         hasMergeCommit,
@@ -1011,7 +1050,8 @@ export function buildSanitizedAiPrompt(
   reportDate: string,
   rawActivities: Activity[],
   maxChars = 1000,
-  jiraContextMap: Record<string, string> = {}
+  jiraContextMap: Record<string, string> = {},
+  gitlabMrContextMap: Record<string, GitLabMrReviewContext> = {}
 ): string {
   // Strictly filter to reportDate
   const activities = rawActivities.filter(
@@ -1172,12 +1212,28 @@ export function buildSanitizedAiPrompt(
       projList.length <= 1
         ? projList[0] ?? 'İlgili Süreç'
         : `${projList.slice(0, -1).join(', ')} ve ${projList[projList.length - 1]}`;
+    const mrCtx =
+      jiraKeyList.map((k) => gitlabMrContextMap[`jira:${k.toUpperCase()}`]).find(Boolean) ??
+      (g.projectId ? gitlabMrContextMap[`id:${g.projectId}`] : undefined) ??
+      projList.map((p) => gitlabMrContextMap[`proj:${p}`]).find(Boolean) ??
+      null;
     return {
       projectId: g.projectId,
       projectName: combinedProjName,
       workItemId: g.workItemId,
       jiraKeys: jiraKeyList,
       jiraContext: jiraContextList.join(' || ') || null,
+      gitlabMrReview: mrCtx
+        ? {
+            mrIid: mrCtx.mrIid,
+            mrTitle: mrCtx.mrTitle,
+            mrState: mrCtx.mrState,
+            sourceBranch: mrCtx.sourceBranch,
+            isReviewFix: mrCtx.isReviewFix,
+            reviewedFiles: mrCtx.reviewedFiles,
+            reviewerNotes: mrCtx.reviewerNotes
+          }
+        : null,
       status: g.status,
       commits: g.commits,
       changedComponents: Array.from(g.changedComponents),
@@ -1201,7 +1257,7 @@ export function buildSanitizedAiPrompt(
     otherActivities: otherRecords
   };
 
-  const targetBudget = Math.max(120, Math.floor(maxChars * 0.92));
+  const targetBudget = Math.max(120, Math.floor(maxChars));
 
   const instructions = [
     `Tarih: ${reportDate}`,
@@ -1225,6 +1281,10 @@ export function buildSanitizedAiPrompt(
     '- Zoom sohbetlerinde geçen bir teknik problem/tartışma ile Git kod geliştirmesi aynı bileşene veya konuya (`changedComponents`, dosya adları veya Jira anahtarı) aitse, bunları birbirinden kopuk iki ayrı madde yapmak yerine TEK bir akıcı mühendislik maddesinde birleştir:',
     '  * Format: [Problem/Tespit (Zoom)] + [Teknik Çözüm (Git Diff/Commit)] + [Doğrulama ve MR (Git/Zoom)]',
     '- Zoom sohbetlerinde ekip arkadaşlarının bahsettiği ancak geliştiriciye atanmamış olan veya Git aktivitesi bulunmayan yabancı Jira biletlerini KESİNLİKLE geliştiricinin işi gibi gösterme ve madde metnine Jira numarası olarak bağlama.',
+    '',
+    'KRİTİK KURAL 4 — GITLAB MR REVIEW DÜZELTMELERİ (gitlabMrReview):',
+    '- `developmentTasks` içindeki bir görevde `gitlabMrReview` nesnesi doluysa ve `isReviewFix: true` ise (veya `reviewerNotes` / `reviewedFiles` mevcutsa), o gün yapılan Git commit ve dosya değişikliklerinin açılmış olan Merge Request üzerindeki code review bulgularını/geri bildirimlerini düzeltmek amacıyla yapıldığını mutlaka rapora yaz.',
+    '- Hangi bileşen veya dosyalarda (`reviewedFiles`, `changedComponents`) hangi inceleme bulgularının (`reviewerNotes` ve `codeDiffSummary`) giderilerek MR revizyonlarının tamamlandığını kurumsal mühendislik diliyle açıkla.',
     '',
     'YAZIM FORMATI VE ÖRNEK ÜSLUP:',
     '- Maddelerin başına "[Proje - BAM-123]" gibi köşeli parantezler, Jira numaraları veya ham dosya uzantıları EKLEME.',
@@ -1327,12 +1387,26 @@ export function validateAndParseAiReportJson(
  */
 export class GeminiCliProvider implements AIProvider {
   public readonly name = 'gemini_cli' as const;
+  private model?: string;
 
   constructor(
-    private readonly customRunner?: (prompt: string, signal?: AbortSignal) => Promise<string>
-  ) {}
+    private readonly customRunner?: (prompt: string, signal?: AbortSignal) => Promise<string>,
+    model?: string
+  ) {
+    this.model = model?.trim() || undefined;
+  }
 
-  private resolveAgyCliPath(): string | null {
+  public setModel(model?: string): void {
+    this.model = model?.trim() || undefined;
+  }
+
+  public getEffectiveModel(): string | undefined {
+    const m = this.model?.trim();
+    if (!m || m.toLowerCase() === 'auto') return undefined;
+    return m;
+  }
+
+  public static resolveAgyCliPathStatic(): string | null {
     const candidates = [
       path.join(os.homedir(), '.gemini', 'bin', process.platform === 'win32' ? 'agy.exe' : 'agy'),
       path.join(process.env.LOCALAPPDATA || '', 'agy', 'bin', process.platform === 'win32' ? 'agy.exe' : 'agy')
@@ -1341,6 +1415,49 @@ export class GeminiCliProvider implements AIProvider {
       if (fs.existsSync(c)) return c;
     }
     return null;
+  }
+
+  private resolveAgyCliPath(): string | null {
+    return GeminiCliProvider.resolveAgyCliPathStatic();
+  }
+
+  public async fetchAvailableModels(): Promise<{ ok: boolean; models: string[]; error?: string }> {
+    const fallbackModels = [
+      'gemini-4-argon-medium',
+      'gemini-4-argon-high',
+      'gemini-4-argon-low',
+      'gemini-3.8-flash-high',
+      'gemini-3.8-flash-medium',
+      'gemini-3.8-flash-low',
+      'claude-sonnet-5-5-medium',
+      'claude-sonnet-5-5-high',
+      'claude-sonnet-5-5-low',
+      'claude-opus-5-5-medium',
+      'claude-opus-5-5-high',
+      'claude-opus-5-5-low',
+      'gpt-oss-120b-medium'
+    ];
+    const agyPath = this.resolveAgyCliPath();
+    if (!agyPath) {
+      return { ok: true, models: fallbackModels };
+    }
+    return new Promise((resolve) => {
+      execFile(agyPath, ['models'], { timeout: 6_000, windowsHide: true }, (err, stdout) => {
+        if (err || !stdout) {
+          resolve({ ok: true, models: fallbackModels });
+          return;
+        }
+        const parsed: string[] = [];
+        for (const rawLine of stdout.split(/\r?\n/)) {
+          const line = rawLine.trim();
+          const m = /^([a-z0-9._-]+)\t/i.exec(line);
+          if (m && m[1]) {
+            parsed.push(m[1]);
+          }
+        }
+        resolve({ ok: true, models: parsed.length > 0 ? parsed : fallbackModels });
+      });
+    });
   }
 
   public async checkHealth(): Promise<{ installed: boolean; version: string | null; error?: string }> {
@@ -1384,9 +1501,15 @@ export class GeminiCliProvider implements AIProvider {
     signal?: AbortSignal,
     jiraContextMap: Record<string, string> = {},
     promptOverride?: string,
-    onProgress?: (log: ReportProgressLog) => void
+    onProgress?: (log: ReportProgressLog) => void,
+    gitlabMrContextMap: Record<string, GitLabMrReviewContext> = {}
   ): Promise<GeneratedDraftItem[]> {
-    onProgress?.({ timestamp: getNowHhmmss(), step: 'prompt_prep', message: 'Güvenli AI promptu hazırlandı, agy / Gemini CLI sürecine gönderiliyor...' });
+    const effectiveModel = this.getEffectiveModel();
+    onProgress?.({
+      timestamp: getNowHhmmss(),
+      step: 'prompt_prep',
+      message: `Güvenli AI promptu hazırlandı, agy / Gemini CLI sürecine (${effectiveModel || 'varsayılan model'}) gönderiliyor...`
+    });
     const activities = rawActivities.filter(
       (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
     );
@@ -1394,7 +1517,7 @@ export class GeminiCliProvider implements AIProvider {
 
     const prompt = promptOverride?.trim()
       ? promptOverride.trim()
-      : buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap);
+      : buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap, gitlabMrContextMap);
     const validEvidenceIds = new Set<string>(
       activities.flatMap((a) => (a.evidences ?? []).map((e) => e.id))
     );
@@ -1422,6 +1545,7 @@ export class GeminiCliProvider implements AIProvider {
       return this.invokeAgyCli(agyPath, prompt, timeoutMs, signal, onProgress);
     }
 
+    const effectiveModel = this.getEffectiveModel();
     try {
       return await this.invokeGeminiNodeCli(
         [
@@ -1430,6 +1554,7 @@ export class GeminiCliProvider implements AIProvider {
           'none',
           '--allowed-mcp-server-names',
           'none',
+          ...(effectiveModel ? ['-m', effectiveModel] : []),
           '-p',
           'Yukarıdaki <untrusted_evidence_json> verilerine göre yalnızca istenen JSON nesnesini döndür.'
         ],
@@ -1461,16 +1586,28 @@ export class GeminiCliProvider implements AIProvider {
         ? prompt.slice(0, maxAgyArgPromptLength) + '\n\n[Prompt truncated to stay within OS command-line buffer limits]'
         : prompt;
 
+    const effectiveModel = this.getEffectiveModel();
+    const effortMatch = effectiveModel ? /-(low|medium|high|xhigh|max)$/i.exec(effectiveModel) : null;
+    const effortLevel = effortMatch ? effortMatch[1].toLowerCase() : 'low';
+    const agyArgs = [
+      '-p',
+      safePrompt,
+      '--disable-slash-commands',
+      '--effort',
+      effortLevel,
+      ...(effectiveModel ? ['--model', effectiveModel] : [])
+    ];
+
     return new Promise((resolve, reject) => {
       onProgress?.({
         timestamp: getNowHhmmss(),
         step: 'ai_call',
-        message: 'Antigravity CLI (agy) süreci başlatıldı. Model çıkarımı bekleniyor...'
+        message: `Antigravity CLI (agy) süreci başlatıldı (${effectiveModel || 'varsayılan model'}). Model çıkarımı bekleniyor...`
       });
 
       const child = execFile(
         agyExecutable,
-        ['-p', safePrompt, '--disable-slash-commands', '--effort', 'low'],
+        agyArgs,
         {
           cwd: os.tmpdir(),
           timeout: timeoutMs,
@@ -1680,7 +1817,7 @@ export class CodexCliProvider implements AIProvider {
 
   public getEffectiveModel(): string | undefined {
     const m = this.config.model?.trim();
-    if (!m) return undefined;
+    if (!m || m.toLowerCase() === 'auto') return undefined;
     const lower = m.toLowerCase();
     if (lower === '6.1sol' || lower === '6.1-sol' || lower === 'gpt-6.1' || lower === 'gpt-6.1sol') return 'gpt-6.1-sol';
     return m;
@@ -1693,9 +1830,15 @@ export class CodexCliProvider implements AIProvider {
     signal?: AbortSignal,
     jiraContextMap: Record<string, string> = {},
     promptOverride?: string,
-    onProgress?: (log: ReportProgressLog) => void
+    onProgress?: (log: ReportProgressLog) => void,
+    gitlabMrContextMap: Record<string, GitLabMrReviewContext> = {}
   ): Promise<GeneratedDraftItem[]> {
-    onProgress?.({ timestamp: getNowHhmmss(), step: 'prompt_prep', message: 'Codex CLI sürecine bağlanılıyor...' });
+    const effectiveModel = this.getEffectiveModel();
+    onProgress?.({
+      timestamp: getNowHhmmss(),
+      step: 'prompt_prep',
+      message: `Codex CLI sürecine (${effectiveModel || 'varsayılan model'}) bağlanılıyor...`
+    });
     const activities = rawActivities.filter(
       (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
     );
@@ -1703,7 +1846,7 @@ export class CodexCliProvider implements AIProvider {
 
     const prompt = promptOverride?.trim()
       ? promptOverride.trim()
-      : buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap);
+      : buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap, gitlabMrContextMap);
     const validEvidenceIds = new Set<string>(
       activities.flatMap((a) => (a.evidences ?? []).map((e) => e.id))
     );
@@ -1721,7 +1864,16 @@ export class CodexCliProvider implements AIProvider {
       throw new Error('Yerel Codex CLI (codex.exe) bulunamadı. Lütfen Codex CLI kurun veya API Key kullanın.');
     }
 
-    const effectiveModel = this.getEffectiveModel();
+    const rawModel = this.getEffectiveModel();
+    let effectiveModel = rawModel;
+    let effortLevel = 'low';
+    if (rawModel) {
+      const effortMatch = /^(.+)-(low|medium|high)$/i.exec(rawModel);
+      if (effortMatch && !/^o\d-mini$/i.test(rawModel) && !/^gpt-4o-mini$/i.test(rawModel)) {
+        effectiveModel = effortMatch[1];
+        effortLevel = effortMatch[2].toLowerCase();
+      }
+    }
     // Using '-' as prompt argument tells Codex to read instructions from stdin,
     // avoiding Windows CreateProcessW 32KB command-line argument limits (spawn ENAMETOOLONG).
     const args = [
@@ -1730,7 +1882,7 @@ export class CodexCliProvider implements AIProvider {
       '--ephemeral',
       '--dangerously-bypass-approvals-and-sandbox',
       '-c',
-      'model_reasoning_effort="low"',
+      `model_reasoning_effort="${effortLevel}"`,
       ...(effectiveModel ? ['-m', effectiveModel] : []),
       '-'
     ];
@@ -1884,9 +2036,15 @@ export class ClaudeCliProvider implements AIProvider {
     signal?: AbortSignal,
     jiraContextMap: Record<string, string> = {},
     promptOverride?: string,
-    onProgress?: (log: ReportProgressLog) => void
+    onProgress?: (log: ReportProgressLog) => void,
+    gitlabMrContextMap: Record<string, GitLabMrReviewContext> = {}
   ): Promise<GeneratedDraftItem[]> {
-    onProgress?.({ timestamp: getNowHhmmss(), step: 'prompt_prep', message: 'Claude CLI sürecine bağlanılıyor...' });
+    const effectiveModel = this.getEffectiveModel();
+    onProgress?.({
+      timestamp: getNowHhmmss(),
+      step: 'prompt_prep',
+      message: `Claude CLI sürecine (${effectiveModel || 'varsayılan model'}) bağlanılıyor...`
+    });
     const activities = rawActivities.filter(
       (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
     );
@@ -1894,7 +2052,7 @@ export class ClaudeCliProvider implements AIProvider {
 
     const prompt = promptOverride?.trim()
       ? promptOverride.trim()
-      : buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap);
+      : buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap, gitlabMrContextMap);
     const validEvidenceIds = new Set<string>(
       activities.flatMap((a) => (a.evidences ?? []).map((e) => e.id))
     );
@@ -1989,6 +2147,10 @@ export class OllamaCliProvider implements AIProvider {
     } = {}
   ) {}
 
+  public getEffectiveModel(): string {
+    return this.config.model?.trim() || 'llama3.2';
+  }
+
   public static resolveOllamaCliPath(): string | null {
     const localAppData = process.env.LOCALAPPDATA || '';
     const extraPaths = [
@@ -2036,9 +2198,15 @@ export class OllamaCliProvider implements AIProvider {
     signal?: AbortSignal,
     jiraContextMap: Record<string, string> = {},
     promptOverride?: string,
-    onProgress?: (log: ReportProgressLog) => void
+    onProgress?: (log: ReportProgressLog) => void,
+    gitlabMrContextMap: Record<string, GitLabMrReviewContext> = {}
   ): Promise<GeneratedDraftItem[]> {
-    onProgress?.({ timestamp: getNowHhmmss(), step: 'prompt_prep', message: 'Ollama CLI modeline bağlanılıyor...' });
+    const effectiveModel = this.getEffectiveModel();
+    onProgress?.({
+      timestamp: getNowHhmmss(),
+      step: 'prompt_prep',
+      message: `Ollama CLI modeline (${effectiveModel}) bağlanılıyor...`
+    });
     const activities = rawActivities.filter(
       (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
     );
@@ -2046,7 +2214,7 @@ export class OllamaCliProvider implements AIProvider {
 
     const prompt = promptOverride?.trim()
       ? promptOverride.trim()
-      : buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap);
+      : buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap, gitlabMrContextMap);
     const validEvidenceIds = new Set<string>(
       activities.flatMap((a) => (a.evidences ?? []).map((e) => e.id))
     );
@@ -2064,7 +2232,7 @@ export class OllamaCliProvider implements AIProvider {
       throw new Error('Yerel Ollama CLI bulunamadı. Lütfen Ollama kurun veya API uç noktası belirtin.');
     }
 
-    const model = this.config.model?.trim() || 'llama3.2';
+    const model = this.getEffectiveModel();
     // Passing prompt via stdin instead of CLI argument prevents Windows 32KB spawn ENAMETOOLONG
     const args = ['run', model];
 
@@ -2209,9 +2377,15 @@ export class OpenAiApiProvider implements AIProvider {
     signal?: AbortSignal,
     jiraContextMap: Record<string, string> = {},
     promptOverride?: string,
-    onProgress?: (log: ReportProgressLog) => void
+    onProgress?: (log: ReportProgressLog) => void,
+    gitlabMrContextMap: Record<string, GitLabMrReviewContext> = {}
   ): Promise<GeneratedDraftItem[]> {
-    onProgress?.({ timestamp: getNowHhmmss(), step: 'ai_call', message: 'OpenAI API uç noktasına istek gönderiliyor...' });
+    const model = this.getEffectiveModel();
+    onProgress?.({
+      timestamp: getNowHhmmss(),
+      step: 'ai_call',
+      message: `OpenAI API uç noktasına (${model}) istek gönderiliyor...`
+    });
     const activities = rawActivities.filter(
       (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
     );
@@ -2226,15 +2400,17 @@ export class OpenAiApiProvider implements AIProvider {
 
     const prompt = promptOverride?.trim()
       ? promptOverride.trim()
-      : buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap);
+      : buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap, gitlabMrContextMap);
     const validEvidenceIds = new Set<string>(
       activities.flatMap((a) => (a.evidences ?? []).map((e) => e.id))
     );
 
     const baseUrl = this.getEffectiveBaseUrl();
-    const model = this.getEffectiveModel();
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (key) headers['Authorization'] = `Bearer ${key}`;
+
+    // Reasoning models (o1, o3, o4, gpt-5) do not accept custom temperature values
+    const isReasoningModel = /^(o1|o3|o4|gpt-5)/i.test(model);
 
     const makeRequest = async (useJsonFormat: boolean) => {
       const body: Record<string, unknown> = {
@@ -2247,7 +2423,7 @@ export class OpenAiApiProvider implements AIProvider {
           },
           { role: 'user', content: prompt }
         ],
-        temperature: 0.2
+        ...(isReasoningModel ? {} : { temperature: 0.2 })
       };
       if (useJsonFormat) {
         body['response_format'] = { type: 'json_object' };
@@ -2391,9 +2567,15 @@ export class AnthropicApiProvider implements AIProvider {
     signal?: AbortSignal,
     jiraContextMap: Record<string, string> = {},
     promptOverride?: string,
-    onProgress?: (log: ReportProgressLog) => void
+    onProgress?: (log: ReportProgressLog) => void,
+    gitlabMrContextMap: Record<string, GitLabMrReviewContext> = {}
   ): Promise<GeneratedDraftItem[]> {
-    onProgress?.({ timestamp: getNowHhmmss(), step: 'ai_call', message: 'Anthropic Claude API uç noktasına istek gönderiliyor...' });
+    const model = this.getEffectiveModel();
+    onProgress?.({
+      timestamp: getNowHhmmss(),
+      step: 'ai_call',
+      message: `Anthropic Claude API uç noktasına (${model}) istek gönderiliyor...`
+    });
     const activities = rawActivities.filter(
       (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
     );
@@ -2408,12 +2590,11 @@ export class AnthropicApiProvider implements AIProvider {
 
     const prompt = promptOverride?.trim()
       ? promptOverride.trim()
-      : buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap);
+      : buildSanitizedAiPrompt(reportDate, activities, maxChars, jiraContextMap, gitlabMrContextMap);
     const validEvidenceIds = new Set<string>(
       activities.flatMap((a) => (a.evidences ?? []).map((e) => e.id))
     );
 
-    const model = this.getEffectiveModel();
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {

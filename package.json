@@ -1,7 +1,7 @@
 {
   "name": "mesai",
   "productName": "MesAI",
-  "version": "1.1.7",
+  "version": "1.1.8",
   "description": "MesAI (DevTrack AI) — Kanıta Dayalı Günlük Çalışma Raporu ve Aktivite Takip Uygulaması",
   "author": "Rıfkı Kesepara",
   "main": "dist-main/src/main/index.js",
@@ -26,9 +26,7 @@
     "url": "git+https://github.com/rifkikesepara/MesAI.git"
   },
   "dependencies": {
-    "electron-updater": "^6.8.9",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "electron-updater": "^6.8.9"
   },
   "devDependencies": {
     "@types/node": "^22.13.0",
@@ -37,6 +35,8 @@
     "@vitejs/plugin-react": "^4.3.4",
     "electron": "^35.0.0",
     "electron-builder": "^25.1.8",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
     "typescript": "^5.7.3",
     "vite": "^6.2.0"
   }

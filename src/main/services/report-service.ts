@@ -14,11 +14,14 @@ import {
 } from './ai-provider';
 import { toLocalIsoString } from './timestamp-resolver';
 import type {
+  Activity,
   ActivityCategory,
   ActivityStatus,
   AiPreviewPayload,
   AIProviderType,
+  AppSettings,
   DailyReport,
+  GitLabMrReviewContext,
   ReportProgressLog
 } from '../../shared/types';
 import { getNowHhmmss } from './ai-provider';
@@ -44,6 +47,8 @@ export class ReportService {
   private readonly geminiProvider: GeminiCliProvider;
   private aiApiKeyResolver?: (provider: 'openai' | 'anthropic' | 'custom') => string | null;
   private jiraIssueSyncer?: (jiraKeys: string[]) => Promise<void>;
+  private gitlabMrSyncer?: (reportDate: string, activities: Activity[]) => Promise<Record<string, GitLabMrReviewContext>>;
+  private cachedGitLabMrSyncer?: (reportDate: string) => Record<string, GitLabMrReviewContext>;
 
   constructor(
     private readonly repo: MesaiRepository,
@@ -60,13 +65,52 @@ export class ReportService {
     this.jiraIssueSyncer = syncer;
   }
 
+  public setGitLabMrSyncer(
+    syncer: (reportDate: string, activities: Activity[]) => Promise<Record<string, GitLabMrReviewContext>>
+  ): void {
+    this.gitlabMrSyncer = syncer;
+  }
+
+  public setCachedGitLabMrSyncer(
+    syncer: (reportDate: string) => Record<string, GitLabMrReviewContext>
+  ): void {
+    this.cachedGitLabMrSyncer = syncer;
+  }
+
   public getGeminiProvider(): GeminiCliProvider {
     return this.geminiProvider;
   }
 
-  public previewAiPayload(reportDate: string, maxChars?: number, providerOverride?: AIProviderType): AiPreviewPayload {
+  private persistProviderModel(provider: AIProviderType, modelOverride?: string): void {
+    const trimmed = modelOverride?.trim();
+    if (!trimmed) return;
+    const updates: Partial<AppSettings> = { aiModel: trimmed };
+    if (provider === 'gemini_cli') {
+      updates.aiGeminiModel = trimmed;
+    } else if (provider === 'openai') {
+      updates.aiOpenaiModel = trimmed;
+    } else if (provider === 'anthropic') {
+      updates.aiAnthropicModel = trimmed;
+    } else if (provider === 'custom') {
+      updates.aiCustomModel = trimmed;
+    }
+    this.repo.updateSettings(updates);
+  }
+
+  public async previewAiPayload(
+    reportDate: string,
+    maxChars?: number,
+    providerOverride?: AIProviderType,
+    modelOverride?: string,
+    fastLocal = false
+  ): Promise<AiPreviewPayload> {
+    if (typeof maxChars === 'number' && maxChars >= 120) {
+      this.repo.updateSettings({ reportMaxChars: Math.floor(maxChars) });
+    }
+    const initialSettings = this.repo.getSettings();
+    const effectiveProvider = providerOverride ?? initialSettings.aiProvider;
+    this.persistProviderModel(effectiveProvider, modelOverride);
     const settings = this.repo.getSettings();
-    const effectiveProvider = providerOverride ?? settings.aiProvider;
     const effectiveMaxChars =
       typeof maxChars === 'number' && maxChars >= 120
         ? Math.floor(maxChars)
@@ -77,6 +121,48 @@ export class ReportService {
       .listActivities({ date: reportDate })
       .filter((a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate);
 
+    let gitlabMrContextMap: Record<string, GitLabMrReviewContext> = this.cachedGitLabMrSyncer
+      ? this.cachedGitLabMrSyncer(reportDate)
+      : {};
+
+    if (!fastLocal) {
+      // Sync candidate Jira keys and GitLab MR reviews in parallel with a strict 2.5s timeout cap
+      const candidateJiraKeys = new Set<string>();
+      for (const act of activities) {
+        for (const k of extractJiraKeys(act.title + ' ' + act.summary)) candidateJiraKeys.add(k);
+        for (const ev of act.evidences ?? []) {
+          for (const k of extractJiraKeys(ev.title + ' ' + ev.snippet + ' ' + (ev.externalRef ?? '') + ' ' + ev.links.join(' '))) {
+            candidateJiraKeys.add(k);
+          }
+        }
+      }
+      const jiraPromise =
+        this.jiraIssueSyncer && candidateJiraKeys.size > 0
+          ? this.jiraIssueSyncer(Array.from(candidateJiraKeys)).catch(() => undefined)
+          : Promise.resolve();
+      const gitlabPromise =
+        this.gitlabMrSyncer && activities.length > 0
+          ? this.gitlabMrSyncer(reportDate, activities)
+              .then((res) => {
+                gitlabMrContextMap = res;
+              })
+              .catch(() => undefined)
+          : Promise.resolve();
+
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          Promise.all([jiraPromise, gitlabPromise]),
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, 2_500);
+            timer.unref?.();
+          })
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
+
     const dayJiraKeys = this.repo.extractJiraKeysForDate(reportDate);
     const jiraContextMap = this.repo.getJiraContextMap(dayJiraKeys);
 
@@ -84,13 +170,16 @@ export class ReportService {
       reportDate,
       activities,
       effectiveMaxChars,
-      jiraContextMap
+      jiraContextMap,
+      gitlabMrContextMap
     );
+
+    const { modelUsed } = this.getProviderInstance(effectiveProvider, modelOverride);
 
     const warnings: string[] = [
       `Yalnızca seçilen tarihe (${reportDate}) ait ${activities.length} aktivite rapora dahil edilir.`,
       `Maksimum karakter sınırı: ${effectiveMaxChars} karakter.`,
-      'Mesajlar, kod diff özetleri ve Jira bağlamları <untrusted_evidence_json> bloğu içinde güvenilmeyen kaynak verisi olarak izole edilir.'
+      'Mesajlar, kod diff özetleri, Jira ve GitLab MR review bağlamları <untrusted_evidence_json> bloğu içinde güvenilmeyen kaynak verisi olarak izole edilir.'
     ];
     if (!settings.allowRemoteAiSend && effectiveProvider !== 'local_rule') {
       warnings.push(
@@ -101,6 +190,7 @@ export class ReportService {
     return {
       reportDate,
       provider: effectiveProvider,
+      model: modelUsed,
       activityCount: activities.length,
       sanitizedPromptPreview,
       warnings,
@@ -108,52 +198,66 @@ export class ReportService {
     };
   }
 
-  private getProviderInstance(provider: AIProviderType): { provider: AIProvider; isCli: boolean } {
+  private getProviderInstance(
+    provider: AIProviderType,
+    modelOverride?: string
+  ): { provider: AIProvider; isCli: boolean; modelUsed?: string } {
     const settings = this.repo.getSettings();
+    const override = modelOverride?.trim() || undefined;
     switch (provider) {
-      case 'gemini_cli':
-        return { provider: this.geminiProvider, isCli: true };
+      case 'gemini_cli': {
+        const modelUsed = override || settings.aiGeminiModel || 'gemini-4-argon-medium';
+        this.geminiProvider.setModel(modelUsed);
+        return { provider: this.geminiProvider, isCli: true, modelUsed };
+      }
       case 'openai': {
+        const modelUsed = override || settings.aiOpenaiModel || settings.aiModel || 'gpt-4o-mini';
         const useCli =
           settings.aiOpenaiMode === 'cli' ||
           (settings.aiOpenaiMode !== 'api' &&
             (!this.aiApiKeyResolver?.('openai') || Boolean(CodexCliProvider.resolveCodexCliPath())));
         if (useCli && CodexCliProvider.resolveCodexCliPath()) {
           return {
-            provider: new CodexCliProvider({ model: settings.aiOpenaiModel || settings.aiModel }),
-            isCli: true
+            provider: new CodexCliProvider({ model: modelUsed }),
+            isCli: true,
+            modelUsed
           };
         }
         return {
           provider: new OpenAiApiProvider({
             providerType: 'openai',
             apiKeyResolver: () => this.aiApiKeyResolver?.('openai') ?? null,
-            model: settings.aiOpenaiModel || settings.aiModel,
+            model: modelUsed,
             customBaseUrl: settings.aiOpenaiBaseUrl || undefined
           }),
-          isCli: false
+          isCli: false,
+          modelUsed
         };
       }
       case 'anthropic': {
+        const modelUsed = override || settings.aiAnthropicModel || settings.aiModel || 'claude-3-5-sonnet-20241022';
         const useCli =
           settings.aiAnthropicMode === 'cli' ||
           (settings.aiAnthropicMode !== 'api' &&
             (!this.aiApiKeyResolver?.('anthropic') && Boolean(ClaudeCliProvider.resolveClaudeCliPath())));
         if (useCli && ClaudeCliProvider.resolveClaudeCliPath()) {
           return {
-            provider: new ClaudeCliProvider({ model: settings.aiAnthropicModel || settings.aiModel }),
-            isCli: true
+            provider: new ClaudeCliProvider({ model: modelUsed }),
+            isCli: true,
+            modelUsed
           };
         }
         return {
           provider: new AnthropicApiProvider({
             apiKeyResolver: () => this.aiApiKeyResolver?.('anthropic') ?? null,
-            model: settings.aiAnthropicModel || settings.aiModel
+            model: modelUsed
           }),
-          isCli: false
+          isCli: false,
+          modelUsed
         };
       }
       case 'custom': {
+        const modelUsed = override || settings.aiCustomModel || settings.aiModel || 'llama3.2';
         const useCli =
           settings.aiCustomMode === 'cli' ||
           (settings.aiCustomMode !== 'api' &&
@@ -161,18 +265,20 @@ export class ReportService {
             Boolean(OllamaCliProvider.resolveOllamaCliPath()));
         if (useCli && OllamaCliProvider.resolveOllamaCliPath()) {
           return {
-            provider: new OllamaCliProvider({ model: settings.aiCustomModel || settings.aiModel }),
-            isCli: true
+            provider: new OllamaCliProvider({ model: modelUsed }),
+            isCli: true,
+            modelUsed
           };
         }
         return {
           provider: new OpenAiApiProvider({
             providerType: 'custom',
             apiKeyResolver: () => this.aiApiKeyResolver?.('custom') ?? null,
-            model: settings.aiCustomModel || settings.aiModel,
+            model: modelUsed,
             customBaseUrl: settings.aiCustomBaseUrl
           }),
-          isCli: false
+          isCli: false,
+          modelUsed
         };
       }
       case 'local_rule':
@@ -189,6 +295,7 @@ export class ReportService {
   public async generateReport(input: {
     reportDate: string;
     provider: AIProviderType;
+    model?: string;
     userConfirmedRemoteSend?: boolean;
     maxChars?: number;
     promptOverride?: string;
@@ -197,6 +304,7 @@ export class ReportService {
     if (typeof input.maxChars === 'number' && input.maxChars >= 120) {
       this.repo.updateSettings({ reportMaxChars: Math.floor(input.maxChars) });
     }
+    this.persistProviderModel(input.provider, input.model);
     const settings = this.repo.getSettings();
     const effectiveMaxChars =
       typeof input.maxChars === 'number' && input.maxChars >= 120
@@ -219,12 +327,33 @@ export class ReportService {
       }
     }
 
-    if (this.jiraIssueSyncer && candidateJiraKeys.size > 0) {
-      try {
-        await this.jiraIssueSyncer(Array.from(candidateJiraKeys));
-      } catch {
-        // non-blocking
-      }
+    let gitlabMrContextMap: Record<string, GitLabMrReviewContext> = this.cachedGitLabMrSyncer
+      ? this.cachedGitLabMrSyncer(input.reportDate)
+      : {};
+    const jiraSyncPromise =
+      this.jiraIssueSyncer && candidateJiraKeys.size > 0
+        ? this.jiraIssueSyncer(Array.from(candidateJiraKeys)).catch(() => undefined)
+        : Promise.resolve();
+    const gitlabSyncPromise =
+      this.gitlabMrSyncer && activities.length > 0
+        ? this.gitlabMrSyncer(input.reportDate, activities)
+            .then((res) => {
+              gitlabMrContextMap = res;
+            })
+            .catch(() => undefined)
+        : Promise.resolve();
+
+    let syncTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        Promise.all([jiraSyncPromise, gitlabSyncPromise]),
+        new Promise<void>((resolve) => {
+          syncTimer = setTimeout(resolve, 3_000);
+          syncTimer.unref?.();
+        })
+      ]);
+    } finally {
+      if (syncTimer) clearTimeout(syncTimer);
     }
 
     const dayJiraKeys = this.repo.extractJiraKeysForDate(input.reportDate);
@@ -242,10 +371,12 @@ export class ReportService {
     const remainingBudget = Math.max(0, effectiveMaxChars - userEditedChars);
     const providerBudget = Math.max(120, remainingBudget);
 
+    const { provider: providerInstance, isCli, modelUsed } = this.getProviderInstance(input.provider, input.model);
+
     input.onProgress?.({
       timestamp: getNowHhmmss(),
       step: 'init',
-      message: `Rapor oluşturma başlatıldı (${input.reportDate}). Sağlayıcı: ${input.provider}`
+      message: `Rapor oluşturma başlatıldı (${input.reportDate}). Sağlayıcı: ${input.provider}${modelUsed ? ` (${modelUsed})` : ''}`
     });
     input.onProgress?.({
       timestamp: getNowHhmmss(),
@@ -259,29 +390,39 @@ export class ReportService {
         message: `${dayJiraKeys.length} adet Jira iş anahtarı bağlamı çözümlendi (${dayJiraKeys.join(', ')}).`
       });
     }
+    const mrReviewCount = new Set(
+      Object.values(gitlabMrContextMap)
+        .filter((m) => m.isReviewFix)
+        .map((m) => `${m.projectId}:!${m.mrIid}`)
+    ).size;
+    if (mrReviewCount > 0) {
+      input.onProgress?.({
+        timestamp: getNowHhmmss(),
+        step: 'context',
+        message: `GitLab API üzerinden ${mrReviewCount} adet MR review düzeltmesi tespit edildi.`
+      });
+    }
     input.onProgress?.({
       timestamp: getNowHhmmss(),
       step: 'prompt_prep',
       message: `Karakter bütçesi hesaplandı (Maks: ${effectiveMaxChars}, AI Bütçesi: ${providerBudget}).`
     });
 
-    const { provider: providerInstance, isCli } = this.getProviderInstance(input.provider);
-
     let effectiveProvider: string = input.provider;
     if (input.provider === 'gemini_cli') {
-      effectiveProvider = 'gemini_cli (Antigravity CLI / agy)';
+      effectiveProvider = `gemini_cli (Antigravity CLI / agy - ${modelUsed || 'gemini-4-argon-medium'})`;
     } else if (input.provider === 'openai') {
       effectiveProvider = isCli
-        ? `openai (Codex CLI - ${settings.aiOpenaiModel || 'gpt-6.1-sol'})`
-        : `openai (API - ${settings.aiOpenaiModel || 'gpt-4o-mini'})`;
+        ? `openai (Codex CLI - ${modelUsed || 'gpt-6.1-sol'})`
+        : `openai (API - ${modelUsed || 'gpt-4o-mini'})`;
     } else if (input.provider === 'anthropic') {
       effectiveProvider = isCli
-        ? `anthropic (Claude CLI - ${settings.aiAnthropicModel || 'claude-3-5-sonnet'})`
-        : `anthropic (API - ${settings.aiAnthropicModel || 'claude-3-5-sonnet'})`;
+        ? `anthropic (Claude CLI - ${modelUsed || 'claude-3-5-sonnet'})`
+        : `anthropic (API - ${modelUsed || 'claude-3-5-sonnet'})`;
     } else if (input.provider === 'custom') {
       effectiveProvider = isCli
-        ? `custom (Ollama CLI - ${settings.aiCustomModel || 'llama'})`
-        : `custom (API - ${settings.aiCustomModel || 'custom'})`;
+        ? `custom (Ollama CLI - ${modelUsed || 'llama'})`
+        : `custom (API - ${modelUsed || 'custom'})`;
     }
     let draftItems;
 
@@ -305,7 +446,8 @@ export class ReportService {
           undefined,
           jiraContextMap,
           input.promptOverride,
-          input.onProgress
+          input.onProgress,
+          gitlabMrContextMap
         );
         this.repo.updateSyncState({
           connector: 'ai_provider',
@@ -335,7 +477,8 @@ export class ReportService {
           undefined,
           jiraContextMap,
           undefined,
-          input.onProgress
+          input.onProgress,
+          gitlabMrContextMap
         );
         effectiveProvider = `local_rule (${input.provider} hata sonrası yerel yedek)`;
       }
@@ -347,7 +490,8 @@ export class ReportService {
         undefined,
         jiraContextMap,
         undefined,
-        input.onProgress
+        input.onProgress,
+        gitlabMrContextMap
       );
       this.repo.updateSyncState({
         connector: 'ai_provider',

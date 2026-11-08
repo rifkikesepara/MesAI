@@ -19,8 +19,8 @@ const mesaiApi: MesaiApi = {
   listWorkItems: () => ipcRenderer.invoke(IPC_CHANNELS.WORK_ITEMS_LIST),
 
   getDailyReport: (reportDate) => ipcRenderer.invoke(IPC_CHANNELS.REPORT_GET, reportDate),
-  previewAiPayload: (reportDate, maxChars, providerOverride) =>
-    ipcRenderer.invoke(IPC_CHANNELS.REPORT_PREVIEW_AI, reportDate, maxChars, providerOverride),
+  previewAiPayload: (reportDate, maxChars, providerOverride, modelOverride, fastLocal) =>
+    ipcRenderer.invoke(IPC_CHANNELS.REPORT_PREVIEW_AI, reportDate, maxChars, providerOverride, modelOverride, fastLocal),
   generateDailyReport: (input) => ipcRenderer.invoke(IPC_CHANNELS.REPORT_GENERATE, input),
   updateReportItem: (input) => ipcRenderer.invoke(IPC_CHANNELS.REPORT_UPDATE_ITEM, input),
   addReportItem: (input) => ipcRenderer.invoke(IPC_CHANNELS.REPORT_ADD_ITEM, input),

@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { MesaiRepository } from '../db/repositories';
+import { extractJiraKeysFromText, type MesaiRepository } from '../db/repositories';
 import type { ZoomReaderAdapter } from './zoom-adapter';
 import type { GitFileWatcherService } from './git-file-watcher';
 import type { ReportService } from './report-service';
@@ -9,9 +9,36 @@ import {
   AnthropicApiProvider,
   CodexCliProvider,
   ClaudeCliProvider,
-  OllamaCliProvider
+  OllamaCliProvider,
+  formatCorporateProjectName
 } from './ai-provider';
-import type { AppSettings, IntegrationHealth, ZoomReaderStatus } from '../../shared/types';
+import type {
+  Activity,
+  AppSettings,
+  GitLabMrReviewContext,
+  IntegrationHealth,
+  ZoomReaderStatus
+} from '../../shared/types';
+
+export function extractGitLabProjectPath(repositoryUrl: string | null | undefined): string | null {
+  if (!repositoryUrl || !repositoryUrl.trim()) return null;
+  const raw = repositoryUrl.trim();
+  try {
+    if (/^(?:https?|ssh):\/\//i.test(raw)) {
+      const parsed = new URL(raw);
+      const cleanPath = parsed.pathname.replace(/^\/+|\/+$/g, '').replace(/\.git$/i, '');
+      return cleanPath || null;
+    }
+  } catch {
+    // fallback to regex below
+  }
+  const scpMatch = raw.match(/^[^@]+@[^:]+:(.+)$/);
+  if (scpMatch && scpMatch[1]) {
+    const cleanPath = scpMatch[1].replace(/^\/+|\/+$/g, '').replace(/\.git$/i, '');
+    return cleanPath || null;
+  }
+  return null;
+}
 
 export interface SecretProvider {
   encrypt(plainText: string): string;
@@ -21,6 +48,13 @@ export interface SecretProvider {
 export class IntegrationsService {
   private readonly secretsFilePath: string;
   private readonly secretProvider: SecretProvider;
+  private readonly gitlabMrCache = new Map<
+    string,
+    { timestamp: number; signature: string; data: Record<string, GitLabMrReviewContext> }
+  >();
+  private readonly jiraKeySyncedAt = new Map<string, number>();
+  private gitlabUnreachableUntil = 0;
+  private jiraUnreachableUntil = 0;
 
   constructor(
     private readonly repo: MesaiRepository,
@@ -33,7 +67,15 @@ export class IntegrationsService {
     this.secretsFilePath = path.join(dir, 'mesai_credentials.dpapi.json');
     this.secretProvider = options?.secretProvider ?? this.createDefaultSecretProvider();
     this.reportService.setJiraIssueSyncer((keys) => this.syncJiraIssuesIfConfigured(keys));
+    this.reportService.setGitLabMrSyncer((date, acts) => this.resolveGitLabMrReviewsIfConfigured(date, acts));
+    this.reportService.setCachedGitLabMrSyncer((date) => this.getCachedGitLabMrReviews(date));
     this.reportService.setAiApiKeyResolver((prov) => this.getDecryptedAiToken(prov));
+  }
+
+  public getCachedGitLabMrReviews(reportDate: string): Record<string, GitLabMrReviewContext> {
+    const entry = this.gitlabMrCache.get(reportDate);
+    if (!entry) return {};
+    return entry.data;
   }
 
   private createDefaultSecretProvider(): SecretProvider {
@@ -91,8 +133,13 @@ export class IntegrationsService {
 
     if (input.service === 'jira') {
       this.repo.updateSettings({ jiraUrl: cleanUrl, jiraEmail: cleanUser });
+      this.jiraUnreachableUntil = 0;
+      this.jiraKeySyncedAt.clear();
+      this.cachedJiraMyself = null;
     } else if (input.service === 'gitlab') {
       this.repo.updateSettings({ gitlabUrl: cleanUrl, gitlabUsername: cleanUser });
+      this.gitlabUnreachableUntil = 0;
+      this.gitlabMrCache.clear();
     } else {
       this.repo.updateSettings({ jenkinsUrl: cleanUrl, jenkinsUsername: cleanUser });
     }
@@ -128,7 +175,7 @@ export class IntegrationsService {
   }
 
   public saveAiCredential(input: {
-    provider: 'openai' | 'anthropic' | 'custom';
+    provider: 'gemini_cli' | 'openai' | 'anthropic' | 'custom';
     apiKey?: string;
     model?: string;
     customBaseUrl?: string;
@@ -137,18 +184,23 @@ export class IntegrationsService {
   }): void {
     const store = this.readEncryptedStore();
     const cleanKey = input.apiKey?.trim();
-    if (cleanKey) {
-      store[`${input.provider}_token`] = this.secretProvider.encrypt(cleanKey);
-      this.writeEncryptedStore(store);
-    } else if (input.clearKey) {
-      delete store[`${input.provider}_token`];
-      this.writeEncryptedStore(store);
+    if (input.provider !== 'gemini_cli') {
+      if (cleanKey) {
+        store[`${input.provider}_token`] = this.secretProvider.encrypt(cleanKey);
+        this.writeEncryptedStore(store);
+      } else if (input.clearKey) {
+        delete store[`${input.provider}_token`];
+        this.writeEncryptedStore(store);
+      }
     }
 
     const updates: Partial<AppSettings> = {
       aiProvider: input.provider
     };
-    if (input.provider === 'openai') {
+    if (input.provider === 'gemini_cli') {
+      if (input.model !== undefined) updates.aiGeminiModel = input.model.trim();
+      if (input.model) updates.aiModel = input.model.trim();
+    } else if (input.provider === 'openai') {
       if (input.model !== undefined) updates.aiOpenaiModel = input.model.trim();
       if (input.customBaseUrl !== undefined) updates.aiOpenaiBaseUrl = input.customBaseUrl.trim();
       if (input.mode !== undefined) updates.aiOpenaiMode = input.mode;
@@ -243,13 +295,17 @@ export class IntegrationsService {
   }
 
   public async fetchAiModels(input: {
-    provider: 'openai' | 'anthropic' | 'custom';
+    provider: 'gemini_cli' | 'openai' | 'anthropic' | 'custom';
     apiKey?: string;
     customBaseUrl?: string;
   }): Promise<{ ok: boolean; models: string[]; error?: string }> {
-    const keyResolver = () => (input.apiKey && input.apiKey.trim() ? input.apiKey.trim() : this.getDecryptedAiToken(input.provider));
+    if (input.provider === 'gemini_cli') {
+      return this.reportService.getGeminiProvider().fetchAvailableModels();
+    }
+    const prov = input.provider;
+    const keyResolver = () => (input.apiKey && input.apiKey.trim() ? input.apiKey.trim() : this.getDecryptedAiToken(prov));
     const settings = this.repo.getSettings();
-    if (input.provider === 'openai') {
+    if (prov === 'openai') {
       const token = this.getDecryptedAiToken('openai');
       const isCli =
         settings.aiOpenaiMode === 'cli' ||
@@ -500,6 +556,7 @@ export class IntegrationsService {
         localRuleAvailable: true,
         geminiCliInstalled: geminiHealth.installed,
         geminiCliVersion: geminiHealth.version,
+        geminiModel: settings.aiGeminiModel || 'gemini-4-argon-medium',
         openaiConfigured,
         openaiModel: settings.aiOpenaiModel || settings.aiModel || 'gpt-4o-mini',
         openaiBaseUrl: settings.aiOpenaiBaseUrl || '',
@@ -554,6 +611,7 @@ export class IntegrationsService {
 
   public async getJiraMyself(): Promise<Record<string, string> | null> {
     if (this.cachedJiraMyself) return this.cachedJiraMyself;
+    if (Date.now() < this.jiraUnreachableUntil) return null;
     const settings = this.repo.getSettings();
     const token = this.getDecryptedToken('jira');
     if (!settings.jiraUrl || !settings.jiraEmail || !token) return null;
@@ -566,13 +624,14 @@ export class IntegrationsService {
           Authorization: `Basic ${auth}`,
           Accept: 'application/json'
         },
-        signal: AbortSignal.timeout(6_000)
+        signal: AbortSignal.timeout(2_500)
       });
       if (!resp.ok) return null;
       const data = (await resp.json()) as Record<string, string>;
       this.cachedJiraMyself = data;
       return data;
     } catch {
+      this.jiraUnreachableUntil = Date.now() + 60_000;
       return null;
     }
   }
@@ -584,14 +643,22 @@ export class IntegrationsService {
    */
   public async syncJiraIssuesIfConfigured(jiraKeys: string[]): Promise<void> {
     if (!jiraKeys || jiraKeys.length === 0) return;
+    if (Date.now() < this.jiraUnreachableUntil) return;
     const settings = this.repo.getSettings();
     const token = this.getDecryptedToken('jira');
     if (!settings.jiraUrl || !settings.jiraEmail || !token) return;
 
+    const nowMs = Date.now();
+    const uniqueKeys = Array.from(new Set(jiraKeys.map((k) => k.trim().toUpperCase()).filter(Boolean))).filter(
+      (k) => nowMs - (this.jiraKeySyncedAt.get(k) ?? 0) > 10 * 60_000
+    );
+    if (uniqueKeys.length === 0) return;
+
     const auth = Buffer.from(`${settings.jiraEmail}:${token}`, 'utf8').toString('base64');
-    const uniqueKeys = Array.from(new Set(jiraKeys.map((k) => k.trim().toUpperCase()).filter(Boolean)));
 
     const myself = await this.getJiraMyself();
+    if (Date.now() < this.jiraUnreachableUntil) return;
+
     const userIdentifiers = new Set<string>();
     if (settings.jiraEmail) {
       userIdentifiers.add(settings.jiraEmail.toLowerCase().trim());
@@ -612,89 +679,445 @@ export class IntegrationsService {
       return userIdentifiers.has(lower);
     };
 
-    for (const key of uniqueKeys) {
-      try {
-        const resp = await fetch(
-          `${settings.jiraUrl}/rest/api/2/issue/${encodeURIComponent(key)}?expand=changelog&fields=summary,description,status,assignee`,
-          {
-            method: 'GET',
-            headers: {
-              Authorization: `Basic ${auth}`,
-              Accept: 'application/json'
-            },
-            signal: AbortSignal.timeout(6_000)
-          }
-        );
-        if (!resp.ok) continue;
+    await Promise.all(
+      uniqueKeys.slice(0, 8).map(async (key) => {
+        try {
+          const resp = await fetch(
+            `${settings.jiraUrl}/rest/api/2/issue/${encodeURIComponent(key)}?expand=changelog&fields=summary,description,status,assignee`,
+            {
+              method: 'GET',
+              headers: {
+                Authorization: `Basic ${auth}`,
+                Accept: 'application/json'
+              },
+              signal: AbortSignal.timeout(2_500)
+            }
+          );
+          this.jiraKeySyncedAt.set(key, Date.now());
+          if (!resp.ok) return;
 
-        const data = (await resp.json()) as {
-          fields?: {
-            summary?: string;
-            description?: unknown;
-            status?: { name?: string };
-            assignee?: Record<string, unknown> | null;
-          };
-          changelog?: {
-            histories?: Array<{
-              items?: Array<{
-                field?: string;
-                to?: string | null;
-                toString?: string | null;
+          const data = (await resp.json()) as {
+            fields?: {
+              summary?: string;
+              description?: unknown;
+              status?: { name?: string };
+              assignee?: Record<string, unknown> | null;
+            };
+            changelog?: {
+              histories?: Array<{
+                items?: Array<{
+                  field?: string;
+                  to?: string | null;
+                  toString?: string | null;
+                }>;
               }>;
-            }>;
+            };
           };
-        };
 
-        const summary = typeof data.fields?.summary === 'string' ? data.fields.summary.trim() : '';
-        let descriptionText: string | null = null;
-        if (typeof data.fields?.description === 'string') {
-          descriptionText = data.fields.description.replace(/\s+/g, ' ').trim().slice(0, 800);
-        } else if (data.fields?.description && typeof data.fields.description === 'object') {
-          descriptionText = JSON.stringify(data.fields.description).slice(0, 800);
+          const summary = typeof data.fields?.summary === 'string' ? data.fields.summary.trim() : '';
+          let descriptionText: string | null = null;
+          if (typeof data.fields?.description === 'string') {
+            descriptionText = data.fields.description.replace(/\s+/g, ' ').trim().slice(0, 800);
+          } else if (data.fields?.description && typeof data.fields.description === 'object') {
+            descriptionText = JSON.stringify(data.fields.description).slice(0, 800);
+          }
+          const statusName = data.fields?.status?.name ?? undefined;
+
+          // 1. Check current assignee
+          let isUserAssignee = false;
+          const curAssignee = data.fields?.assignee;
+          if (curAssignee && typeof curAssignee === 'object') {
+            if (
+              matchesUser(curAssignee.name) ||
+              matchesUser(curAssignee.key) ||
+              matchesUser(curAssignee.emailAddress) ||
+              matchesUser(curAssignee.displayName) ||
+              matchesUser(curAssignee.accountId)
+            ) {
+              isUserAssignee = true;
+            }
+          }
+
+          // 2. Check changelog history if not currently assigned
+          if (!isUserAssignee && Array.isArray(data.changelog?.histories)) {
+            for (const hist of data.changelog.histories) {
+              for (const item of hist.items ?? []) {
+                if (item.field === 'assignee') {
+                  if (matchesUser(item.to) || matchesUser(item.toString)) {
+                    isUserAssignee = true;
+                    break;
+                  }
+                }
+              }
+              if (isUserAssignee) break;
+            }
+          }
+
+          this.repo.upsertWorkItem({
+            jiraKey: key,
+            projectId: null,
+            title: summary || `${key} İşi`,
+            description: descriptionText,
+            status: statusName,
+            isUserAssignee
+          });
+        } catch {
+          this.jiraUnreachableUntil = Date.now() + 60_000;
         }
-        const statusName = data.fields?.status?.name ?? undefined;
+      })
+    );
+  }
 
-        // 1. Check current assignee
-        let isUserAssignee = false;
-        const curAssignee = data.fields?.assignee;
-        if (curAssignee && typeof curAssignee === 'object') {
-          if (
-            matchesUser(curAssignee.name) ||
-            matchesUser(curAssignee.key) ||
-            matchesUser(curAssignee.emailAddress) ||
-            matchesUser(curAssignee.displayName) ||
-            matchesUser(curAssignee.accountId)
-          ) {
-            isUserAssignee = true;
+  /**
+   * Queries GitLab REST API v4 (read-only) using the configured Personal Access Token
+   * to check whether the day's Git commits, working-tree edits, or file changes correspond
+   * to opened Merge Requests and MR code review feedback (Notes / DiffNotes).
+   */
+  public async resolveGitLabMrReviewsIfConfigured(
+    reportDate: string,
+    activities: Activity[]
+  ): Promise<Record<string, GitLabMrReviewContext>> {
+    const result: Record<string, GitLabMrReviewContext> = {};
+    const settings = this.repo.getSettings();
+    const token = this.getDecryptedToken('gitlab');
+    if (!settings.gitlabUrl || !token) return result;
+
+    const baseUrl = settings.gitlabUrl.trim().replace(/\/+$/, '');
+    const devActs = activities.filter(
+      (a) =>
+        (a.sourceType === 'git_commit' ||
+          a.sourceType === 'git_working_tree' ||
+          a.sourceType === 'file_change') &&
+        (!a.occurredAtIso || a.occurredAtIso.slice(0, 10) === reportDate)
+    );
+    if (devActs.length === 0) return result;
+
+    const signature = devActs.map((a) => `${a.id}:${a.occurredAtIso}`).join('|');
+    const cached = this.gitlabMrCache.get(reportDate);
+    if (cached && cached.signature === signature && Date.now() - cached.timestamp < 5 * 60_000) {
+      return cached.data;
+    }
+    if (Date.now() < this.gitlabUnreachableUntil) {
+      return cached?.data ?? result;
+    }
+
+    const allProjects = new Map(this.repo.listProjects().map((p) => [p.id, p]));
+
+    interface ProjectDevTarget {
+      projectId: string | null;
+      projectName: string;
+      repositoryUrl: string | null;
+      branches: Set<string>;
+      jiraKeys: Set<string>;
+      changedFiles: Set<string>;
+      latestOccurredIso: string;
+    }
+
+    const targetsByProj = new Map<string, ProjectDevTarget>();
+
+    for (const act of devActs) {
+      const acceptedLink = (act.links ?? []).find(
+        (l) => l.userStatus === 'accepted' && (l.workItemId || l.projectId)
+      );
+      const projId = act.projectId ?? acceptedLink?.projectId ?? null;
+      const projObj = projId ? allProjects.get(projId) : undefined;
+      const projName =
+        projObj?.name ||
+        act.projectName ||
+        acceptedLink?.projectName ||
+        act.chatOrRepoName ||
+        'İlgili Süreç';
+      const targetKey = projId || `name:${projName.toLowerCase()}`;
+
+      let target = targetsByProj.get(targetKey);
+      if (!target) {
+        target = {
+          projectId: projId,
+          projectName: projName,
+          repositoryUrl: projObj?.repositoryUrl ?? null,
+          branches: new Set<string>(),
+          jiraKeys: new Set<string>(),
+          changedFiles: new Set<string>(),
+          latestOccurredIso: act.occurredAtIso || `${reportDate}T23:59:59`
+        };
+        targetsByProj.set(targetKey, target);
+      } else if (act.occurredAtIso && act.occurredAtIso > target.latestOccurredIso) {
+        target.latestOccurredIso = act.occurredAtIso;
+      }
+
+      if (projObj?.currentBranch) {
+        target.branches.add(projObj.currentBranch);
+      }
+      if (acceptedLink?.workItemJiraKey) {
+        target.jiraKeys.add(acceptedLink.workItemJiraKey.toUpperCase());
+      }
+      for (const k of extractJiraKeysFromText(`${act.title} ${act.summary}`)) {
+        target.jiraKeys.add(k.toUpperCase());
+      }
+
+      for (const ev of act.evidences ?? []) {
+        const br = typeof ev.metadata?.branchName === 'string' ? ev.metadata.branchName.trim() : '';
+        if (br) {
+          target.branches.add(br);
+          for (const k of extractJiraKeysFromText(br)) {
+            target.jiraKeys.add(k.toUpperCase());
           }
         }
+        const cf = ev.metadata?.changedFiles;
+        if (Array.isArray(cf)) {
+          for (const f of cf) {
+            if (typeof f === 'string' && f.trim()) {
+              target.changedFiles.add(f.replace(/\\/g, '/').trim());
+            }
+          }
+        }
+      }
+    }
 
-        // 2. Check changelog history if not currently assigned
-        if (!isUserAssignee && Array.isArray(data.changelog?.histories)) {
-          for (const hist of data.changelog.histories) {
-            for (const item of hist.items ?? []) {
-              if (item.field === 'assignee') {
-                if (matchesUser(item.to) || matchesUser(item.toString)) {
-                  isUserAssignee = true;
-                  break;
+    const headers = {
+      'PRIVATE-TOKEN': token,
+      Accept: 'application/json'
+    };
+
+    interface GitLabMrApiItem {
+      iid: number;
+      project_id?: number;
+      title?: string;
+      description?: string | null;
+      state?: string;
+      source_branch?: string;
+      target_branch?: string;
+      created_at?: string;
+      updated_at?: string;
+      web_url?: string;
+      user_notes_count?: number;
+    }
+
+    interface GitLabNoteApiItem {
+      id?: number;
+      body?: string;
+      system?: boolean;
+      type?: string | null;
+      author?: { username?: string; name?: string };
+      created_at?: string;
+      resolvable?: boolean;
+      resolved?: boolean;
+      position?: {
+        new_path?: string;
+        old_path?: string;
+      } | null;
+    }
+
+    let hadNetworkSuccess = false;
+    let hadNetworkError = false;
+
+    await Promise.all(
+      Array.from(targetsByProj.values())
+        .slice(0, 6)
+        .map(async (target) => {
+          try {
+            const repoPath = extractGitLabProjectPath(target.repositoryUrl);
+            let encodedProjectIdentifier = repoPath ? encodeURIComponent(repoPath) : null;
+            let mrs: GitLabMrApiItem[] = [];
+
+            if (encodedProjectIdentifier) {
+              const mrResp = await fetch(
+                `${baseUrl}/api/v4/projects/${encodedProjectIdentifier}/merge_requests?state=all&order_by=updated_at&sort=desc&per_page=15`,
+                {
+                  method: 'GET',
+                  headers,
+                  signal: AbortSignal.timeout(2_500)
+                }
+              );
+              hadNetworkSuccess = true;
+              if (mrResp.ok) {
+                const data = await mrResp.json();
+                if (Array.isArray(data)) mrs = data as GitLabMrApiItem[];
+              } else {
+                encodedProjectIdentifier = null;
+              }
+            }
+
+            if (!encodedProjectIdentifier) {
+              const searchResp = await fetch(
+                `${baseUrl}/api/v4/projects?search=${encodeURIComponent(target.projectName)}&per_page=5`,
+                {
+                  method: 'GET',
+                  headers,
+                  signal: AbortSignal.timeout(2_500)
+                }
+              );
+              hadNetworkSuccess = true;
+              if (searchResp.ok) {
+                const foundProjects = (await searchResp.json()) as Array<{
+                  id?: number;
+                  path?: string;
+                  name?: string;
+                  path_with_namespace?: string;
+                }>;
+                if (Array.isArray(foundProjects) && foundProjects.length > 0) {
+                  const lowerTarget = target.projectName.toLowerCase();
+                  const bestProj =
+                    foundProjects.find(
+                      (p) =>
+                        p.path?.toLowerCase() === lowerTarget ||
+                        p.name?.toLowerCase() === lowerTarget
+                    ) ?? foundProjects[0];
+                  if (bestProj?.id !== undefined) {
+                    encodedProjectIdentifier = String(bestProj.id);
+                    const mrResp = await fetch(
+                      `${baseUrl}/api/v4/projects/${encodedProjectIdentifier}/merge_requests?state=all&order_by=updated_at&sort=desc&per_page=15`,
+                      {
+                        method: 'GET',
+                        headers,
+                        signal: AbortSignal.timeout(2_500)
+                      }
+                    );
+                    if (mrResp.ok) {
+                      const data = await mrResp.json();
+                      if (Array.isArray(data)) mrs = data as GitLabMrApiItem[];
+                    }
+                  }
                 }
               }
             }
-            if (isUserAssignee) break;
-          }
-        }
 
-        this.repo.upsertWorkItem({
-          jiraKey: key,
-          projectId: null,
-          title: summary || `${key} İşi`,
-          description: descriptionText,
-          status: statusName,
-          isUserAssignee
-        });
-      } catch {
-        // Ignore network/timeout errors for individual issues so report generation never fails
-      }
+            if (mrs.length === 0) return;
+
+            const branchList = Array.from(target.branches);
+            const jiraList = Array.from(target.jiraKeys);
+
+            const matchedMrs = mrs.filter((mr) => {
+              const srcBranch = (mr.source_branch || '').trim();
+              const titleAndBranch = `${mr.title || ''} ${srcBranch} ${mr.description || ''}`.toUpperCase();
+              if (
+                branchList.some(
+                  (b) =>
+                    b &&
+                    b !== 'main' &&
+                    b !== 'master' &&
+                    b !== 'uat' &&
+                    b !== 'develop' &&
+                    srcBranch.toLowerCase() === b.toLowerCase()
+                )
+              ) {
+                return true;
+              }
+              if (jiraList.some((jk) => titleAndBranch.includes(jk))) {
+                return true;
+              }
+              return false;
+            });
+
+            const candidateMrs = matchedMrs.length > 0 ? matchedMrs.slice(0, 2) : mrs.slice(0, 1);
+
+            for (const mr of candidateMrs) {
+              const mrProjId = mr.project_id ? String(mr.project_id) : encodedProjectIdentifier!;
+              let notes: GitLabNoteApiItem[] = [];
+              try {
+                const notesResp = await fetch(
+                  `${baseUrl}/api/v4/projects/${mrProjId}/merge_requests/${mr.iid}/notes?per_page=40`,
+                  {
+                    method: 'GET',
+                    headers,
+                    signal: AbortSignal.timeout(2_500)
+                  }
+                );
+                if (notesResp.ok) {
+                  const notesData = await notesResp.json();
+                  if (Array.isArray(notesData)) {
+                    notes = notesData as GitLabNoteApiItem[];
+                  }
+                }
+              } catch {
+                // ignore note fetch error
+              }
+
+              const humanNotes = notes.filter((n) => !n.system && typeof n.body === 'string' && n.body.trim().length > 0);
+              const reviewedFilesSet = new Set<string>();
+              const reviewerNotesList: string[] = [];
+
+              const changedFilesArray = Array.from(target.changedFiles);
+              const changedBasenames = new Set(
+                changedFilesArray.map((f) => path.posix.basename(f).toLowerCase())
+              );
+
+              for (const n of humanNotes) {
+                const diffPath = (n.position?.new_path || n.position?.old_path || '').replace(/\\/g, '/').trim();
+                if (diffPath) {
+                  reviewedFilesSet.add(diffPath);
+                }
+                const cleanBody = (n.body || '').replace(/\s+/g, ' ').trim().slice(0, 220);
+                if (!cleanBody) continue;
+                const filePrefix = diffPath ? `[${path.posix.basename(diffPath)}] ` : '';
+                const resolvedSuffix = n.resolved ? ' (Çözüldü)' : '';
+                const noteEntry = `${filePrefix}${cleanBody}${resolvedSuffix}`;
+                if (!reviewerNotesList.includes(noteEntry)) {
+                  reviewerNotesList.push(noteEntry);
+                }
+              }
+
+              const reviewedFiles = Array.from(reviewedFilesSet);
+              const touchedReviewedFile = reviewedFiles.some(
+                (rf) =>
+                  target.changedFiles.has(rf) ||
+                  changedBasenames.has(path.posix.basename(rf).toLowerCase())
+              );
+
+              const mrCreatedDate = mr.created_at ? mr.created_at.slice(0, 10) : '';
+              const isPostMrCreationChange = Boolean(
+                (mrCreatedDate && mrCreatedDate < reportDate) ||
+                  (mr.created_at && target.latestOccurredIso && mr.created_at < target.latestOccurredIso)
+              );
+
+              const isReviewFix =
+                humanNotes.length > 0 ||
+                touchedReviewedFile ||
+                Boolean((mr.user_notes_count ?? 0) > 0) ||
+                isPostMrCreationChange;
+
+              const mrContext: GitLabMrReviewContext = {
+                projectId: target.projectId,
+                projectName: formatCorporateProjectName(target.projectName),
+                mrIid: mr.iid,
+                mrTitle: (mr.title || `MR !${mr.iid}`).trim(),
+                mrState: mr.state || 'opened',
+                sourceBranch: mr.source_branch || '',
+                webUrl: mr.web_url,
+                isReviewFix,
+                reviewedFiles,
+                reviewerNotes: reviewerNotesList.slice(0, 6)
+              };
+
+              // Index by project name, formatted corporate project name, project ID, and Jira keys
+              const corpProj = formatCorporateProjectName(target.projectName);
+              result[`proj:${corpProj}`] = mrContext;
+              result[`proj:${target.projectName}`] = mrContext;
+              if (target.projectId) {
+                result[`id:${target.projectId}`] = mrContext;
+              }
+              const mrJiraKeys = new Set<string>([
+                ...jiraList,
+                ...extractJiraKeysFromText(`${mr.title || ''} ${mr.source_branch || ''}`)
+              ]);
+              for (const jk of mrJiraKeys) {
+                result[`jira:${jk.toUpperCase()}`] = mrContext;
+              }
+
+              if (isReviewFix) break;
+            }
+          } catch {
+            hadNetworkError = true;
+          }
+        })
+    );
+
+    if (hadNetworkError && !hadNetworkSuccess) {
+      this.gitlabUnreachableUntil = Date.now() + 60_000;
+    } else {
+      this.gitlabMrCache.set(reportDate, { timestamp: Date.now(), signature, data: result });
     }
+
+    return result;
   }
 }

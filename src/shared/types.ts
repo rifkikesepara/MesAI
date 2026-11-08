@@ -256,6 +256,7 @@ export interface AppSettings {
   retentionDays: number;
   aiProvider: AIProviderType;
   aiModel?: string;
+  aiGeminiModel?: string;
   aiOpenaiModel?: string;
   aiOpenaiBaseUrl?: string;
   aiOpenaiMode?: 'auto' | 'cli' | 'api';
@@ -280,9 +281,23 @@ export interface AppSettings {
   theme?: 'light' | 'dark' | 'system';
 }
 
+export interface GitLabMrReviewContext {
+  projectId: string | null;
+  projectName: string;
+  mrIid: number;
+  mrTitle: string;
+  mrState: string;
+  sourceBranch: string;
+  webUrl?: string;
+  isReviewFix: boolean;
+  reviewedFiles: string[];
+  reviewerNotes: string[];
+}
+
 export interface AiPreviewPayload {
   reportDate: string;
   provider: AIProviderType;
+  model?: string;
   activityCount: number;
   sanitizedPromptPreview: string;
   warnings: string[];
@@ -314,6 +329,7 @@ export interface IntegrationHealth {
     localRuleAvailable: boolean;
     geminiCliInstalled: boolean;
     geminiCliVersion: string | null;
+    geminiModel?: string;
     openaiConfigured: boolean;
     openaiModel: string;
     openaiBaseUrl?: string;

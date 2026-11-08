@@ -98,11 +98,19 @@ export const App: React.FC = () => {
       showToast(newPaused ? '⏸ Takip duraklatıldı (Görev Çubuğu)' : '● Takip aktif (Görev Çubuğu)');
       void refreshCoreData(false);
     });
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        void refreshCoreData(false);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
     const interval = setInterval(() => {
+      if (document.hidden) return;
       void refreshCoreData(false);
     }, 15_000);
     return () => {
       clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       unsub?.();
       unsubTracking?.();
     };
@@ -403,18 +411,20 @@ export const App: React.FC = () => {
           )}
 
           {activeTab === 'settings' && (
-            <SettingsView
-              settings={settings}
-              onUpdateSettings={async (partial) => {
-                const updated = await window.mesaiApi.updateSettings(partial);
-                setSettings(updated);
-                await refreshCoreData();
-              }}
-              onClearAllData={async () => {
-                await window.mesaiApi.clearAllData();
-                await refreshCoreData();
-              }}
-            />
+            <Suspense fallback={<SkeletonSettings />}>
+              <SettingsView
+                settings={settings}
+                onUpdateSettings={async (partial) => {
+                  const updated = await window.mesaiApi.updateSettings(partial);
+                  setSettings(updated);
+                  await refreshCoreData();
+                }}
+                onClearAllData={async () => {
+                  await window.mesaiApi.clearAllData();
+                  await refreshCoreData();
+                }}
+              />
+            </Suspense>
           )}
         </main>
       </div>

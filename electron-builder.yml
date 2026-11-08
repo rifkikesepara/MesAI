@@ -1,17 +1,25 @@
 appId: com.mesai.devtrack
 productName: MesAI
+compression: maximum
+electronLanguages:
+  - tr
+  - en-US
 directories:
   output: dist-electron
 files:
   - dist-main/**/*
+  - "!dist-main/tests/**"
   - dist-renderer/**/*
   - assets/**/*
+  - "!**/*.map"
+  - "!**/node_modules/js-yaml/dist/**"
   - package.json
 extraResources:
   - from: readers/ZoomChatReader/bin/Release/net10.0-windows
     to: ZoomChatReader
     filter:
       - "**/*"
+      - "!**/*.pdb"
 publish:
   provider: github
   owner: rifkikesepara

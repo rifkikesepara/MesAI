@@ -29,6 +29,7 @@ let taskbarService: TaskbarService | null = null;
 let isQuitting = false;
 
 let database: MesaiDatabase | null = null;
+let repository: MesaiRepository | null = null;
 let scheduler: SchedulerService | null = null;
 
 const isSmokeVerify = process.argv.includes('--verify-smoke');
@@ -59,6 +60,7 @@ if (!gotLock && !isSmokeVerify && !isUiVerify && !isCaptureScreenshots) {
 
     database = new MesaiDatabase(dbPath);
     const repo = new MesaiRepository(database);
+    repository = repo;
     const matcher = new MatcherService(repo);
     const zoomAdapter = new ZoomReaderAdapter(repo, matcher, { stateDir: userDataDir });
     const gitWatcher = new GitFileWatcherService(repo, matcher);
@@ -445,14 +447,14 @@ function createMainWindow(): void {
   });
 
   mainWindow.on('show', () => {
-    if (database) {
-      taskbarService?.updateTaskbar(new MesaiRepository(database).getSettings().trackingPaused);
+    if (repository) {
+      taskbarService?.updateTaskbar(repository.getSettings().trackingPaused);
     }
   });
 
   mainWindow.webContents.on('did-finish-load', () => {
-    if (database) {
-      taskbarService?.updateTaskbar(new MesaiRepository(database).getSettings().trackingPaused);
+    if (repository) {
+      taskbarService?.updateTaskbar(repository.getSettings().trackingPaused);
     }
   });
 }

@@ -35,6 +35,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   retentionDays: 90,
   aiProvider: 'local_rule',
   aiModel: 'gpt-4o-mini',
+  aiGeminiModel: 'gemini-4-argon-medium',
   aiOpenaiModel: 'gpt-4o-mini',
   aiOpenaiBaseUrl: '',
   aiOpenaiMode: 'auto',
@@ -101,6 +102,8 @@ export function sha256Hex(input: string): string {
 }
 
 export class MesaiRepository {
+  private cachedSettings: AppSettings | null = null;
+
   constructor(private readonly database: MesaiDatabase) {
     this.repairMisdatedActivities();
   }
@@ -111,6 +114,15 @@ export class MesaiRepository {
 
   // ==================== SETTINGS ====================
   public getSettings(): AppSettings {
+    if (this.cachedSettings) {
+      return {
+        ...this.cachedSettings,
+        globalExclusions: [...(this.cachedSettings.globalExclusions ?? [])],
+        globalMappedChatNames: [...(this.cachedSettings.globalMappedChatNames ?? [])],
+        globalJiraProjectKeys: [...(this.cachedSettings.globalJiraProjectKeys ?? [])]
+      };
+    }
+
     const rows = this.db.prepare('SELECT key, value_json FROM settings').all() as Array<{
       key: string;
       value_json: string;
@@ -123,7 +135,13 @@ export class MesaiRepository {
         // ignore malformed setting
       }
     }
-    return merged as unknown as AppSettings;
+    this.cachedSettings = merged as unknown as AppSettings;
+    return {
+      ...this.cachedSettings,
+      globalExclusions: [...(this.cachedSettings.globalExclusions ?? [])],
+      globalMappedChatNames: [...(this.cachedSettings.globalMappedChatNames ?? [])],
+      globalJiraProjectKeys: [...(this.cachedSettings.globalJiraProjectKeys ?? [])]
+    };
   }
 
   public updateSettings(partial: Partial<AppSettings>): AppSettings {
@@ -138,6 +156,7 @@ export class MesaiRepository {
         stmt.run(k, JSON.stringify(v), now);
       }
     }
+    this.cachedSettings = null;
     return this.getSettings();
   }
 
@@ -346,11 +365,12 @@ export class MesaiRepository {
     const newActivityIds: string[] = [];
 
     const checkExistingStmt = this.db.prepare(
-      'SELECT id FROM source_records WHERE dedup_key = ?'
+      'SELECT id, last_seen_at FROM source_records WHERE dedup_key = ?'
     );
     const updateSeenStmt = this.db.prepare(
       'UPDATE source_records SET last_seen_at = ? WHERE id = ?'
     );
+    const capturedMs = Date.parse(snapshot.capturedAt);
     const insertSourceStmt = this.db.prepare(`
       INSERT INTO source_records (
         id, source_type, dedup_key, external_id, session_id, chat_name,
@@ -403,9 +423,18 @@ export class MesaiRepository {
           ? `zoom:pid:${msg.persistentMessageId}`
           : `zoom:${snapshot.sessionId || snapshot.chatName || 'chat'}:${dateAnchor}:${msg.visibleTimestamp || 'notime'}:${senderKey}:${contentSignature}:occ${msg.occurrenceIndexInView || 1}`;
 
-        const existing = checkExistingStmt.get(dedupKey) as { id: string } | undefined;
+        const existing = checkExistingStmt.get(dedupKey) as
+          | { id: string; last_seen_at?: string }
+          | undefined;
         if (existing) {
-          updateSeenStmt.run(snapshot.capturedAt, existing.id);
+          const prevSeenMs = existing.last_seen_at ? Date.parse(existing.last_seen_at) : NaN;
+          if (
+            Number.isNaN(prevSeenMs) ||
+            Number.isNaN(capturedMs) ||
+            Math.abs(capturedMs - prevSeenMs) >= 600_000
+          ) {
+            updateSeenStmt.run(snapshot.capturedAt, existing.id);
+          }
           updatedMessagesCount++;
           continue;
         }
@@ -529,6 +558,24 @@ export class MesaiRepository {
   }
 
   // ==================== GIT & FILE INGESTION ====================
+  /**
+   * Fast check whether a Git commit dedup_key already exists in source_records
+   * and (if expectsDiff is true) already has a non-empty codeDiff payload.
+   */
+  public hasCommitWithDiff(dedupKey: string, expectsDiff: boolean): boolean {
+    const row = this.db
+      .prepare('SELECT raw_payload_json FROM source_records WHERE dedup_key = ?')
+      .get(dedupKey) as { raw_payload_json?: string } | undefined;
+    if (!row) return false;
+    if (!expectsDiff) return true;
+    try {
+      const parsed = JSON.parse(row.raw_payload_json || '{}') as { codeDiff?: string | null };
+      return Boolean(parsed.codeDiff);
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * Records a Git commit or uncommitted file/working-tree change.
    * BR-01: Uncommitted file changes are ALWAYS recorded as 'in_progress' and never 'completed' or given fabricated duration.
@@ -1780,7 +1827,7 @@ export class MesaiRepository {
       // 1. Re-resolve Zoom timestamps using updated month-day & relative parser
       const zoomSources = this.db
         .prepare(`
-          SELECT id, raw_payload_json, first_seen_at, resolved_timestamp_iso
+          SELECT id, raw_payload_json, first_seen_at, resolved_timestamp_iso, timestamp_confidence
           FROM source_records
           WHERE source_type IN ('zoom_chat', 'zoom_call')
         `)
@@ -1789,23 +1836,15 @@ export class MesaiRepository {
         raw_payload_json: string;
         first_seen_at: string;
         resolved_timestamp_iso: string | null;
+        timestamp_confidence: string;
       }>;
 
-      const updateSr = this.db.prepare(`
-        UPDATE source_records
-        SET resolved_timestamp_iso = ?, timestamp_confidence = ?
-        WHERE id = ?
-      `);
-      const updateEv = this.db.prepare(`
-        UPDATE evidences
-        SET resolved_timestamp_iso = ?, timestamp_confidence = ?
-        WHERE source_record_id = ?
-      `);
-      const updateAct = this.db.prepare(`
-        UPDATE activities
-        SET occurred_at_iso = ?, timestamp_confidence = ?
-        WHERE id IN (SELECT activity_id FROM evidences WHERE source_record_id = ?)
-      `);
+      const pendingZoomRepairs: Array<{
+        id: string;
+        resolvedIso: string | null;
+        targetIso: string;
+        confidence: TimestampConfidence;
+      }> = [];
 
       for (const row of zoomSources) {
         try {
@@ -1818,12 +1857,51 @@ export class MesaiRepository {
             payload.visibleTimestamp,
             row.first_seen_at
           );
-          const targetIso = resolved.resolvedTimestampIso ?? '';
-          updateSr.run(resolved.resolvedTimestampIso, resolved.confidence, row.id);
-          updateEv.run(resolved.resolvedTimestampIso, resolved.confidence, row.id);
-          updateAct.run(targetIso, resolved.confidence, row.id);
+          if (
+            row.resolved_timestamp_iso === resolved.resolvedTimestampIso &&
+            row.timestamp_confidence === resolved.confidence
+          ) {
+            continue;
+          }
+          pendingZoomRepairs.push({
+            id: row.id,
+            resolvedIso: resolved.resolvedTimestampIso,
+            targetIso: resolved.resolvedTimestampIso ?? '',
+            confidence: resolved.confidence
+          });
         } catch {
           // ignore malformed payload
+        }
+      }
+
+      if (pendingZoomRepairs.length > 0) {
+        const updateSr = this.db.prepare(`
+          UPDATE source_records
+          SET resolved_timestamp_iso = ?, timestamp_confidence = ?
+          WHERE id = ?
+        `);
+        const updateEv = this.db.prepare(`
+          UPDATE evidences
+          SET resolved_timestamp_iso = ?, timestamp_confidence = ?
+          WHERE source_record_id = ?
+        `);
+        const updateAct = this.db.prepare(`
+          UPDATE activities
+          SET occurred_at_iso = ?, timestamp_confidence = ?
+          WHERE id IN (SELECT activity_id FROM evidences WHERE source_record_id = ?)
+        `);
+
+        this.db.exec('BEGIN;');
+        try {
+          for (const item of pendingZoomRepairs) {
+            updateSr.run(item.resolvedIso, item.confidence, item.id);
+            updateEv.run(item.resolvedIso, item.confidence, item.id);
+            updateAct.run(item.targetIso, item.confidence, item.id);
+          }
+          this.db.exec('COMMIT;');
+        } catch (err) {
+          this.db.exec('ROLLBACK;');
+          throw err;
         }
       }
 
@@ -1855,44 +1933,60 @@ export class MesaiRepository {
         const delSr = this.db.prepare('DELETE FROM source_records WHERE id = ?');
         const delAct = this.db.prepare('DELETE FROM activities WHERE id = ?');
 
-        for (const b of bogusActs) {
-          const srs = getSr.all(b.id) as Array<{ source_record_id: string | null }>;
-          delLink.run(b.id);
-          delEv.run(b.id);
-          delAct.run(b.id);
-          for (const sr of srs) {
-            if (sr.source_record_id) delSr.run(sr.source_record_id);
+        this.db.exec('BEGIN;');
+        try {
+          for (const b of bogusActs) {
+            const srs = getSr.all(b.id) as Array<{ source_record_id: string | null }>;
+            delLink.run(b.id);
+            delEv.run(b.id);
+            delAct.run(b.id);
+            for (const sr of srs) {
+              if (sr.source_record_id) delSr.run(sr.source_record_id);
+            }
           }
+
+          // Clean up any orphaned work_items that belonged solely to teammate commits
+          this.db
+            .prepare(`
+              DELETE FROM work_items
+              WHERE id NOT IN (SELECT work_item_id FROM activity_links WHERE work_item_id IS NOT NULL)
+            `)
+            .run();
+
+          // Also clear non-user-edited report items that were generated from those bogus records
+          this.db
+            .prepare('DELETE FROM report_items WHERE is_user_edited = 0')
+            .run();
+          this.db.exec('COMMIT;');
+        } catch (err) {
+          this.db.exec('ROLLBACK;');
+          throw err;
         }
-
-        // Clean up any orphaned work_items that belonged solely to teammate commits
-        this.db
-          .prepare(`
-            DELETE FROM work_items
-            WHERE id NOT IN (SELECT work_item_id FROM activity_links WHERE work_item_id IS NOT NULL)
-          `)
-          .run();
-
-        // Also clear non-user-edited report items that were generated from those bogus records
-        this.db
-          .prepare('DELETE FROM report_items WHERE is_user_edited = 0')
-          .run();
       }
 
       // 3. Clean up any legacy verbose AI error string that echoed the full command-line prompt
-      this.db
+      const hasLegacyAiErr = this.db
         .prepare(`
-          UPDATE sync_state
-          SET last_error = 'Gemini CLI bireysel OAuth oturumu Google tarafından desteklenmemektedir (IneligibleTierError). Yerel Kurallı Motor kullanıldı.'
+          SELECT 1 FROM sync_state
           WHERE connector = 'ai_provider' AND last_error LIKE '%Command failed: powershell.exe%'
         `)
-        .run();
+        .get();
+      if (hasLegacyAiErr) {
+        this.db
+          .prepare(`
+            UPDATE sync_state
+            SET last_error = 'Gemini CLI bireysel OAuth oturumu Google tarafından desteklenmemektedir (IneligibleTierError). Yerel Kurallı Motor kullanıldı.'
+            WHERE connector = 'ai_provider' AND last_error LIKE '%Command failed: powershell.exe%'
+          `)
+          .run();
+      }
     } catch {
       // ignore if tables are not yet initialized
     }
   }
 
   public clearAllData(): void {
+    this.cachedSettings = null;
     this.db.exec(`
       DELETE FROM report_items;
       DELETE FROM daily_reports;

@@ -263,7 +263,12 @@ export const CustomMenuBar: React.FC<CustomMenuBarProps> = ({
                   <button
                     type="button"
                     className="dropdown-btn"
-                    onClick={() => handleAction(() => onNavigateTab('settings'))}
+                    onClick={() =>
+                      handleAction(() => {
+                        onNavigateTab('settings');
+                        void window.mesaiApi.checkForUpdates().catch(() => undefined);
+                      })
+                    }
                   >
                     <DownloadIcon size={14} /> <span>Güncellemeleri Denetle</span>
                   </button>
@@ -272,11 +277,15 @@ export const CustomMenuBar: React.FC<CustomMenuBarProps> = ({
                     className="dropdown-btn"
                     onClick={() =>
                       handleAction(() => {
-                        window.open('https://github.com/rifkikesepara/MesAI', '_blank');
+                        if (window.mesaiApi.openExternalUrl) {
+                          void window.mesaiApi.openExternalUrl('https://github.com/rifkikesepara/MesAI/releases');
+                        } else {
+                          window.open('https://github.com/rifkikesepara/MesAI/releases', '_blank');
+                        }
                       })
                     }
                   >
-                    <ExternalLinkIcon size={14} /> <span>GitHub Deposu</span>
+                    <ExternalLinkIcon size={14} /> <span>GitHub Releases & Depo</span>
                   </button>
                   <button
                     type="button"
