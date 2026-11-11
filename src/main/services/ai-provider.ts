@@ -1524,7 +1524,7 @@ export class GeminiCliProvider implements AIProvider {
 
     const rawOutput = this.customRunner
       ? await this.customRunner(prompt, signal)
-      : await this.runTerminalAiPrompt(prompt, 75_000, signal, onProgress);
+      : await this.runTerminalAiPrompt(prompt, 180_000, signal, onProgress);
 
     return validateAndParseAiReportJson(rawOutput, validEvidenceIds, maxChars);
   }
@@ -1578,21 +1578,12 @@ export class GeminiCliProvider implements AIProvider {
     signal?: AbortSignal,
     onProgress?: (log: ReportProgressLog) => void
   ): Promise<string> {
-    // Windows CreateProcessW limits CLI args to ~32KB.
-    // If prompt is large, pass a compact prompt and stream evidence via stdin or truncate safely.
-    const maxAgyArgPromptLength = 20_000;
-    const safePrompt =
-      prompt.length > maxAgyArgPromptLength
-        ? prompt.slice(0, maxAgyArgPromptLength) + '\n\n[Prompt truncated to stay within OS command-line buffer limits]'
-        : prompt;
-
     const effectiveModel = this.getEffectiveModel();
     const effortMatch = effectiveModel ? /-(low|medium|high|xhigh|max)$/i.exec(effectiveModel) : null;
     const effortLevel = effortMatch ? effortMatch[1].toLowerCase() : 'low';
     const agyArgs = [
-      '-p',
-      safePrompt,
       '--disable-slash-commands',
+      '--dangerously-skip-permissions',
       '--effort',
       effortLevel,
       ...(effectiveModel ? ['--model', effectiveModel] : [])
@@ -1611,18 +1602,19 @@ export class GeminiCliProvider implements AIProvider {
         {
           cwd: os.tmpdir(),
           timeout: timeoutMs,
-          maxBuffer: 4 * 1024 * 1024,
+          maxBuffer: 8 * 1024 * 1024,
           windowsHide: true,
           signal
         },
         (error, stdout, stderr) => {
+          const cleanStderr = (stderr || '')
+            .split(/\r?\n/)
+            .map((l) => l.trim())
+            .filter((l) => l && !l.startsWith('warning:'))
+            .slice(0, 2)
+            .join(' | ');
+
           if (error) {
-            const cleanStderr = (stderr || '')
-              .split(/\r?\n/)
-              .map((l) => l.trim())
-              .filter((l) => l && !l.startsWith('warning:'))
-              .slice(0, 2)
-              .join(' | ');
             reject(
               new Error(
                 `Antigravity CLI (agy) hatası: ${(cleanStderr || error.message).slice(0, 260)}`
@@ -1630,6 +1622,16 @@ export class GeminiCliProvider implements AIProvider {
             );
             return;
           }
+
+          if (!stdout.trim()) {
+            reject(
+              new Error(
+                `Antigravity CLI (agy) boş yanıt döndürdü: ${(cleanStderr || 'Çıktı üretilemedi').slice(0, 260)}`
+              )
+            );
+            return;
+          }
+
           resolve(stdout);
         }
       );
@@ -1656,7 +1658,13 @@ export class GeminiCliProvider implements AIProvider {
         }
       });
 
-      child.stdin?.end();
+      if (child.stdin) {
+        child.stdin.on('error', () => {
+          // ignore EPIPE if process exits early
+        });
+        child.stdin.write(prompt, 'utf8');
+        child.stdin.end();
+      }
     });
   }
 
