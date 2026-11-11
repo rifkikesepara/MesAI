@@ -1371,6 +1371,108 @@ describe('MesAI Core Verification Suite', () => {
 
     db.close();
   });
+
+  it('16. Zoom timestamp edge cases: overnight stale Today divider, thread weekday/yesterday priority, pre-Today backfill, and retroactive DB repair', () => {
+    // 1. Overnight stale "Today" divider polled at 08:11 AM with yesterday's 17:44 message -> must resolve to Yesterday
+    const morningCapture = '2026-11-11T08:11:58.027+03:00'; // Wednesday
+    const staleToday = resolveZoomTimestamp('Today', '17:44', morningCapture);
+    assert.equal(staleToday.resolvedDate, '2026-11-10');
+    assert.equal(staleToday.resolvedTimestampIso, '2026-11-10T17:44:00+03:00');
+    assert.equal(staleToday.rawTimestampText, 'Yesterday 17:44');
+
+    // 2. Thread message under "Today" divider carrying its own weekday ("Mon 16:30") or "Yesterday, 17:16"
+    const threadMon = resolveZoomTimestamp('Today', 'Mon 16:30', '2026-11-11T10:28:10.691+03:00');
+    assert.equal(threadMon.resolvedDate, '2026-11-09');
+    assert.equal(threadMon.resolvedTimestampIso, '2026-11-09T16:30:00+03:00');
+    assert.equal(threadMon.rawTimestampText, 'Mon 16:30');
+
+    const threadYesterday = resolveZoomTimestamp('Today', 'Yesterday, 17:16', '2026-11-11T10:28:10.691+03:00');
+    assert.equal(threadYesterday.resolvedDate, '2026-11-10');
+    assert.equal(threadYesterday.resolvedTimestampIso, '2026-11-10T17:16:00+03:00');
+    assert.equal(threadYesterday.rawTimestampText, 'Yesterday, 17:16');
+
+    // 3. Pre-"Today" null dateGroup backfill + cross-day dedupKey stability
+    const db = new MesaiDatabase(':memory:');
+    const repo = new MesaiRepository(db);
+
+    const snapPoll1 = createSampleSnapshot({
+      chatName: 'LSEG IT HELP DESK DEMO',
+      sessionId: 'sess-lseg',
+      capturedAt: '2026-11-11T08:11:58.027+03:00',
+      messages: [
+        {
+          indexInDom: 1,
+          occurrenceIndexInView: 1,
+          fingerprint: 'fp_pre_today',
+          uiaRuntimeId: '1.1',
+          persistentMessageId: null,
+          isGroupedFollowUp: false,
+          dateGroup: null, // Above the "Today" divider in virtual list
+          visibleTimestamp: '07:50',
+          sender: 'Teammate',
+          senderResolved: 'Teammate',
+          isSentByMe: false,
+          messageType: 'text',
+          text: 'Dün sabahki mesaj',
+          links: [],
+          rawAccessibleLabel: null
+        },
+        {
+          indexInDom: 2,
+          occurrenceIndexInView: 1,
+          fingerprint: 'fp_stale_today',
+          uiaRuntimeId: '1.2',
+          persistentMessageId: null,
+          isGroupedFollowUp: false,
+          dateGroup: 'Today', // Stale overnight divider before Zoom refreshed
+          visibleTimestamp: '17:44',
+          sender: 'You',
+          senderResolved: 'Rıfkı Kesepara',
+          isSentByMe: true,
+          messageType: 'text',
+          text: 'Eline sağlık abi',
+          links: [],
+          rawAccessibleLabel: null
+        }
+      ]
+    });
+
+    const r1 = repo.ingestZoomSnapshot(snapPoll1);
+    assert.equal(r1.newMessagesCount, 2);
+
+    // 38 seconds later Zoom refreshes DOM to "Yesterday" / "Yesterday, 17:44" -> must NOT duplicate
+    const snapPoll2 = createSampleSnapshot({
+      chatName: 'LSEG IT HELP DESK DEMO',
+      sessionId: 'sess-lseg',
+      capturedAt: '2026-11-11T08:12:35.989+03:00',
+      messages: [
+        {
+          indexInDom: 1,
+          occurrenceIndexInView: 1,
+          fingerprint: 'fp_refreshed_yesterday',
+          uiaRuntimeId: '1.99',
+          persistentMessageId: null,
+          isGroupedFollowUp: false,
+          dateGroup: 'Yesterday',
+          visibleTimestamp: 'Yesterday, 17:44',
+          sender: 'You',
+          senderResolved: 'Rıfkı Kesepara',
+          isSentByMe: true,
+          messageType: 'text',
+          text: 'Eline sağlık abi',
+          links: [],
+          rawAccessibleLabel: null
+        }
+      ]
+    });
+
+    const r2 = repo.ingestZoomSnapshot(snapPoll2);
+    assert.equal(r2.newMessagesCount, 0, 'Refreshed Yesterday label must match canonical dedupKey without duplicating');
+    assert.equal(repo.listActivities({ date: '2026-11-11' }).length, 0, 'Neither yesterday message may appear on 2026-11-11');
+    assert.equal(repo.listActivities({ date: '2026-11-10' }).length, 2, 'Both messages must be on 2026-11-10');
+
+    db.close();
+  });
 });
 
 

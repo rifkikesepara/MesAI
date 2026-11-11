@@ -272,6 +272,33 @@ function parseExplicitOrMonthDayDate(
   return null;
 }
 
+function parseRelativeDaysAgo(
+  text: string,
+  obsDayOfWeek: number
+): { daysAgo: number; matchedToken: 'today' | 'yesterday' | 'weekday' } | null {
+  if (!text) return null;
+  const tokens = text
+    .toLowerCase()
+    .replace(/[(),]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+
+  if (tokens.includes('yesterday') || tokens.includes('dün') || tokens.includes('dun')) {
+    return { daysAgo: 1, matchedToken: 'yesterday' };
+  }
+  for (const tok of tokens) {
+    if (tok in WEEKDAY_MAP) {
+      const targetDow = WEEKDAY_MAP[tok];
+      const diff = (obsDayOfWeek - targetDow + 7) % 7;
+      return { daysAgo: diff, matchedToken: 'weekday' };
+    }
+  }
+  if (tokens.includes('today') || tokens.includes('bugün') || tokens.includes('bugun')) {
+    return { daysAgo: 0, matchedToken: 'today' };
+  }
+  return null;
+}
+
 /**
  * Resolves Zoom relative date/time strings ("Today", "Yesterday", "Wed", "Wed 11:55", "Sep 1, 09:50", "Oct 6, 15:09", "16:25")
  * against the observation time without fabricating certainty for ambiguous values.
@@ -285,9 +312,19 @@ export function resolveZoomTimestamp(
   const dg = (dateGroup ?? '').trim();
   const vt = (visibleTimestamp ?? '').trim();
 
+  const tzOffset = extractTimezoneOffset(capturedAtIso);
+  const offsetMinutes = parseOffsetMinutes(tzOffset);
+  const capturedMs = Date.parse(capturedAtIso);
+  const baseMs = Number.isNaN(capturedMs) ? Date.now() : capturedMs;
+  const obs = toLocalComponents(baseMs, offsetMinutes);
+
+  const vtCalendarDate = vt ? parseExplicitOrMonthDayDate(vt, obs.year, obs.month, obs.day) : null;
+  const vtRelative = vt ? parseRelativeDaysAgo(vt, obs.dayOfWeek) : null;
+  const vtHasOwnDate = Boolean(vtCalendarDate || vtRelative);
+
   let rawTimestampText = '';
   if (dg && vt) {
-    if (vt.toLowerCase().startsWith(dg.toLowerCase())) {
+    if (vtHasOwnDate || vt.toLowerCase().startsWith(dg.toLowerCase())) {
       rawTimestampText = vt;
     } else {
       rawTimestampText = `${dg} ${vt}`;
@@ -296,19 +333,14 @@ export function resolveZoomTimestamp(
     rawTimestampText = vt || dg || 'Bilinmiyor';
   }
 
-  const tzOffset = extractTimezoneOffset(capturedAtIso);
-  const offsetMinutes = parseOffsetMinutes(tzOffset);
-  const capturedMs = Date.parse(capturedAtIso);
-  const baseMs = Number.isNaN(capturedMs) ? Date.now() : capturedMs;
-  const obs = toLocalComponents(baseMs, offsetMinutes);
-
   const combined = `${dg} ${vt}`.trim();
   const timePart = parseTimeToken(vt) ?? parseTimeToken(dg);
   const fallbackHour = timePart?.hour ?? 0;
   const fallbackMinute = timePart?.minute ?? 0;
 
-  // 1. Check explicit ISO, DD.MM.YYYY, or Month+Day ("Sep 1, 09:50", "Oct 6, 15:09", "28 Eyl")
-  const parsedCalendarDate = parseExplicitOrMonthDayDate(combined, obs.year, obs.month, obs.day);
+  // 1. Check explicit ISO, DD.MM.YYYY, or Month+Day ("Sep 1, 09:50", "Oct 6, 15:09", "28 Eyl"), prioritizing vt
+  const parsedCalendarDate =
+    vtCalendarDate ?? parseExplicitOrMonthDayDate(combined, obs.year, obs.month, obs.day);
   if (parsedCalendarDate) {
     const formatted = formatIsoWithOffset(
       parsedCalendarDate.year,
@@ -328,30 +360,34 @@ export function resolveZoomTimestamp(
     };
   }
 
-  // 2. Determine day offset relative to observation date ("Today", "Yesterday", "Mon..Sun")
+  // 2. Determine day offset relative to observation date ("Today", "Yesterday", "Mon..Sun"), prioritizing vt over dg
   let daysAgo: number | null = null;
-  const lowerCombined = combined.toLowerCase();
-  const tokens = lowerCombined.replace(/[(),]/g, ' ').split(/\s+/).filter(Boolean);
+  const dgRelative = dg ? parseRelativeDaysAgo(dg, obs.dayOfWeek) : null;
 
-  if (
-    tokens.includes('today') ||
-    tokens.includes('bugün') ||
-    tokens.includes('bugun') ||
-    (!dg && /^\d{1,2}:\d{2}/.test(vt))
-  ) {
+  if (vtRelative) {
+    daysAgo = vtRelative.daysAgo;
+  } else if (dgRelative) {
+    daysAgo = dgRelative.daysAgo;
+  } else if (!dg && /^\d{1,2}:\d{2}/.test(vt)) {
     daysAgo = 0;
-  } else if (tokens.includes('yesterday') || tokens.includes('dün') || tokens.includes('dun')) {
-    daysAgo = 1;
-  } else {
-    for (const tok of tokens) {
-      if (tok in WEEKDAY_MAP) {
-        const targetDow = WEEKDAY_MAP[tok];
-        const diff = (obs.dayOfWeek - targetDow + 7) % 7;
-        daysAgo = diff;
-        break;
+  }
+
+  // Future-Time Guard: If a message resolves to Today (daysAgo === 0) with a clock time > 60 minutes ahead
+  // of observation time (e.g., 17:44 seen at 08:11 AM), it came from an overnight un-refreshed "Today" divider
+  // and actually belongs to Yesterday (daysAgo = 1).
+  if (daysAgo === 0 && timePart !== null) {
+    const msgMinutes = timePart.hour * 60 + timePart.minute;
+    const obsMinutes = obs.hour * 60 + obs.minute;
+    if (msgMinutes > obsMinutes + 60) {
+      daysAgo = 1;
+      if (vt && !/^(yesterday|dün|dun)\b/i.test(vt)) {
+        rawTimestampText = `Yesterday ${vt.replace(/^(today|bugün|bugun)[,\s]+/i, '')}`;
       }
     }
   }
+
+  const lowerCombined = combined.toLowerCase();
+  const tokens = lowerCombined.replace(/[(),]/g, ' ').split(/\s+/).filter(Boolean);
 
   // If a relative day ("Today", "Yesterday", "Thu", etc.) was identified:
   // If timePart is present, confidence is 'resolved_relative'.

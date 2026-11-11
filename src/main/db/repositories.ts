@@ -397,9 +397,14 @@ export class MesaiRepository {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
+    const firstTodayIdx = snapshot.messages.findIndex((m) =>
+      /^(today|bugün|bugun)$/i.test((m.dateGroup ?? '').trim())
+    );
+
     this.db.exec('BEGIN;');
     try {
-      for (const msg of snapshot.messages) {
+      for (let i = 0; i < snapshot.messages.length; i++) {
+        const msg = snapshot.messages[i];
         // Skip empty non-call messages
         const textBody = (msg.text ?? '').trim();
         const isCall = msg.messageType === 'call' || Boolean(msg.callRecord);
@@ -407,13 +412,19 @@ export class MesaiRepository {
           continue;
         }
 
+        const effectiveDateGroup =
+          !msg.dateGroup && firstTodayIdx > i ? 'Yesterday' : msg.dateGroup;
+
         const resolvedTs = resolveZoomTimestamp(
-          msg.dateGroup,
+          effectiveDateGroup,
           msg.visibleTimestamp,
           snapshot.capturedAt
         );
 
-        const dateAnchor = resolvedTs.resolvedDate ?? (msg.dateGroup || 'unknown-date');
+        const dateAnchor = resolvedTs.resolvedDate ?? (effectiveDateGroup || 'unknown-date');
+        const timeAnchor = resolvedTs.resolvedTimestampIso
+          ? resolvedTs.resolvedTimestampIso.slice(11, 16)
+          : msg.visibleTimestamp || 'notime';
         const senderKey = (msg.senderResolved || msg.sender || 'unknown-sender').trim();
         const contentSignature = sha256Hex(
           `${msg.messageType}|${textBody}|${msg.callRecord?.statusText ?? ''}|${(msg.links ?? []).join(',')}`
@@ -421,9 +432,13 @@ export class MesaiRepository {
 
         const dedupKey = msg.persistentMessageId
           ? `zoom:pid:${msg.persistentMessageId}`
+          : `zoom:${snapshot.sessionId || snapshot.chatName || 'chat'}:${dateAnchor}:${timeAnchor}:${senderKey}:${contentSignature}:occ${msg.occurrenceIndexInView || 1}`;
+        const legacyDedupKey = msg.persistentMessageId
+          ? dedupKey
           : `zoom:${snapshot.sessionId || snapshot.chatName || 'chat'}:${dateAnchor}:${msg.visibleTimestamp || 'notime'}:${senderKey}:${contentSignature}:occ${msg.occurrenceIndexInView || 1}`;
 
-        const existing = checkExistingStmt.get(dedupKey) as
+        const existing = (checkExistingStmt.get(dedupKey) ??
+          (legacyDedupKey !== dedupKey ? checkExistingStmt.get(legacyDedupKey) : undefined)) as
           | { id: string; last_seen_at?: string }
           | undefined;
         if (existing) {
@@ -1824,15 +1839,26 @@ export class MesaiRepository {
    */
   public repairMisdatedActivities(): void {
     try {
-      // 1. Re-resolve Zoom timestamps using updated month-day & relative parser
+      // 1. Re-resolve Zoom timestamps using updated month-day, relative & future-time parser, and deduplicate
       const zoomSources = this.db
         .prepare(`
-          SELECT id, raw_payload_json, first_seen_at, resolved_timestamp_iso, timestamp_confidence
+          SELECT id, session_id, chat_name, sender, sender_resolved, message_type,
+                 text_content, links_json, raw_timestamp_text, raw_payload_json,
+                 first_seen_at, resolved_timestamp_iso, timestamp_confidence
           FROM source_records
           WHERE source_type IN ('zoom_chat', 'zoom_call')
+          ORDER BY first_seen_at ASC
         `)
         .all() as Array<{
         id: string;
+        session_id: string | null;
+        chat_name: string | null;
+        sender: string | null;
+        sender_resolved: string | null;
+        message_type: string;
+        text_content: string | null;
+        links_json: string;
+        raw_timestamp_text: string;
         raw_payload_json: string;
         first_seen_at: string;
         resolved_timestamp_iso: string | null;
@@ -1841,30 +1867,46 @@ export class MesaiRepository {
 
       const pendingZoomRepairs: Array<{
         id: string;
+        rawTs: string;
         resolvedIso: string | null;
         targetIso: string;
         confidence: TimestampConfidence;
       }> = [];
+      const duplicateSourceRecordIds: string[] = [];
+      const seenCanonicalKeys = new Map<string, string>();
 
       for (const row of zoomSources) {
         try {
           const payload = JSON.parse(row.raw_payload_json) as {
             dateGroup?: string | null;
             visibleTimestamp?: string | null;
+            occurrenceIndexInView?: number;
           };
           const resolved = resolveZoomTimestamp(
             payload.dateGroup,
             payload.visibleTimestamp,
             row.first_seen_at
           );
+
+          const senderKey = (row.sender_resolved || row.sender || '').trim();
+          const canonicalKey = `${row.session_id || row.chat_name || ''}|${senderKey}|${row.message_type}|${row.text_content ?? ''}|${row.links_json}|${resolved.resolvedTimestampIso ?? resolved.rawTimestampText}|occ${payload.occurrenceIndexInView || 1}`;
+
+          if (seenCanonicalKeys.has(canonicalKey)) {
+            duplicateSourceRecordIds.push(row.id);
+            continue;
+          }
+          seenCanonicalKeys.set(canonicalKey, row.id);
+
           if (
             row.resolved_timestamp_iso === resolved.resolvedTimestampIso &&
-            row.timestamp_confidence === resolved.confidence
+            row.timestamp_confidence === resolved.confidence &&
+            row.raw_timestamp_text === resolved.rawTimestampText
           ) {
             continue;
           }
           pendingZoomRepairs.push({
             id: row.id,
+            rawTs: resolved.rawTimestampText,
             resolvedIso: resolved.resolvedTimestampIso,
             targetIso: resolved.resolvedTimestampIso ?? '',
             confidence: resolved.confidence
@@ -1874,29 +1916,45 @@ export class MesaiRepository {
         }
       }
 
-      if (pendingZoomRepairs.length > 0) {
+      if (pendingZoomRepairs.length > 0 || duplicateSourceRecordIds.length > 0) {
         const updateSr = this.db.prepare(`
           UPDATE source_records
-          SET resolved_timestamp_iso = ?, timestamp_confidence = ?
+          SET raw_timestamp_text = ?, resolved_timestamp_iso = ?, timestamp_confidence = ?
           WHERE id = ?
         `);
         const updateEv = this.db.prepare(`
           UPDATE evidences
-          SET resolved_timestamp_iso = ?, timestamp_confidence = ?
+          SET raw_timestamp_text = ?, resolved_timestamp_iso = ?, timestamp_confidence = ?
           WHERE source_record_id = ?
         `);
         const updateAct = this.db.prepare(`
           UPDATE activities
-          SET occurred_at_iso = ?, timestamp_confidence = ?
+          SET raw_timestamp_text = ?, occurred_at_iso = ?, timestamp_confidence = ?
           WHERE id IN (SELECT activity_id FROM evidences WHERE source_record_id = ?)
         `);
+        const getActIdsBySr = this.db.prepare(`
+          SELECT activity_id FROM evidences WHERE source_record_id = ?
+        `);
+        const delLinkByAct = this.db.prepare('DELETE FROM activity_links WHERE activity_id = ?');
+        const delEvBySr = this.db.prepare('DELETE FROM evidences WHERE source_record_id = ?');
+        const delActById = this.db.prepare('DELETE FROM activities WHERE id = ?');
+        const delSrById = this.db.prepare('DELETE FROM source_records WHERE id = ?');
 
         this.db.exec('BEGIN;');
         try {
           for (const item of pendingZoomRepairs) {
-            updateSr.run(item.resolvedIso, item.confidence, item.id);
-            updateEv.run(item.resolvedIso, item.confidence, item.id);
-            updateAct.run(item.targetIso, item.confidence, item.id);
+            updateSr.run(item.rawTs, item.resolvedIso, item.confidence, item.id);
+            updateEv.run(item.rawTs, item.resolvedIso, item.confidence, item.id);
+            updateAct.run(item.rawTs, item.targetIso, item.confidence, item.id);
+          }
+          for (const dupSrId of duplicateSourceRecordIds) {
+            const actRows = getActIdsBySr.all(dupSrId) as Array<{ activity_id: string }>;
+            delEvBySr.run(dupSrId);
+            for (const a of actRows) {
+              delLinkByAct.run(a.activity_id);
+              delActById.run(a.activity_id);
+            }
+            delSrById.run(dupSrId);
           }
           this.db.exec('COMMIT;');
         } catch (err) {

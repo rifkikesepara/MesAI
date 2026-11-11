@@ -508,16 +508,35 @@ internal static class Program
         while (child != null)
         {
             string cls = child.Current.ClassName ?? "";
+            var dateIndicatorNode = cls.Contains("_dateIndicator_")
+                ? child
+                : FindFirstByClassSubstring(child, "_dateIndicator_", 2);
 
-            if (cls.Contains("_dateIndicator_"))
+            if (dateIndicatorNode != null)
             {
-                string dateText = (child.Current.Name ?? "").Trim();
+                string dateText = (dateIndicatorNode.Current.Name ?? "").Trim();
                 if (string.IsNullOrEmpty(dateText))
-                    dateText = CollectAllText(child).Trim();
+                    dateText = CollectAllText(dateIndicatorNode).Trim();
                 if (!string.IsNullOrEmpty(dateText))
+                {
+                    if (string.Equals(dateText, "Today", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(dateText, "Bugün", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(dateText, "Bugun", StringComparison.OrdinalIgnoreCase))
+                    {
+                        foreach (var prevMsg in snapshot.Messages)
+                        {
+                            if (string.IsNullOrEmpty(prevMsg.DateGroup))
+                                prevMsg.DateGroup = "Yesterday";
+                        }
+                    }
                     currentDateGroup = dateText;
+                    lastHeaderSender = null;
+                    lastHeaderSenderResolved = null;
+                    lastHeaderTimestamp = null;
+                }
             }
-            else if (cls.Contains("_message_"))
+
+            if (cls.Contains("_message_"))
             {
                 domIndex++;
                 var msg = ParseMessageElement(
@@ -529,17 +548,20 @@ internal static class Program
                     ref lastHeaderTimestamp,
                     ref lastIsSentByMe);
 
-                string baseKey = $"{snapshot.ChatName}|{msg.DateGroup}|{msg.VisibleTimestamp}|{msg.Sender}|{msg.MessageType}|{msg.Text}|{msg.CallRecord?.StatusText}|{string.Join(",", msg.Links)}";
-                occurrenceCounter.TryGetValue(baseKey, out int occ);
-                occ++;
-                occurrenceCounter[baseKey] = occ;
-                msg.OccurrenceIndexInView = occ;
-                msg.Fingerprint = ComputeSha256Hex($"{baseKey}|#{occ}")[..16];
-
                 snapshot.Messages.Add(msg);
             }
 
             child = walker.GetNextSibling(child);
+        }
+
+        foreach (var msg in snapshot.Messages)
+        {
+            string baseKey = $"{snapshot.ChatName}|{msg.DateGroup}|{msg.VisibleTimestamp}|{msg.Sender}|{msg.MessageType}|{msg.Text}|{msg.CallRecord?.StatusText}|{string.Join(",", msg.Links)}";
+            occurrenceCounter.TryGetValue(baseKey, out int occ);
+            occ++;
+            occurrenceCounter[baseKey] = occ;
+            msg.OccurrenceIndexInView = occ;
+            msg.Fingerprint = ComputeSha256Hex($"{baseKey}|#{occ}")[..16];
         }
 
         snapshot.Status = "ok";
@@ -639,7 +661,7 @@ internal static class Program
 
         string? finalSender = headerSender ?? fallbackSender ?? lastHeaderSender;
         string? finalSenderResolved = avatarOwner ?? (finalSender == lastHeaderSender ? lastHeaderSenderResolved : null) ?? finalSender;
-        string? finalTime = headerTime ?? fallbackTime ?? lastHeaderTimestamp;
+        string? finalTime = headerTime ?? fallbackTime ?? (isGroupedFollowUp ? lastHeaderTimestamp : null);
 
         if (!isSentByMe && string.Equals(finalSender, "You", StringComparison.OrdinalIgnoreCase))
             isSentByMe = true;
@@ -778,7 +800,7 @@ internal static class Program
         if (lastComma > firstComma && lastComma + 1 < working.Length)
         {
             string candidateTime = working[(lastComma + 1)..].Trim();
-            if (Regex.IsMatch(candidateTime, @"(\d{1,2}:\d{2}|Yesterday|Today|Mon|Tue|Wed|Thu|Fri|Sat|Sun)", RegexOptions.IgnoreCase))
+            if (Regex.IsMatch(candidateTime, @"(\d{1,2}:\d{2}|Yesterday|Today|Bugün|Dün|Mon|Tue|Wed|Thu|Fri|Sat|Sun|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)", RegexOptions.IgnoreCase))
             {
                 timestamp = candidateTime;
             }
