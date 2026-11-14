@@ -5,7 +5,7 @@
 # MesAI (DevTrack AI)
 ### Kanıta Dayalı Günlük Çalışma Raporu ve Geliştirici Aktivite Takip Uygulaması
 
-[![Electron](https://img.shields.io/badge/Electron-35.0-47848F?logo=electron&logoColor=white)](https://www.electronjs.org/)
+[![Tauri](https://img.shields.io/badge/Tauri-2.0-24C8DB?logo=tauri&logoColor=white)](https://v2.tauri.app/)
 [![React](https://img.shields.io/badge/React-19.0-61DAFB?logo=react&logoColor=black)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Vite](https://img.shields.io/badge/Vite-6.2-646CFF?logo=vite&logoColor=white)](https://vitejs.dev/)
@@ -94,7 +94,7 @@ Antigravity Theme Engine ile koyu (dark), açık (light) ve Windows işletim sis
   - **Gelişmiş CLI Adaptörleri (`GeminiCliProvider`, `OpenAI`, `Claude`, `Ollama`):** Terminal oturumu üzerinden çalışan, prompt injection korumalı (`<untrusted_evidence_json>`) ve gönderim öncesi kullanıcı onay modalı sunan yapı.
 - 🔐 **Donanım Destekli Güvenli Kimlik Saklama:**
   - Jira ve Jenkins entegrasyonlarında parolalar/token'lar asla düz metin olarak kaydedilmez.
-  - Windows DPAPI (`electron.safeStorage`) ile şifrelenir.
+  - Windows DPAPI (`CryptProtectData` / `CryptUnprotectData`) ile şifrelenir.
 - ⚡ **Yüksek Performanslı Altyapı:**
   - SQLite WAL modunda `node:sqlite` (`DatabaseSync`) ile mikro-saniyeler seviyesinde yerel veri erişimi.
   - React 19 sanallaştırılmış liste (`VirtualList`) ile binlerce aktivite ve projede pürüzsüz 60 FPS kaydırma.
@@ -108,13 +108,13 @@ Antigravity Theme Engine ile koyu (dark), açık (light) ve Windows işletim sis
 
 | Katman | Teknoloji | Açıklama |
 |---|---|---|
-| **Masaüstü Kabuğu** | Electron 35 | Güvenli süreç izolasyonu (`contextIsolation: true`, `nodeIntegration: false`, preload köprüsü) |
+| **Masaüstü Kabuğu** | Tauri v2 (Rust + WebView2) | Yerel Rust kabuğu, sistem tepsisi, görev çubuğu (`ITaskbarList3`) ve izole `mesai-backend` Node SEA sidecar |
 | **Kullanıcı Arayüzü** | React 19 + TypeScript + Vite 6 | Antigravity tasarım sistemi, CSS Değişkenleri ile Light/Dark tema, Lucide tabanlı yerel SVG ikonlar |
 | **Yerel Veritabanı** | Node.js `node:sqlite` | WAL (Write-Ahead Logging) modu, otomatik şema migrasyonları, ilişkisel kanıt tablosu |
 | **Zoom UIA Servisi** | C# / .NET 10 (`net10.0-windows`) | Windows UI Automation tabanlı salt-okunur yardımcı CLI süreci (`readers/ZoomChatReader`) |
 | **Git & Dosya İzleyici** | Node.js `fs.watch` + Git CLI | 400ms debounced dosya takip motoru ve periyodik Git commit/diff çözümleyicisi |
-| **Şifreleme** | Windows DPAPI | `electron.safeStorage` ile kullanıcı bazlı anahtar şifreleme |
-| **Paketleme & Dağıtım**| `electron-builder` | Portable `.exe` ve kurulumsuz Windows paketleri |
+| **Şifreleme** | Windows DPAPI | Rust `CryptProtectData` / `CryptUnprotectData` ile kullanıcı bazlı anahtar şifreleme |
+| **Paketleme & Dağıtım**| `tauri build` (NSIS) | Windows NSIS kurulum paketi (`MesAI_x.y.z_x64-setup.exe`) |
 
 ---
 
@@ -158,13 +158,13 @@ npm install
 # 3. Yalnızca C# ZoomChatReader okuyucusunu derle (Release)
 npm run build:reader
 
-# 4. Tüm projeyi derle (ZoomChatReader + Electron Main + React Renderer)
+# 4. Tüm projeyi derle (ZoomChatReader + Sidecar + React Renderer)
 npm run build
 
 # 5. Birim ve entegrasyon testlerini çalıştır
 npm test
 
-# 6. Geliştirme modunda başlat
+# 6. Geliştirme modunda başlat (npm start veya npm run dev)
 npm start
 ```
 
@@ -174,23 +174,17 @@ npm start
 
 ```powershell
 # Gerçek ortam duman testi (Zoom + Git okuma + Rapor üretimi + JSON doğrulama)
-npx electron . --verify-smoke
+.\src-tauri\binaries\mesai-backend-x86_64-pc-windows-msvc.exe --verify-smoke
 
-# Arayüz doğrulama testi (UI render, başlıklar, skeleton ve bileşen kontrolü)
-npx electron . --verify-ui
+# Rust birim testleri (DPAPI şifreleme vb.)
+cargo test --manifest-path src-tauri/Cargo.toml
 
-# Ekran görüntülerini otomatik yakala ve docs/images dizinine kaydet
-npx electron . --capture-screenshots
-
-# Paketlenmiş Windows uygulama dizini oluştur (dist-electron/win-unpacked)
-npm run pack:dir
-
-# Bağımsız Windows Portable (.exe) paketi üret (dist-electron/MesAI-1.0.1-Portable.exe)
-npm run pack:win
+# Windows NSIS kurulum paketini üret (src-tauri/target/release/bundle/nsis/)
+npm run tauri:build
 ```
 
-### Okuyucunun Paketlenmesi (`extraResources`)
-`electron-builder.yml` yapılandırması, `readers/ZoomChatReader/bin/Release/net10.0-windows` altındaki derlenmiş `ZoomChatReader.exe` ve bağımlılıklarını paketlenmiş uygulamanın `resources/ZoomChatReader/` dizinine kopyalar. `ZoomReaderAdapter` çalışma zamanında önce `process.resourcesPath/ZoomChatReader/ZoomChatReader.exe` yolunu, geliştirme modunda ise `readers/ZoomChatReader/bin/Release/net10.0-windows/ZoomChatReader.exe` yolunu otomatik kullanır.
+### Okuyucunun Paketlenmesi (`resources`)
+`src-tauri/tauri.conf.json` yapılandırması, `readers/ZoomChatReader/bin/Release/net10.0-windows` altındaki derlenmiş `ZoomChatReader.exe` ve bağımlılıklarını paketlenmiş uygulamanın `ZoomChatReader/` kaynak dizinine kopyalar. `ZoomReaderAdapter` çalışma zamanında önce `MESAI_RESOURCES_DIR/ZoomChatReader/ZoomChatReader.exe` yolunu, geliştirme modunda ise `readers/ZoomChatReader/bin/Release/net10.0-windows/ZoomChatReader.exe` yolunu otomatik kullanır.
 
 ---
 

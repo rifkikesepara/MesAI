@@ -1,0 +1,66 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "MesAI",
+  "version": "2.0.0",
+  "identifier": "com.mesai.devtrack",
+  "build": {
+    "beforeDevCommand": "npm run build:sidecar && npm run dev:renderer",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "npm run version:sync && npm run build:reader && npm run build:sidecar && npm run build:renderer",
+    "frontendDist": "../dist-renderer"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "MesAI — Kanıta Dayalı Günlük Çalışma Raporu",
+        "width": 1320,
+        "height": 860,
+        "minWidth": 1024,
+        "minHeight": 680,
+        "decorations": false,
+        "resizable": true,
+        "center": true,
+        "backgroundColor": "#0f172a"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "../assets/icon.ico",
+      "../assets/icon.png"
+    ],
+    "externalBin": [
+      "binaries/mesai-backend"
+    ],
+    "resources": {
+      "../readers/ZoomChatReader/bin/Release/net10.0-windows/**/*": "ZoomChatReader/"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": [
+          "Turkish",
+          "English"
+        ],
+        "displayLanguageSelector": false
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/rifkikesepara/MesAI/releases/latest/download/latest.json"
+      ],
+      "pubkey": ""
+    }
+  }
+}

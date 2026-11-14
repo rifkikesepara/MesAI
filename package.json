@@ -1,40 +1,39 @@
 {
   "name": "mesai",
   "productName": "MesAI",
-  "version": "1.1.10",
+  "version": "2.0.0",
   "description": "MesAI (DevTrack AI) — Kanıta Dayalı Günlük Çalışma Raporu ve Aktivite Takip Uygulaması",
   "author": "Rıfkı Kesepara",
-  "main": "dist-main/src/main/index.js",
   "scripts": {
     "version:sync": "node scripts/sync-version.js",
     "prebuild": "node scripts/sync-version.js",
-    "prestart": "node scripts/sync-version.js",
+    "predev": "node scripts/sync-version.js",
     "build:reader": "dotnet build readers/ZoomChatReader/ZoomChatReader.csproj -c Release",
     "build:main": "tsc -p tsconfig.main.json",
+    "build:sidecar": "node scripts/build-sidecar.js",
     "build:renderer": "vite build",
-    "build": "npm run build:reader && npm run build:main && npm run build:renderer",
+    "build": "npm run build:reader && npm run build:main && npm run build:sidecar && npm run build:renderer",
     "dev:renderer": "vite --port 5173",
-    "start": "npm run build:main && npm run build:renderer && electron .",
-    "test": "npm run build:reader && npm run build:main && node --test dist-main/tests/*.test.js",
-    "screenshots": "npm run build:main && electron . --capture-screenshots",
-    "pack:dir": "npm run build && electron-builder --dir",
-    "pack:win": "npm run build && electron-builder --win",
-    "release": "npm run build && electron-builder --win --publish always"
+    "dev": "tauri dev",
+    "start": "npm run dev",
+    "tauri:build": "tauri build",
+    "test": "npm run build:reader && npm run build:main && node --test dist-main/tests/*.test.js"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/rifkikesepara/MesAI.git"
   },
   "dependencies": {
-    "electron-updater": "^6.8.9"
+    "@tauri-apps/api": "^2.9.0"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.9.0",
     "@types/node": "^22.13.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
-    "electron": "^35.0.0",
-    "electron-builder": "^25.1.8",
+    "esbuild": "^0.25.0",
+    "postject": "^1.0.0-alpha.6",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "typescript": "^5.7.3",

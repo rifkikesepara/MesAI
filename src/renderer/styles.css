@@ -73,7 +73,7 @@
   scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
 }
 
-/* Custom modern scrollbar for Chromium / Electron */
+/* Custom modern scrollbar for WebView2 / Chromium */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -724,7 +724,6 @@ input[type="date"]::-webkit-calendar-picker-indicator,
   align-items: center;
   justify-content: space-between;
   user-select: none;
-  -webkit-app-region: drag;
   z-index: 1000;
   position: relative;
   flex-shrink: 0;
@@ -734,7 +733,6 @@ input[type="date"]::-webkit-calendar-picker-indicator,
   display: flex;
   align-items: center;
   height: 100%;
-  -webkit-app-region: no-drag;
 }
 
 .titlebar-brand {
@@ -809,7 +807,6 @@ input[type="date"]::-webkit-calendar-picker-indicator,
   display: flex;
   flex-direction: column;
   gap: 2px;
-  -webkit-app-region: no-drag;
 }
 
 .dropdown-btn {
@@ -915,7 +912,6 @@ input[type="date"]::-webkit-calendar-picker-indicator,
   align-items: center;
   gap: 8px;
   height: 100%;
-  -webkit-app-region: no-drag;
 }
 
 .titlebar-pill {

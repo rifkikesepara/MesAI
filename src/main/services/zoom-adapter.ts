@@ -40,11 +40,13 @@ export class ZoomReaderAdapter {
   public resolveExecutablePath(): string {
     if (this.customExePath) return this.customExePath;
 
-    // 1. Check packaged Electron resourcesPath
-    const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
-    if (resourcesPath) {
-      const packagedExe = path.join(resourcesPath, 'ZoomChatReader', 'ZoomChatReader.exe');
-      if (fs.existsSync(packagedExe)) return packagedExe;
+    // 1. Check Tauri / packaged resources directory
+    const envResourcesDir = process.env.MESAI_RESOURCES_DIR;
+    if (envResourcesDir) {
+      const tauriExe = path.join(envResourcesDir, 'ZoomChatReader', 'ZoomChatReader.exe');
+      if (fs.existsSync(tauriExe)) return tauriExe;
+      const flatExe = path.join(envResourcesDir, 'ZoomChatReader.exe');
+      if (fs.existsSync(flatExe)) return flatExe;
     }
 
     // 2. Check local repository Release build

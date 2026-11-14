@@ -1,13 +1,12 @@
-import { app, dialog, ipcMain, shell, type BrowserWindow } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
   IPC_CHANNELS,
   type ActivityFilter,
-  type DashboardSummary,
   type ManualNoteInput
 } from '../shared/ipc-channels';
 import type { ActivityCategory, ActivityStatus, AIProviderType, AppSettings } from '../shared/types';
+import type { HostBridge } from './host-bridge';
 import type { MesaiRepository } from './db/repositories';
 import type { ZoomReaderAdapter } from './services/zoom-adapter';
 import type { GitFileWatcherService } from './services/git-file-watcher';
@@ -34,8 +33,10 @@ function assertDateYmd(val: unknown): string {
   return s;
 }
 
-export function registerIpcHandlers(deps: {
-  getMainWindow: () => BrowserWindow | null;
+export type RpcHandler = (...args: unknown[]) => Promise<unknown>;
+
+export function createRpcHandlers(deps: {
+  host: HostBridge;
   repo: MesaiRepository;
   zoomAdapter: ZoomReaderAdapter;
   gitWatcher: GitFileWatcherService;
@@ -45,9 +46,9 @@ export function registerIpcHandlers(deps: {
   scheduler: SchedulerService;
   updateService: UpdateService;
   onTrayUpdate?: () => void;
-}): void {
+}): Map<string, RpcHandler> {
   const {
-    getMainWindow,
+    host,
     repo,
     zoomAdapter,
     gitWatcher,
@@ -59,7 +60,10 @@ export function registerIpcHandlers(deps: {
     onTrayUpdate
   } = deps;
 
-  ipcMain.handle(IPC_CHANNELS.DASHBOARD_GET, async (): Promise<DashboardSummary> => {
+  const handlers = new Map<string, RpcHandler>();
+  const cliInstaller = new CliInstallerService();
+
+  handlers.set(IPC_CHANNELS.DASHBOARD_GET, async () => {
     const settings = repo.getSettings();
     const todayDate = getTodayLocalDate();
     const metrics = repo.getDashboardMetrics(todayDate);
@@ -67,7 +71,6 @@ export function registerIpcHandlers(deps: {
     const projects = repo.listProjects();
     const syncStates = repo.listSyncStates();
 
-    
     const pendingMatchSuggestionsCount = recentActivities
       .flatMap((a) => a.links ?? [])
       .filter((l) => l.userStatus === 'pending').length;
@@ -86,19 +89,19 @@ export function registerIpcHandlers(deps: {
     };
   });
 
-  ipcMain.handle(IPC_CHANNELS.ZOOM_POLL_NOW, async () => {
+  handlers.set(IPC_CHANNELS.ZOOM_POLL_NOW, async () => {
     const res = await zoomAdapter.pollOnce();
     onTrayUpdate?.();
     return res;
   });
 
-  ipcMain.handle(IPC_CHANNELS.GIT_POLL_NOW, async () => {
+  handlers.set(IPC_CHANNELS.GIT_POLL_NOW, async () => {
     const res = await gitWatcher.pollAllProjectsGit();
     onTrayUpdate?.();
     return res;
   });
 
-  ipcMain.handle(IPC_CHANNELS.TRACKING_SET_PAUSED, async (_e, paused: unknown) => {
+  handlers.set(IPC_CHANNELS.TRACKING_SET_PAUSED, async (paused: unknown) => {
     const isPaused = Boolean(paused);
     const updated = repo.updateSettings({ trackingPaused: isPaused });
     scheduler.startOrReload();
@@ -106,26 +109,21 @@ export function registerIpcHandlers(deps: {
     return updated;
   });
 
-  ipcMain.handle(IPC_CHANNELS.PROJECTS_LIST, async () => {
+  handlers.set(IPC_CHANNELS.PROJECTS_LIST, async () => {
     return repo.listProjects();
   });
 
-  ipcMain.handle(IPC_CHANNELS.PROJECTS_SCAN_ROOT, async (_e, rootPath: unknown) => {
+  handlers.set(IPC_CHANNELS.PROJECTS_SCAN_ROOT, async (rootPath: unknown) => {
     const cleanPath = assertNonEmptyString(rootPath, 'ana proje klasörü');
     repo.updateSettings({ watchRootPath: cleanPath });
     return gitWatcher.discoverGitProjects(cleanPath);
   });
 
-  ipcMain.handle(IPC_CHANNELS.PROJECTS_SELECT_FOLDER, async () => {
-    const win = getMainWindow();
-    const res = win
-      ? await dialog.showOpenDialog(win, { properties: ['openDirectory'] })
-      : await dialog.showOpenDialog({ properties: ['openDirectory'] });
-    if (res.canceled || res.filePaths.length === 0) return null;
-    return res.filePaths[0];
+  handlers.set(IPC_CHANNELS.PROJECTS_SELECT_FOLDER, async () => {
+    return host.selectFolderDialog();
   });
 
-  ipcMain.handle(IPC_CHANNELS.PROJECTS_UPDATE, async (_e, payload: unknown) => {
+  handlers.set(IPC_CHANNELS.PROJECTS_UPDATE, async (payload: unknown) => {
     if (!payload || typeof payload !== 'object') {
       throw new Error('Geçersiz proje güncelleme verisi.');
     }
@@ -142,13 +140,13 @@ export function registerIpcHandlers(deps: {
     return updated;
   });
 
-  ipcMain.handle(IPC_CHANNELS.ACTIVITIES_LIST, async (_e, filter: unknown) => {
+  handlers.set(IPC_CHANNELS.ACTIVITIES_LIST, async (filter: unknown) => {
     const safeFilter: ActivityFilter =
       filter && typeof filter === 'object' ? (filter as ActivityFilter) : {};
     return repo.listActivities(safeFilter);
   });
 
-  ipcMain.handle(IPC_CHANNELS.ACTIVITIES_ADD_NOTE, async (_e, input: unknown) => {
+  handlers.set(IPC_CHANNELS.ACTIVITIES_ADD_NOTE, async (input: unknown) => {
     if (!input || typeof input !== 'object') {
       throw new Error('Geçersiz not verisi.');
     }
@@ -171,12 +169,12 @@ export function registerIpcHandlers(deps: {
     return repo.getActivityById(act.id)!;
   });
 
-  ipcMain.handle(IPC_CHANNELS.EVIDENCE_GET, async (_e, evidenceId: unknown) => {
+  handlers.set(IPC_CHANNELS.EVIDENCE_GET, async (evidenceId: unknown) => {
     const id = assertNonEmptyString(evidenceId, 'kanıt ID');
     return repo.getEvidenceById(id);
   });
 
-  ipcMain.handle(IPC_CHANNELS.MATCH_UPDATE_LINK, async (_e, input: unknown) => {
+  handlers.set(IPC_CHANNELS.MATCH_UPDATE_LINK, async (input: unknown) => {
     if (!input || typeof input !== 'object') {
       throw new Error('Geçersiz eşleştirme verisi.');
     }
@@ -198,19 +196,18 @@ export function registerIpcHandlers(deps: {
     });
   });
 
-  ipcMain.handle(IPC_CHANNELS.WORK_ITEMS_LIST, async () => {
+  handlers.set(IPC_CHANNELS.WORK_ITEMS_LIST, async () => {
     return repo.listWorkItems();
   });
 
-  ipcMain.handle(IPC_CHANNELS.REPORT_GET, async (_e, reportDate: unknown) => {
+  handlers.set(IPC_CHANNELS.REPORT_GET, async (reportDate: unknown) => {
     const date = assertDateYmd(reportDate);
     return repo.getDailyReport(date);
   });
 
-  ipcMain.handle(
+  handlers.set(
     IPC_CHANNELS.REPORT_PREVIEW_AI,
     async (
-      _e,
       reportDate: unknown,
       maxChars: unknown,
       providerOverride: unknown,
@@ -231,7 +228,7 @@ export function registerIpcHandlers(deps: {
     }
   );
 
-  ipcMain.handle(IPC_CHANNELS.REPORT_GENERATE, async (event, input: unknown) => {
+  handlers.set(IPC_CHANNELS.REPORT_GENERATE, async (input: unknown) => {
     if (!input || typeof input !== 'object') {
       throw new Error('Geçersiz rapor üretim isteği.');
     }
@@ -261,16 +258,12 @@ export function registerIpcHandlers(deps: {
       maxChars,
       promptOverride,
       onProgress: (log) => {
-        try {
-          event.sender.send(IPC_CHANNELS.REPORT_PROGRESS, log);
-        } catch {
-          // ignore
-        }
+        host.emitEvent(IPC_CHANNELS.REPORT_PROGRESS, log);
       }
     });
   });
 
-  ipcMain.handle(IPC_CHANNELS.REPORT_UPDATE_ITEM, async (_e, input: unknown) => {
+  handlers.set(IPC_CHANNELS.REPORT_UPDATE_ITEM, async (input: unknown) => {
     if (!input || typeof input !== 'object') {
       throw new Error('Geçersiz rapor maddesi verisi.');
     }
@@ -290,7 +283,7 @@ export function registerIpcHandlers(deps: {
     });
   });
 
-  ipcMain.handle(IPC_CHANNELS.REPORT_ADD_ITEM, async (_e, input: unknown) => {
+  handlers.set(IPC_CHANNELS.REPORT_ADD_ITEM, async (input: unknown) => {
     if (!input || typeof input !== 'object') {
       throw new Error('Geçersiz yeni madde verisi.');
     }
@@ -310,32 +303,29 @@ export function registerIpcHandlers(deps: {
     });
   });
 
-  ipcMain.handle(IPC_CHANNELS.REPORT_DELETE_ITEM, async (_e, itemId: unknown) => {
+  handlers.set(IPC_CHANNELS.REPORT_DELETE_ITEM, async (itemId: unknown) => {
     return repo.deleteReportItem(assertNonEmptyString(itemId, 'madde ID'));
   });
 
-  ipcMain.handle(
-    IPC_CHANNELS.REPORT_REMOVE_JIRA_KEY,
-    async (_e, reportDate: unknown, jiraKey: unknown) => {
-      const date = assertDateYmd(reportDate);
-      const key = assertNonEmptyString(jiraKey, 'Jira anahtarı');
-      return repo.removeReportJiraKey(date, key);
-    }
-  );
+  handlers.set(IPC_CHANNELS.REPORT_REMOVE_JIRA_KEY, async (reportDate: unknown, jiraKey: unknown) => {
+    const date = assertDateYmd(reportDate);
+    const key = assertNonEmptyString(jiraKey, 'Jira anahtarı');
+    return repo.removeReportJiraKey(date, key);
+  });
 
-  ipcMain.handle(IPC_CHANNELS.REPORT_RESET_JIRA_KEYS, async (_e, reportDate: unknown) => {
+  handlers.set(IPC_CHANNELS.REPORT_RESET_JIRA_KEYS, async (reportDate: unknown) => {
     const date = assertDateYmd(reportDate);
     return repo.resetReportJiraKeys(date);
   });
 
-  ipcMain.handle(IPC_CHANNELS.REPORT_APPROVE, async (_e, reportId: unknown, notes: unknown) => {
+  handlers.set(IPC_CHANNELS.REPORT_APPROVE, async (reportId: unknown, notes: unknown) => {
     return repo.approveReport(
       assertNonEmptyString(reportId, 'rapor ID'),
       typeof notes === 'string' ? notes : undefined
     );
   });
 
-  ipcMain.handle(IPC_CHANNELS.REPORT_EXPORT, async (_e, input: unknown) => {
+  handlers.set(IPC_CHANNELS.REPORT_EXPORT, async (input: unknown) => {
     if (!input || typeof input !== 'object') {
       throw new Error('Geçersiz dışa aktarma isteği.');
     }
@@ -343,7 +333,6 @@ export function registerIpcHandlers(deps: {
     const fmt = obj.format === 'txt' || obj.format === 'csv' ? obj.format : 'md';
     const reportId = assertNonEmptyString(obj.reportId, 'rapor ID');
 
-    // Look up report date from ID
     const datePart = reportId.replace(/^rep_/, '');
     const formattedDate =
       datePart.length === 8
@@ -354,26 +343,19 @@ export function registerIpcHandlers(deps: {
     if (!report) throw new Error('Dışa aktarılacak rapor bulunamadı.');
 
     const content = reportService.formatReportContent(report, fmt);
-    const win = getMainWindow();
     const defaultFileName = `MesAI_Gunluk_Rapor_${report.reportDate}.${fmt}`;
 
-    const saveRes = win
-      ? await dialog.showSaveDialog(win, {
-          title: 'Günlük Raporu Dışa Aktar',
-          defaultPath: path.join(app.getPath('documents'), defaultFileName),
-          filters: [{ name: fmt.toUpperCase(), extensions: [fmt] }]
-        })
-      : await dialog.showSaveDialog({
-          title: 'Günlük Raporu Dışa Aktar',
-          defaultPath: path.join(app.getPath('documents'), defaultFileName),
-          filters: [{ name: fmt.toUpperCase(), extensions: [fmt] }]
-        });
+    const selectedPath = await host.saveFileDialog({
+      title: 'Günlük Raporu Dışa Aktar',
+      defaultPath: path.join(host.getDocumentsDir(), defaultFileName),
+      filters: [{ name: fmt.toUpperCase(), extensions: [fmt] }]
+    });
 
-    if (saveRes.canceled || !saveRes.filePath) {
+    if (!selectedPath) {
       return { savedPath: null, content };
     }
 
-    const resolvedSavePath = path.resolve(saveRes.filePath);
+    const resolvedSavePath = path.resolve(selectedPath);
     const ext = path.extname(resolvedSavePath).toLowerCase();
     if (!['.md', '.txt', '.csv'].includes(ext)) {
       throw new Error('Yalnızca .md, .txt veya .csv uzantılı dosyalara dışa aktarım yapılabilir.');
@@ -383,11 +365,11 @@ export function registerIpcHandlers(deps: {
     return { savedPath: resolvedSavePath, content };
   });
 
-  ipcMain.handle(IPC_CHANNELS.INTEGRATIONS_HEALTH, async () => {
+  handlers.set(IPC_CHANNELS.INTEGRATIONS_HEALTH, async () => {
     return integrations.getHealthSummary();
   });
 
-  ipcMain.handle(IPC_CHANNELS.INTEGRATIONS_SAVE_SECRET, async (_e, input: unknown) => {
+  handlers.set(IPC_CHANNELS.INTEGRATIONS_SAVE_SECRET, async (input: unknown) => {
     if (!input || typeof input !== 'object') {
       throw new Error('Geçersiz entegrasyon verisi.');
     }
@@ -403,14 +385,14 @@ export function registerIpcHandlers(deps: {
     integrations.saveIntegrationCredential(obj);
   });
 
-  ipcMain.handle(IPC_CHANNELS.INTEGRATIONS_TEST_CONNECTION, async (_e, service: unknown) => {
+  handlers.set(IPC_CHANNELS.INTEGRATIONS_TEST_CONNECTION, async (service: unknown) => {
     if (service !== 'jira' && service !== 'gitlab' && service !== 'jenkins') {
       throw new Error('Geçersiz servis adı.');
     }
     return integrations.testConnection(service);
   });
 
-  ipcMain.handle(IPC_CHANNELS.AI_SAVE_KEY, async (_e, input: unknown) => {
+  handlers.set(IPC_CHANNELS.AI_SAVE_KEY, async (input: unknown) => {
     if (!input || typeof input !== 'object') {
       throw new Error('Geçersiz AI entegrasyon verisi.');
     }
@@ -427,14 +409,14 @@ export function registerIpcHandlers(deps: {
     integrations.saveAiCredential(obj);
   });
 
-  ipcMain.handle(IPC_CHANNELS.AI_TEST_CONNECTION, async (_e, provider: unknown) => {
+  handlers.set(IPC_CHANNELS.AI_TEST_CONNECTION, async (provider: unknown) => {
     if (provider !== 'openai' && provider !== 'anthropic' && provider !== 'custom') {
       throw new Error('Geçersiz AI sağlayıcısı.');
     }
     return integrations.testAiConnection(provider);
   });
 
-  ipcMain.handle(IPC_CHANNELS.AI_FETCH_MODELS, async (_e, input: unknown) => {
+  handlers.set(IPC_CHANNELS.AI_FETCH_MODELS, async (input: unknown) => {
     if (!input || typeof input !== 'object') {
       throw new Error('Geçersiz istek.');
     }
@@ -449,98 +431,64 @@ export function registerIpcHandlers(deps: {
     return integrations.fetchAiModels(obj);
   });
 
-  const cliInstaller = new CliInstallerService();
-
-  ipcMain.handle(IPC_CHANNELS.AI_INSTALL_CLI, async (_e, provider: unknown) => {
+  handlers.set(IPC_CHANNELS.AI_INSTALL_CLI, async (provider: unknown) => {
     if (!['gemini', 'openai', 'anthropic', 'custom'].includes(provider as string)) {
       throw new Error('Geçersiz AI sağlayıcısı.');
     }
     return cliInstaller.installCli(provider as CliTargetProvider);
   });
 
-  ipcMain.handle(IPC_CHANNELS.AI_AUTH_CLI, async (_e, provider: unknown) => {
+  handlers.set(IPC_CHANNELS.AI_AUTH_CLI, async (provider: unknown) => {
     if (!['gemini', 'openai', 'anthropic', 'custom'].includes(provider as string)) {
       throw new Error('Geçersiz AI sağlayıcısı.');
     }
     return cliInstaller.launchCliAuth(provider as CliTargetProvider);
   });
 
-  ipcMain.handle(IPC_CHANNELS.SETTINGS_GET, async () => {
+  handlers.set(IPC_CHANNELS.SETTINGS_GET, async () => {
     return repo.getSettings();
   });
 
-  ipcMain.handle(IPC_CHANNELS.SETTINGS_UPDATE, async (_e, partial: unknown) => {
+  handlers.set(IPC_CHANNELS.SETTINGS_UPDATE, async (partial: unknown) => {
     if (!partial || typeof partial !== 'object') {
       throw new Error('Geçersiz ayar verisi.');
     }
     const updated = repo.updateSettings(partial as Partial<AppSettings>);
     if (typeof (partial as Partial<AppSettings>).autoLaunchOnStartup === 'boolean') {
-      try {
-        app.setLoginItemSettings({
-          openAtLogin: Boolean((partial as Partial<AppSettings>).autoLaunchOnStartup)
-        });
-      } catch {
-        // ignore if unsupported in dev mode
-      }
+      await host.setAutoLaunch(Boolean((partial as Partial<AppSettings>).autoLaunchOnStartup));
     }
     scheduler.startOrReload();
     onTrayUpdate?.();
     return updated;
   });
 
-  ipcMain.handle(IPC_CHANNELS.DATA_CLEAR_ALL, async () => {
+  handlers.set(IPC_CHANNELS.DATA_CLEAR_ALL, async () => {
     repo.clearAllData();
     gitWatcher.clearCaches();
     zoomAdapter.clearCaches();
   });
 
-  ipcMain.handle(IPC_CHANNELS.UPDATER_GET_STATE, async () => {
+  handlers.set(IPC_CHANNELS.UPDATER_GET_STATE, async () => {
     return updateService.getState();
   });
 
-  ipcMain.handle(IPC_CHANNELS.UPDATER_CHECK, async () => {
+  handlers.set(IPC_CHANNELS.UPDATER_CHECK, async () => {
     return updateService.checkForUpdates();
   });
 
-  ipcMain.handle(IPC_CHANNELS.UPDATER_DOWNLOAD, async () => {
+  handlers.set(IPC_CHANNELS.UPDATER_DOWNLOAD, async () => {
     return updateService.downloadUpdate();
   });
 
-  ipcMain.handle(IPC_CHANNELS.UPDATER_INSTALL, async () => {
+  handlers.set(IPC_CHANNELS.UPDATER_INSTALL, async () => {
     return updateService.quitAndInstall();
   });
 
-  ipcMain.handle(IPC_CHANNELS.WINDOW_MINIMIZE, async () => {
-    const win = getMainWindow();
-    if (win && !win.isDestroyed()) win.minimize();
-  });
-
-  ipcMain.handle(IPC_CHANNELS.WINDOW_MAXIMIZE, async () => {
-    const win = getMainWindow();
-    if (!win || win.isDestroyed()) return false;
-    if (win.isMaximized()) {
-      win.unmaximize();
-      return false;
-    } else {
-      win.maximize();
-      return true;
-    }
-  });
-
-  ipcMain.handle(IPC_CHANNELS.WINDOW_CLOSE, async () => {
-    const win = getMainWindow();
-    if (win && !win.isDestroyed()) win.close();
-  });
-
-  ipcMain.handle(IPC_CHANNELS.WINDOW_IS_MAXIMIZED, async () => {
-    const win = getMainWindow();
-    return win && !win.isDestroyed() ? win.isMaximized() : false;
-  });
-
-  ipcMain.handle(IPC_CHANNELS.OPEN_EXTERNAL_URL, async (_event, url: unknown) => {
+  handlers.set(IPC_CHANNELS.OPEN_EXTERNAL_URL, async (url: unknown) => {
     if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
-      await shell.openExternal(url);
+      await host.openExternalUrl(url);
     }
   });
-}
 
+  return handlers;
+}

@@ -1,9 +1,7 @@
-import { app, shell, type BrowserWindow } from 'electron';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { autoUpdater, type UpdateInfo as ElectronUpdateInfo, type ProgressInfo } from 'electron-updater';
 import type { UpdateInfo, UpdateProgress, UpdateState } from '../../shared/types';
 
 const GITHUB_OWNER = 'rifkikesepara';
@@ -11,6 +9,18 @@ const GITHUB_REPO = 'MesAI';
 const GITHUB_RELEASES_API_URL = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`;
 const GITHUB_RELEASES_LATEST_URL = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`;
 const GITHUB_RELEASES_PAGE_URL = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases`;
+
+export interface UpdateHost {
+  emitStateChanged(state: UpdateState): void;
+  openExternalUrl(url: string): Promise<void>;
+  openPath(filePath: string): Promise<void>;
+  getTempDir(): string;
+  getAppVersion?(): string;
+  isPackaged?(): boolean;
+  quitApp?(): void;
+  nativeCheck?(): Promise<{ available: boolean; version?: string; body?: string; date?: string } | null>;
+  nativeDownloadAndInstall?(onProgress?: (progress: UpdateProgress) => void): Promise<boolean>;
+}
 
 export function parseSemver(versionStr: string): [number, number, number] {
   const cleaned = versionStr.replace(/^v/i, '').trim();
@@ -29,7 +39,15 @@ export function isNewerVersion(remoteVersion: string, currentVersion: string): b
   return rPat > cPat;
 }
 
-function resolveAppVersion(): string {
+function resolveAppVersion(host?: UpdateHost): string {
+  const envVer = process.env.MESAI_APP_VERSION?.trim();
+  if (envVer) return envVer;
+
+  if (host?.getAppVersion) {
+    const v = host.getAppVersion();
+    if (v && v !== '0.0.0') return v;
+  }
+
   const candidates = [
     path.resolve(__dirname, '../../../../package.json'),
     path.resolve(__dirname, '../../../package.json'),
@@ -47,14 +65,6 @@ function resolveAppVersion(): string {
       // continue
     }
   }
-  try {
-    if (app && typeof app.getVersion === 'function') {
-      const v = app.getVersion();
-      if (v) return v;
-    }
-  } catch {
-    // ignore
-  }
   return '0.0.0';
 }
 
@@ -64,9 +74,11 @@ export class UpdateService {
   private isDownloading = false;
   private usedNativeUpdater = false;
   private downloadedInstallerPath: string | null = null;
+  private readonly host?: UpdateHost;
 
-  constructor(private readonly getMainWindow: () => BrowserWindow | null) {
-    const currentVersion = resolveAppVersion();
+  constructor(hostOrLegacyFn?: UpdateHost | (() => unknown) | null) {
+    this.host = typeof hostOrLegacyFn === 'function' ? undefined : (hostOrLegacyFn ?? undefined);
+    const currentVersion = resolveAppVersion(this.host);
 
     this.state = {
       status: 'idle',
@@ -76,116 +88,11 @@ export class UpdateService {
       errorMessage: null,
       lastCheckedAt: null
     };
-
-    this.initAutoUpdater();
-  }
-
-  private isPortableBuild(): boolean {
-    return Boolean(process.env.PORTABLE_EXECUTABLE_FILE || process.env.PORTABLE_EXECUTABLE_DIR);
   }
 
   private buildDefaultDownloadUrl(version: string): string {
     const cleanVer = version.replace(/^v/i, '').trim();
-    const fileName = this.isPortableBuild()
-      ? `MesAI-${cleanVer}-Portable.exe`
-      : `MesAI-Setup-${cleanVer}.exe`;
-    return `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/download/v${cleanVer}/${fileName}`;
-  }
-
-  private initAutoUpdater(): void {
-    try {
-      autoUpdater.autoDownload = false;
-      autoUpdater.autoInstallOnAppQuit = true;
-      autoUpdater.allowDowngrade = false;
-      autoUpdater.disableWebInstaller = true;
-
-      autoUpdater.on('checking-for-update', () => {
-        this.updateState({
-          status: 'checking',
-          errorMessage: null
-        });
-      });
-
-      autoUpdater.on('update-available', (info: ElectronUpdateInfo) => {
-        this.usedNativeUpdater = true;
-        const releaseNotesText = Array.isArray(info.releaseNotes)
-          ? info.releaseNotes.map((n) => (typeof n === 'string' ? n : n.note)).join('\n')
-          : typeof info.releaseNotes === 'string'
-            ? info.releaseNotes
-            : undefined;
-        const cleanVersion = (info.version || '').replace(/^v/i, '');
-
-        this.updateState({
-          status: 'available',
-          updateInfo: {
-            version: cleanVersion,
-            releaseDate: info.releaseDate,
-            releaseNotes: releaseNotesText,
-            releaseName: info.releaseName ?? `v${cleanVersion}`,
-            downloadUrl: this.buildDefaultDownloadUrl(cleanVersion)
-          },
-          errorMessage: null,
-          lastCheckedAt: new Date().toISOString()
-        });
-      });
-
-      autoUpdater.on('update-not-available', (info: ElectronUpdateInfo) => {
-        this.usedNativeUpdater = true;
-        this.updateState({
-          status: 'not_available',
-          updateInfo: {
-            version: (info.version || this.state.currentVersion).replace(/^v/i, '')
-          },
-          errorMessage: null,
-          lastCheckedAt: new Date().toISOString()
-        });
-      });
-
-      autoUpdater.on('download-progress', (progressObj: ProgressInfo) => {
-        const progress: UpdateProgress = {
-          percent: Math.round(progressObj.percent * 10) / 10,
-          transferredBytes: progressObj.transferred,
-          totalBytes: progressObj.total,
-          bytesPerSecond: progressObj.bytesPerSecond
-        };
-
-        this.updateState({
-          status: 'downloading',
-          progress,
-          errorMessage: null
-        });
-      });
-
-      autoUpdater.on('update-downloaded', (info: ElectronUpdateInfo) => {
-        this.isDownloading = false;
-        const cleanVersion = (info.version || this.state.updateInfo?.version || '').replace(/^v/i, '');
-        this.updateState({
-          status: 'downloaded',
-          updateInfo: {
-            ...this.state.updateInfo,
-            version: cleanVersion,
-            releaseDate: info.releaseDate ?? this.state.updateInfo?.releaseDate,
-            releaseName: info.releaseName ?? this.state.updateInfo?.releaseName
-          },
-          errorMessage: null
-        });
-      });
-
-      autoUpdater.on('error', (err: Error) => {
-        // Ignore intermediate electron-updater errors while checkForUpdates or downloadUpdate
-        // is actively running, because both have automatic GitHub HTTP fallbacks.
-        if (this.isChecking || this.isDownloading) {
-          return;
-        }
-        this.updateState({
-          status: 'error',
-          errorMessage: err.message || 'Güncelleme hatası oluştu.',
-          lastCheckedAt: new Date().toISOString()
-        });
-      });
-    } catch {
-      // In headless or test environments where autoUpdater is unconfigured
-    }
+    return `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/download/v${cleanVer}/MesAI-Setup-${cleanVer}.exe`;
   }
 
   public getState(): UpdateState {
@@ -197,16 +104,16 @@ export class UpdateService {
       ...this.state,
       ...partial
     };
-
-    const win = this.getMainWindow();
-    if (win && !win.isDestroyed()) {
-      win.webContents.send('mesai:updater:stateChanged', this.getState());
+    try {
+      this.host?.emitStateChanged(this.getState());
+    } catch {
+      // ignore in headless/test runs
     }
   }
 
   /**
    * Checks for updates.
-   * Tries electron-updater first when running as an installed NSIS package,
+   * Tries native Tauri updater first when packaged & configured,
    * and seamlessly falls back to GitHub Releases HTTP check if unavailable or failing.
    */
   public async checkForUpdates(): Promise<UpdateState> {
@@ -220,23 +127,48 @@ export class UpdateService {
     });
 
     try {
-      const canUseNative = Boolean(app && app.isPackaged && !this.isPortableBuild());
-      if (canUseNative) {
-        let timer: ReturnType<typeof setTimeout> | undefined;
+      const canUseNative = Boolean(
+        this.host?.isPackaged?.() && this.host?.nativeCheck
+      );
+      if (canUseNative && this.host?.nativeCheck) {
         try {
-          await Promise.race([
-            autoUpdater.checkForUpdates(),
+          const nativeRes = await Promise.race([
+            this.host.nativeCheck(),
             new Promise<null>((_, reject) => {
-              timer = setTimeout(() => reject(new Error('Updater timeout')), 10_000);
+              const timer = setTimeout(() => reject(new Error('Updater timeout')), 10_000);
               timer.unref?.();
             })
           ]);
-        } finally {
-          if (timer) clearTimeout(timer);
+          if (nativeRes) {
+            this.usedNativeUpdater = true;
+            if (nativeRes.available && nativeRes.version) {
+              const cleanVer = nativeRes.version.replace(/^v/i, '').trim();
+              this.updateState({
+                status: 'available',
+                updateInfo: {
+                  version: cleanVer,
+                  releaseDate: nativeRes.date,
+                  releaseNotes: nativeRes.body,
+                  releaseName: `v${cleanVer}`,
+                  downloadUrl: this.buildDefaultDownloadUrl(cleanVer)
+                },
+                errorMessage: null,
+                lastCheckedAt: new Date().toISOString()
+              });
+            } else {
+              this.updateState({
+                status: 'not_available',
+                updateInfo: { version: this.state.currentVersion },
+                errorMessage: null,
+                lastCheckedAt: new Date().toISOString()
+              });
+            }
+          }
+        } catch {
+          // Fall back to GitHub Releases HTTP check below
         }
       }
 
-      // If native updater did not resolve to available / not_available, use GitHub Releases HTTP check
       if (this.state.status !== 'available' && this.state.status !== 'not_available') {
         await this.checkViaGitHubApi();
       }
@@ -329,13 +261,9 @@ export class UpdateService {
       };
 
       const remoteTag = data.tag_name || '';
-      const isPortable = this.isPortableBuild();
       const preferredAsset =
-        data.assets?.find((a) =>
-          isPortable
-            ? a.name.toLowerCase().includes('portable') && a.name.endsWith('.exe')
-            : a.name.toLowerCase().includes('setup') && a.name.endsWith('.exe')
-        ) ?? data.assets?.find((a) => a.name.endsWith('.exe'));
+        data.assets?.find((a) => a.name.toLowerCase().includes('setup') && a.name.endsWith('.exe')) ??
+        data.assets?.find((a) => a.name.endsWith('.exe'));
 
       this.applyResolvedRelease({
         remoteTag,
@@ -346,7 +274,6 @@ export class UpdateService {
       });
       return;
     } catch {
-      // Fallback to github.com web endpoints (not subject to 60 req/hr api.github.com rate limit)
       await this.checkViaGitHubWebFallback();
     }
   }
@@ -396,7 +323,6 @@ export class UpdateService {
     let releaseDate: string | undefined;
     let downloadUrl = this.buildDefaultDownloadUrl(cleanVer);
 
-    // Enrich from latest.yml if available
     try {
       const ymlUrl = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/download/${remoteTag}/latest.yml`;
       const ymlRes = await fetch(ymlUrl, {
@@ -409,12 +335,10 @@ export class UpdateService {
         if (dateMatch?.[1]) {
           releaseDate = dateMatch[1].trim();
         }
-        if (!this.isPortableBuild()) {
-          const pathMatch = ymlText.match(/^path:\s*([^\r\n]+)$/m);
-          if (pathMatch?.[1]) {
-            const assetName = pathMatch[1].trim().replace(/^['"]|['"]$/g, '');
-            downloadUrl = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/download/${remoteTag}/${assetName}`;
-          }
+        const pathMatch = ymlText.match(/^path:\s*([^\r\n]+)$/m);
+        if (pathMatch?.[1]) {
+          const assetName = pathMatch[1].trim().replace(/^['"]|['"]$/g, '');
+          downloadUrl = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/download/${remoteTag}/${assetName}`;
         }
       }
     } catch {
@@ -460,13 +384,34 @@ export class UpdateService {
 
     try {
       const canUseNativeDownload = Boolean(
-        app && app.isPackaged && !this.isPortableBuild() && this.usedNativeUpdater
+        this.host?.isPackaged?.() &&
+          this.usedNativeUpdater &&
+          this.host?.nativeDownloadAndInstall
       );
 
-      if (canUseNativeDownload) {
+      if (canUseNativeDownload && this.host?.nativeDownloadAndInstall) {
         try {
-          await autoUpdater.downloadUpdate();
-          return;
+          const handled = await this.host.nativeDownloadAndInstall((progress) => {
+            this.updateState({
+              status: 'downloading',
+              progress,
+              errorMessage: null
+            });
+          });
+          if (handled) {
+            this.isDownloading = false;
+            this.updateState({
+              status: 'downloaded',
+              progress: {
+                percent: 100,
+                transferredBytes: this.state.progress?.totalBytes ?? 0,
+                totalBytes: this.state.progress?.totalBytes ?? 0,
+                bytesPerSecond: 0
+              },
+              errorMessage: null
+            });
+            return;
+          }
         } catch {
           // Fall back to direct GitHub asset download below
         }
@@ -475,9 +420,8 @@ export class UpdateService {
       const targetUrl =
         updateInfo.downloadUrl || this.buildDefaultDownloadUrl(updateInfo.version);
 
-      // If targetUrl is a web HTML page rather than a binary, open in browser
       if (!targetUrl.toLowerCase().endsWith('.exe')) {
-        await shell.openExternal(targetUrl);
+        await this.host?.openExternalUrl(targetUrl);
         this.isDownloading = false;
         this.updateState({
           status: 'available',
@@ -495,7 +439,7 @@ export class UpdateService {
         this.buildDefaultDownloadUrl(updateInfo.version) ||
         GITHUB_RELEASES_PAGE_URL;
       try {
-        await shell.openExternal(fallbackUrl);
+        await this.host?.openExternalUrl(fallbackUrl);
       } catch {
         // ignore
       }
@@ -517,10 +461,8 @@ export class UpdateService {
     }
 
     const cleanVer = version.replace(/^v/i, '').trim() || 'latest';
-    const fileName = this.isPortableBuild()
-      ? `MesAI-${cleanVer}-Portable.exe`
-      : `MesAI-Setup-${cleanVer}.exe`;
-    const tempDir = app && typeof app.getPath === 'function' ? app.getPath('temp') : os.tmpdir();
+    const fileName = `MesAI-Setup-${cleanVer}.exe`;
+    const tempDir = this.host?.getTempDir() || os.tmpdir();
     const destPath = path.join(tempDir, fileName);
 
     const totalBytes = Number(res.headers.get('content-length') || 0);
@@ -599,28 +541,19 @@ export class UpdateService {
           stdio: 'ignore'
         });
         child.unref();
-        if (app && typeof app.quit === 'function') {
-          setTimeout(() => app.quit(), 300);
-        }
+        setTimeout(() => this.host?.quitApp?.(), 300);
         return;
       } catch {
-        await shell.openPath(this.downloadedInstallerPath);
-        if (app && typeof app.quit === 'function') {
-          setTimeout(() => app.quit(), 300);
-        }
+        await this.host?.openPath(this.downloadedInstallerPath);
+        setTimeout(() => this.host?.quitApp?.(), 300);
         return;
       }
     }
 
-    if (app && app.isPackaged && !this.isPortableBuild() && this.usedNativeUpdater) {
-      autoUpdater.quitAndInstall(false, true);
-      return;
-    }
-
     if (this.state.updateInfo?.downloadUrl) {
-      await shell.openExternal(this.state.updateInfo.downloadUrl);
+      await this.host?.openExternalUrl(this.state.updateInfo.downloadUrl);
     } else {
-      await shell.openExternal(GITHUB_RELEASES_PAGE_URL);
+      await this.host?.openExternalUrl(GITHUB_RELEASES_PAGE_URL);
     }
   }
 }
