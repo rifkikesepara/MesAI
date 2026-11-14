@@ -53,7 +53,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     'dist',
     'dist-main',
     'dist-renderer',
-    'dist-electron',
+    'dist-sidecar',
     'build',
     'bin',
     'obj',

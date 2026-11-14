@@ -27,6 +27,31 @@ function getGitTagVersion() {
   return null;
 }
 
+function syncTauriVersions(version) {
+  const tauriConfPath = path.resolve(__dirname, '../src-tauri/tauri.conf.json');
+  if (fs.existsSync(tauriConfPath)) {
+    const conf = JSON.parse(fs.readFileSync(tauriConfPath, 'utf8'));
+    if (conf.version !== version) {
+      conf.version = version;
+      fs.writeFileSync(tauriConfPath, JSON.stringify(conf, null, 2) + '\n', 'utf8');
+      console.log(`[sync-version] Synced tauri.conf.json version -> ${version}`);
+    }
+  }
+
+  const cargoTomlPath = path.resolve(__dirname, '../src-tauri/Cargo.toml');
+  if (fs.existsSync(cargoTomlPath)) {
+    const raw = fs.readFileSync(cargoTomlPath, 'utf8');
+    const updated = raw.replace(
+      /^(\[package\][\s\S]*?^version\s*=\s*")([^"]+)(")/m,
+      `$1${version}$3`
+    );
+    if (updated !== raw) {
+      fs.writeFileSync(cargoTomlPath, updated, 'utf8');
+      console.log(`[sync-version] Synced Cargo.toml version -> ${version}`);
+    }
+  }
+}
+
 function syncVersion() {
   const pkgPath = path.resolve(__dirname, '../package.json');
   if (!fs.existsSync(pkgPath)) return;
@@ -42,6 +67,8 @@ function syncVersion() {
   } else {
     console.log(`[sync-version] Active version: ${pkg.version} (git tag: ${tagVersion || 'none'})`);
   }
+
+  syncTauriVersions(pkg.version);
 }
 
 syncVersion();

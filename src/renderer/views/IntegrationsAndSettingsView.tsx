@@ -153,7 +153,7 @@ export const IntegrationsView: React.FC<{
       });
       setJiraToken("");
       setFeedback(
-        "Jira bilgileri OS DPAPI (safeStorage) ile şifrelenerek kaydedildi.",
+        "Jira bilgileri Windows DPAPI ile şifrelenerek kaydedildi.",
       );
       await loadHealth();
     } catch (err) {
@@ -179,7 +179,7 @@ export const IntegrationsView: React.FC<{
       });
       setGitlabToken("");
       setFeedback(
-        "GitLab bilgileri OS DPAPI (safeStorage) ile şifrelenerek kaydedildi.",
+        "GitLab bilgileri Windows DPAPI ile şifrelenerek kaydedildi.",
       );
       await loadHealth();
     } catch (err) {
@@ -205,7 +205,7 @@ export const IntegrationsView: React.FC<{
       });
       setJenkinsToken("");
       setFeedback(
-        "Jenkins bilgileri OS DPAPI (safeStorage) ile şifrelenerek kaydedildi.",
+        "Jenkins bilgileri Windows DPAPI ile şifrelenerek kaydedildi.",
       );
       await loadHealth();
     } catch (err) {

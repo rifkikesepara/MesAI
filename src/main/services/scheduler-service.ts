@@ -1,7 +1,11 @@
-import { powerMonitor } from 'electron';
 import type { MesaiRepository } from '../db/repositories';
 import type { ZoomReaderAdapter } from './zoom-adapter';
 import type { GitFileWatcherService } from './git-file-watcher';
+import type { PowerIdleState } from '../host-bridge';
+
+export interface PowerMonitorBridge {
+  getPowerIdleState(): Promise<PowerIdleState>;
+}
 
 export class SchedulerService {
   private zoomTimer: NodeJS.Timeout | null = null;
@@ -9,7 +13,6 @@ export class SchedulerService {
   private notifyTimer: NodeJS.Timeout | null = null;
   private lastNotifiedDate: string | null = null;
   private systemSuspendedOrLocked = false;
-  private powerListenersRegistered = false;
   private zoomTickCounter = 0;
   private gitTickCounter = 0;
 
@@ -17,51 +20,31 @@ export class SchedulerService {
     private readonly repo: MesaiRepository,
     private readonly zoomAdapter: ZoomReaderAdapter,
     private readonly gitWatcher: GitFileWatcherService,
-    private readonly onNotify?: (title: string, body: string) => void
-  ) {
-    this.registerPowerMonitorListeners();
+    private readonly onNotify?: (title: string, body: string) => void,
+    private readonly powerBridge?: PowerMonitorBridge
+  ) {}
+
+  public handleSystemSuspend(): void {
+    this.systemSuspendedOrLocked = true;
+    this.stopTimersOnly();
   }
 
-  private registerPowerMonitorListeners(): void {
-    if (this.powerListenersRegistered) return;
-    try {
-      if (!powerMonitor || typeof powerMonitor.on !== 'function') return;
-      this.powerListenersRegistered = true;
-
-      const handlePause = () => {
-        this.systemSuspendedOrLocked = true;
-        this.stopTimersOnly();
-      };
-
-      const handleResume = () => {
-        const wasPausedBySystem = this.systemSuspendedOrLocked;
-        this.systemSuspendedOrLocked = false;
-        this.startOrReload();
-        if (wasPausedBySystem && !this.repo.getSettings().trackingPaused) {
-          void this.zoomAdapter.pollOnce();
-          void this.gitWatcher.pollAllProjectsGit();
-        }
-      };
-
-      powerMonitor.on('suspend', handlePause);
-      powerMonitor.on('lock-screen', handlePause);
-      powerMonitor.on('resume', handleResume);
-      powerMonitor.on('unlock-screen', handleResume);
-    } catch {
-      // Ignore if running outside Electron main process in tests
+  public handleSystemResume(): void {
+    const wasPausedBySystem = this.systemSuspendedOrLocked;
+    this.systemSuspendedOrLocked = false;
+    this.startOrReload();
+    if (wasPausedBySystem && !this.repo.getSettings().trackingPaused) {
+      void this.zoomAdapter.pollOnce();
+      void this.gitWatcher.pollAllProjectsGit();
     }
   }
 
-  private shouldThrottleOnBatteryIdle(kind: 'zoom' | 'git'): boolean {
+  private async shouldThrottleOnBatteryIdle(kind: 'zoom' | 'git'): Promise<boolean> {
     try {
-      if (!powerMonitor || typeof powerMonitor.isOnBatteryPower !== 'function') {
+      if (!this.powerBridge) {
         return false;
       }
-      const onBattery = powerMonitor.isOnBatteryPower();
-      const idleSeconds =
-        typeof powerMonitor.getSystemIdleTime === 'function'
-          ? powerMonitor.getSystemIdleTime()
-          : 0;
+      const { onBattery, idleSeconds } = await this.powerBridge.getPowerIdleState();
       if (onBattery && idleSeconds >= 180) {
         if (kind === 'zoom') {
           this.zoomTickCounter++;
@@ -94,18 +77,22 @@ export class SchedulerService {
 
     this.zoomTimer = setInterval(() => {
       if (this.systemSuspendedOrLocked) return;
-      const s = this.repo.getSettings();
-      if (!s.trackingPaused && !this.shouldThrottleOnBatteryIdle('zoom')) {
-        void this.zoomAdapter.pollOnce();
-      }
+      void (async () => {
+        const s = this.repo.getSettings();
+        if (!s.trackingPaused && !(await this.shouldThrottleOnBatteryIdle('zoom'))) {
+          await this.zoomAdapter.pollOnce();
+        }
+      })();
     }, zoomMs);
 
     this.gitTimer = setInterval(() => {
       if (this.systemSuspendedOrLocked) return;
-      const s = this.repo.getSettings();
-      if (!s.trackingPaused && !this.shouldThrottleOnBatteryIdle('git')) {
-        void this.gitWatcher.pollAllProjectsGit();
-      }
+      void (async () => {
+        const s = this.repo.getSettings();
+        if (!s.trackingPaused && !(await this.shouldThrottleOnBatteryIdle('git'))) {
+          await this.gitWatcher.pollAllProjectsGit();
+        }
+      })();
     }, gitMs);
 
     this.notifyTimer = setInterval(() => {

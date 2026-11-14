@@ -61,10 +61,11 @@ export class IntegrationsService {
     private readonly zoomAdapter: ZoomReaderAdapter,
     private readonly gitWatcher: GitFileWatcherService,
     private readonly reportService: ReportService,
-    options?: { userDataDir?: string; secretProvider?: SecretProvider }
+    options?: { userDataDir?: string; secretProvider?: SecretProvider; secretsFileName?: string }
   ) {
     const dir = options?.userDataDir ?? process.cwd();
-    this.secretsFilePath = path.join(dir, 'mesai_credentials.dpapi.json');
+    const fileName = options?.secretsFileName ?? 'mesai_credentials.dpapi.json';
+    this.secretsFilePath = path.join(dir, fileName);
     this.secretProvider = options?.secretProvider ?? this.createDefaultSecretProvider();
     this.reportService.setJiraIssueSyncer((keys) => this.syncJiraIssuesIfConfigured(keys));
     this.reportService.setGitLabMrSyncer((date, acts) => this.resolveGitLabMrReviewsIfConfigured(date, acts));
@@ -80,26 +81,11 @@ export class IntegrationsService {
 
   private createDefaultSecretProvider(): SecretProvider {
     return {
-      encrypt: (plainText: string) => {
-        try {
-          // Dynamically require electron safeStorage when running inside Electron Main
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
-          const { safeStorage } = require('electron');
-          if (safeStorage && safeStorage.isEncryptionAvailable()) {
-            return safeStorage.encryptString(plainText).toString('base64');
-          }
-        } catch {
-          // Not in Electron main process
-        }
-        throw new Error('OS güvenli şifreleme (DPAPI safeStorage) bu çalışma ortamında kullanılamıyor.');
+      encrypt: () => {
+        throw new Error('OS güvenli şifreleme (Windows DPAPI) sağlayıcısı başlatılmadı.');
       },
-      decrypt: (cipherBase64: string) => {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const { safeStorage } = require('electron');
-        if (safeStorage && safeStorage.isEncryptionAvailable()) {
-          return safeStorage.decryptString(Buffer.from(cipherBase64, 'base64'));
-        }
-        throw new Error('OS güvenli şifreleme (DPAPI safeStorage) çözülemedi.');
+      decrypt: () => {
+        throw new Error('OS güvenli şifreleme (Windows DPAPI) sağlayıcısı başlatılmadı.');
       }
     };
   }

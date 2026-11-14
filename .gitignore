@@ -1,7 +1,10 @@
 node_modules/
 dist-main/
 dist-renderer/
-dist-electron/
+dist-sidecar/
+src-tauri/target/
+src-tauri/binaries/
+src-tauri/gen/
 readers/**/bin/
 readers/**/obj/
 *.sqlite

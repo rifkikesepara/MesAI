@@ -131,6 +131,7 @@ export const CustomMenuBar: React.FC<CustomMenuBarProps> = ({
       <header
         ref={menuBarRef}
         className="custom-titlebar"
+        data-tauri-drag-region
         onDoubleClick={handleMaximize}
       >
         {/* Left Section: Logo, Title & Menus */}
