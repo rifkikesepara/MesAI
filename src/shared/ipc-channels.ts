@@ -7,6 +7,7 @@ import type {
   AppSettings,
   DailyReport,
   Evidence,
+  GitLabSyncReviewsResult,
   IntegrationHealth,
   Project,
   SyncState,
@@ -48,6 +49,7 @@ export const IPC_CHANNELS = {
   INTEGRATIONS_HEALTH: 'mesai:integrations:health',
   INTEGRATIONS_SAVE_SECRET: 'mesai:integrations:saveSecret',
   INTEGRATIONS_TEST_CONNECTION: 'mesai:integrations:testConnection',
+  GITLAB_SYNC_REVIEWS: 'mesai:gitlab:syncReviews',
 
   AI_SAVE_KEY: 'mesai:ai:saveKey',
   AI_TEST_CONNECTION: 'mesai:ai:testConnection',
@@ -180,6 +182,7 @@ export interface MesaiApi {
     token: string;
   }): Promise<void>;
   testIntegrationConnection(service: 'jira' | 'gitlab' | 'jenkins'): Promise<{ ok: boolean; message: string }>;
+  syncGitLabReviews(days?: number): Promise<GitLabSyncReviewsResult>;
 
   saveAiApiKey(input: {
     provider: 'gemini_cli' | 'openai' | 'anthropic' | 'custom';

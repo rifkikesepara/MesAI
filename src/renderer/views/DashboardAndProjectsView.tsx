@@ -18,6 +18,7 @@ export const SOURCE_LABELS: Record<string, string> = {
   git_working_tree: 'Git Çalışma Ağacı (Commit Edilmemiş)',
   file_change: 'Dosya Değişikliği (Debounced)',
   jira_issue: 'Jira Kaydı',
+  gitlab_mr_review: 'GitLab MR İnceleme / Onay',
   jenkins_build: 'Jenkins Build',
   manual_note: 'Manuel Not'
 };

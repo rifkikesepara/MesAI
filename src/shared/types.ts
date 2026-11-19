@@ -67,6 +67,7 @@ export type SourceType =
   | 'git_working_tree'
   | 'file_change'
   | 'jira_issue'
+  | 'gitlab_mr_review'
   | 'jenkins_build'
   | 'manual_note';
 
@@ -292,6 +293,30 @@ export interface GitLabMrReviewContext {
   isReviewFix: boolean;
   reviewedFiles: string[];
   reviewerNotes: string[];
+}
+
+export interface GitLabReviewedMrItem {
+  projectId: string | null;
+  gitlabProjectId: number | null;
+  projectName: string;
+  mrIid: number;
+  mrTitle: string;
+  mrState: string;
+  sourceBranch?: string;
+  webUrl?: string;
+  actions: Array<'commented' | 'approved'>;
+  myComments: string[];
+  reviewedFiles: string[];
+  occurredAtIso: string;
+}
+
+export interface GitLabSyncReviewsResult {
+  ok: boolean;
+  days: number;
+  createdCount: number;
+  updatedCount: number;
+  totalMrs: number;
+  message: string;
 }
 
 export interface AiPreviewPayload {

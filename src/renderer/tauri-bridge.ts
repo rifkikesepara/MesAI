@@ -58,6 +58,7 @@ export function createTauriMesaiApi(): MesaiApi {
     getIntegrationsHealth: () => rpc(IPC_CHANNELS.INTEGRATIONS_HEALTH),
     saveIntegrationSecret: (input) => rpc(IPC_CHANNELS.INTEGRATIONS_SAVE_SECRET, input),
     testIntegrationConnection: (service) => rpc(IPC_CHANNELS.INTEGRATIONS_TEST_CONNECTION, service),
+    syncGitLabReviews: (days) => rpc(IPC_CHANNELS.GITLAB_SYNC_REVIEWS, days),
     saveAiApiKey: (input) => rpc(IPC_CHANNELS.AI_SAVE_KEY, input),
     testAiConnection: (provider) => rpc(IPC_CHANNELS.AI_TEST_CONNECTION, provider),
     fetchAiModels: (input) => rpc(IPC_CHANNELS.AI_FETCH_MODELS, input),

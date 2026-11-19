@@ -117,7 +117,7 @@ export class ReportService {
         : settings.reportMaxChars ?? 1000;
 
     // Strictly filter to only activities belonging to reportDate
-    const activities = this.repo
+    let activities = this.repo
       .listActivities({ date: reportDate })
       .filter((a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate);
 
@@ -126,9 +126,10 @@ export class ReportService {
       : {};
 
     if (!fastLocal) {
-      // Sync candidate Jira keys and GitLab MR reviews in parallel with a strict 2.5s timeout cap
+      // Sync candidate Jira keys and GitLab MR reviews (author + reviewer) in parallel with a 3.5s timeout cap
       const candidateJiraKeys = new Set<string>();
       for (const act of activities) {
+        if (act.sourceType === 'gitlab_mr_review') continue;
         for (const k of extractJiraKeys(act.title + ' ' + act.summary)) candidateJiraKeys.add(k);
         for (const ev of act.evidences ?? []) {
           for (const k of extractJiraKeys(ev.title + ' ' + ev.snippet + ' ' + (ev.externalRef ?? '') + ' ' + ev.links.join(' '))) {
@@ -140,27 +141,31 @@ export class ReportService {
         this.jiraIssueSyncer && candidateJiraKeys.size > 0
           ? this.jiraIssueSyncer(Array.from(candidateJiraKeys)).catch(() => undefined)
           : Promise.resolve();
-      const gitlabPromise =
-        this.gitlabMrSyncer && activities.length > 0
-          ? this.gitlabMrSyncer(reportDate, activities)
-              .then((res) => {
-                gitlabMrContextMap = res;
-              })
-              .catch(() => undefined)
-          : Promise.resolve();
+      const gitlabPromise = this.gitlabMrSyncer
+        ? this.gitlabMrSyncer(reportDate, activities)
+            .then((res) => {
+              gitlabMrContextMap = res;
+            })
+            .catch(() => undefined)
+        : Promise.resolve();
 
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         await Promise.race([
           Promise.all([jiraPromise, gitlabPromise]),
           new Promise<void>((resolve) => {
-            timer = setTimeout(resolve, 2_500);
+            timer = setTimeout(resolve, 3_500);
             timer.unref?.();
           })
         ]);
       } finally {
         if (timer) clearTimeout(timer);
       }
+
+      // Refresh activities in case GitLab reviewer MR sync persisted new gitlab_mr_review rows for this date
+      activities = this.repo
+        .listActivities({ date: reportDate })
+        .filter((a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate);
     }
 
     const dayJiraKeys = this.repo.extractJiraKeysForDate(reportDate);
@@ -312,13 +317,14 @@ export class ReportService {
         : settings.reportMaxChars ?? 1000;
 
     // STRICT DATE GUARD: Only include activities whose occurredAtIso local date matches input.reportDate
-    const activities = this.repo
+    let activities = this.repo
       .listActivities({ date: input.reportDate })
       .filter((a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === input.reportDate);
 
     // Collect candidate Jira keys from this date's activities (git, zoom, notes) to sync & verify assignee with Jira
     const candidateJiraKeys = new Set<string>();
     for (const act of activities) {
+      if (act.sourceType === 'gitlab_mr_review') continue;
       for (const k of extractJiraKeys(act.title + ' ' + act.summary)) candidateJiraKeys.add(k);
       for (const ev of act.evidences ?? []) {
         for (const k of extractJiraKeys(ev.title + ' ' + ev.snippet + ' ' + (ev.externalRef ?? '') + ' ' + ev.links.join(' '))) {
@@ -334,27 +340,31 @@ export class ReportService {
       this.jiraIssueSyncer && candidateJiraKeys.size > 0
         ? this.jiraIssueSyncer(Array.from(candidateJiraKeys)).catch(() => undefined)
         : Promise.resolve();
-    const gitlabSyncPromise =
-      this.gitlabMrSyncer && activities.length > 0
-        ? this.gitlabMrSyncer(input.reportDate, activities)
-            .then((res) => {
-              gitlabMrContextMap = res;
-            })
-            .catch(() => undefined)
-        : Promise.resolve();
+    const gitlabSyncPromise = this.gitlabMrSyncer
+      ? this.gitlabMrSyncer(input.reportDate, activities)
+          .then((res) => {
+            gitlabMrContextMap = res;
+          })
+          .catch(() => undefined)
+      : Promise.resolve();
 
     let syncTimer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
         Promise.all([jiraSyncPromise, gitlabSyncPromise]),
         new Promise<void>((resolve) => {
-          syncTimer = setTimeout(resolve, 3_000);
+          syncTimer = setTimeout(resolve, 4_500);
           syncTimer.unref?.();
         })
       ]);
     } finally {
       if (syncTimer) clearTimeout(syncTimer);
     }
+
+    // Refresh activities after GitLab reviewer sync so newly persisted gitlab_mr_review rows are included
+    activities = this.repo
+      .listActivities({ date: input.reportDate })
+      .filter((a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === input.reportDate);
 
     const dayJiraKeys = this.repo.extractJiraKeysForDate(input.reportDate);
     const jiraContextMap = this.repo.getJiraContextMap(dayJiraKeys);
@@ -400,6 +410,21 @@ export class ReportService {
         timestamp: getNowHhmmss(),
         step: 'context',
         message: `GitLab API üzerinden ${mrReviewCount} adet MR review düzeltmesi tespit edildi.`
+      });
+    }
+    const reviewerMrActs = activities.filter((a) => a.sourceType === 'gitlab_mr_review');
+    if (reviewerMrActs.length > 0) {
+      const mrNums = reviewerMrActs
+        .map((a) => {
+          const ev = (a.evidences ?? [])[0];
+          const iid = ev?.metadata?.mrIid;
+          return iid ? `!${iid}` : ev?.externalRef || '';
+        })
+        .filter(Boolean);
+      input.onProgress?.({
+        timestamp: getNowHhmmss(),
+        step: 'context',
+        message: `GitLab üzerinden reviewer olarak işlem yapılan ${reviewerMrActs.length} adet MR tespit edildi${mrNums.length > 0 ? ` (${mrNums.join(', ')})` : ''}.`
       });
     }
     input.onProgress?.({

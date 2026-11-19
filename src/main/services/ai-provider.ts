@@ -999,7 +999,102 @@ export class LocalRuleProvider implements AIProvider {
       }
     }
 
-    // 3. Process standalone calls and manual notes
+    // 3. Process GitLab reviewer MR reviews & approvals (with MR numbers)
+    const reviewerMrActs = standaloneOtherActs.filter((a) => a.sourceType === 'gitlab_mr_review');
+    if (reviewerMrActs.length > 0) {
+      const commentedNums: string[] = [];
+      const approvedNums: string[] = [];
+      const projNames = new Set<string>();
+      const allReviewedFiles = new Set<string>();
+      const commentSnippets: string[] = [];
+      const mrEvIds = new Set<string>();
+      let firstProjectId: string | null = null;
+
+      for (const act of reviewerMrActs) {
+        if (!firstProjectId && act.projectId) firstProjectId = act.projectId;
+        const ev = (act.evidences ?? [])[0];
+        for (const e of act.evidences ?? []) mrEvIds.add(e.id);
+        const meta = (ev?.metadata ?? {}) as Record<string, unknown>;
+        const rawIid = typeof meta.mrIid === 'number' ? meta.mrIid : null;
+        const mrNum = rawIid ? `!${rawIid}` : ev?.externalRef || '';
+        const pName =
+          (typeof meta.projectName === 'string' && meta.projectName.trim()) ||
+          (act.projectName ? formatCorporateProjectName(act.projectName) : '') ||
+          (act.chatOrRepoName ? formatCorporateProjectName(act.chatOrRepoName) : '');
+        if (pName && !/^GitLab Proje #\d+$/i.test(pName)) {
+          projNames.add(pName);
+        }
+        const actions = Array.isArray(meta.actions)
+          ? meta.actions.filter((x): x is string => typeof x === 'string')
+          : [];
+        if (actions.includes('commented') && mrNum && !commentedNums.includes(mrNum)) {
+          commentedNums.push(mrNum);
+        }
+        if (actions.includes('approved') && mrNum && !approvedNums.includes(mrNum)) {
+          approvedNums.push(mrNum);
+        }
+        if (Array.isArray(meta.reviewedFiles)) {
+          for (const rf of meta.reviewedFiles) {
+            if (typeof rf === 'string' && rf.trim()) {
+              allReviewedFiles.add(path.posix.basename(rf.replace(/\\/g, '/')));
+            }
+          }
+        }
+        if (Array.isArray(meta.myComments)) {
+          for (const c of meta.myComments) {
+            if (typeof c === 'string' && c.trim() && commentSnippets.length < 2) {
+              commentSnippets.push(c.trim().slice(0, 90));
+            }
+          }
+        }
+      }
+
+      const formatListTr = (items: string[]): string => {
+        if (items.length <= 1) return items[0] ?? '';
+        return `${items.slice(0, -1).join(', ')} ve ${items[items.length - 1]}`;
+      };
+
+      const projList = Array.from(projNames);
+      const projPrefix =
+        projList.length > 0 ? `${formatListTr(projList)} kapsamında ` : '';
+
+      const clauses: string[] = [];
+      if (commentedNums.length > 0) {
+        const fileNote =
+          allReviewedFiles.size > 0
+            ? ` (${Array.from(allReviewedFiles).slice(0, 3).join(', ')})`
+            : '';
+        clauses.push(
+          `${formatListTr(commentedNums)} numaralı MR’lar mevcut mimari ve kod standartlarına uyum açısından incelenerek${fileNote} düzenleme gerektiren noktalara teknik geri bildirim verildi`
+        );
+      }
+      if (approvedNums.length > 0) {
+        const approveIntro =
+          commentedNums.length > 0 ? 'incelemesi tamamlanan ' : '';
+        clauses.push(
+          `${approveIntro}${formatListTr(approvedNums)} numaralı ${approvedNums.length > 1 ? 'MR’lar' : 'MR'} onaylandı`
+        );
+      }
+
+      const combinedProse =
+        clauses.length > 0
+          ? `${projPrefix}${clauses.join('; ')}.`
+          : `${projPrefix}GitLab üzerinde code review incelemeleri gerçekleştirildi.`;
+
+      results.push({
+        workItemId: null,
+        projectId: firstProjectId,
+        category: 'analysis',
+        itemStatus: 'completed',
+        text: combinedProse.charAt(0).toUpperCase() + combinedProse.slice(1),
+        isInsufficientEvidence: false,
+        insufficientReason: null,
+        durationNote: null,
+        evidenceIds: Array.from(mrEvIds)
+      });
+    }
+
+    // 4. Process standalone calls and manual notes
     const callActs = standaloneOtherActs.filter((a) => a.sourceType === 'zoom_call');
     if (callActs.length > 0) {
       const callEvIds = Array.from(
@@ -1019,7 +1114,9 @@ export class LocalRuleProvider implements AIProvider {
       });
     }
 
-    const noteActs = standaloneOtherActs.filter((a) => a.sourceType !== 'zoom_call');
+    const noteActs = standaloneOtherActs.filter(
+      (a) => a.sourceType !== 'zoom_call' && a.sourceType !== 'gitlab_mr_review'
+    );
     for (const act of noteActs) {
       const evidenceIds = (act.evidences ?? []).map((e) => e.id);
       const projLabel = act.projectName ? `${formatCorporateProjectName(act.projectName)} kapsamında ` : '';
@@ -1086,6 +1183,7 @@ export function buildSanitizedAiPrompt(
     }
   >();
 
+  const reviewedMergeRequests: Array<Record<string, unknown>> = [];
   const otherRecords: Array<Record<string, unknown>> = [];
   const dayHasAnyCommit = activities.some((a) => a.sourceType === 'git_commit');
 
@@ -1188,6 +1286,23 @@ export function buildSanitizedAiPrompt(
       for (const ev of act.evidences ?? []) {
         conv.evidenceIds.add(ev.id);
       }
+    } else if (act.sourceType === 'gitlab_mr_review') {
+      const ev = (act.evidences ?? [])[0];
+      const meta = (ev?.metadata ?? {}) as Record<string, unknown>;
+      const mrIid = typeof meta.mrIid === 'number' ? meta.mrIid : null;
+      reviewedMergeRequests.push({
+        projectId: act.projectId,
+        projectName:
+          (typeof meta.projectName === 'string' && meta.projectName) ||
+          (act.projectName ? formatCorporateProjectName(act.projectName) : act.chatOrRepoName || 'İlgili Süreç'),
+        mrNumber: mrIid ? `!${mrIid}` : ev?.externalRef || null,
+        mrTitle: typeof meta.mrTitle === 'string' ? meta.mrTitle : act.title,
+        mrState: typeof meta.mrState === 'string' ? meta.mrState : 'opened',
+        actions: Array.isArray(meta.actions) ? meta.actions : [],
+        myComments: Array.isArray(meta.myComments) ? meta.myComments : [],
+        reviewedFiles: Array.isArray(meta.reviewedFiles) ? meta.reviewedFiles : [],
+        evidenceIds: (act.evidences ?? []).map((e) => e.id)
+      });
     } else {
       otherRecords.push({
         activityId: act.id,
@@ -1253,6 +1368,7 @@ export function buildSanitizedAiPrompt(
 
   const untrustedPayload = {
     developmentTasks,
+    reviewedMergeRequests,
     zoomConversations,
     otherActivities: otherRecords
   };
@@ -1283,8 +1399,13 @@ export function buildSanitizedAiPrompt(
     '- Zoom sohbetlerinde ekip arkadaşlarının bahsettiği ancak geliştiriciye atanmamış olan veya Git aktivitesi bulunmayan yabancı Jira biletlerini KESİNLİKLE geliştiricinin işi gibi gösterme ve madde metnine Jira numarası olarak bağlama.',
     '',
     'KRİTİK KURAL 4 — GITLAB MR REVIEW DÜZELTMELERİ (gitlabMrReview):',
-    '- `developmentTasks` içindeki bir görevde `gitlabMrReview` nesnesi doluysa ve `isReviewFix: true` ise (veya `reviewerNotes` / `reviewedFiles` mevcutsa), o gün yapılan Git commit ve dosya değişikliklerinin açılmış olan Merge Request üzerindeki code review bulgularını/geri bildirimlerini düzeltmek amacıyla yapıldığını mutlaka rapora yaz.',
+    '- `developmentTasks` içindeki bir görevde `gitlabMrReview` nesnesi doluysa ve `isReviewFix: true` ise (veya `reviewerNotes` / `reviewedFiles` mevcutsa), o gün yapılan Git commit ve dosya değişikliklerinin açılmış olan Merge Request üzerindeki code review bulgularını/geri bildirimlerini düzeltmek amacıyla yapıldığını mutlaka rapora yaz (MR numarasını `!88` biçiminde paylaşabilirsin).',
     '- Hangi bileşen veya dosyalarda (`reviewedFiles`, `changedComponents`) hangi inceleme bulgularının (`reviewerNotes` ve `codeDiffSummary`) giderilerek MR revizyonlarının tamamlandığını kurumsal mühendislik diliyle açıkla.',
+    '',
+    'KRİTİK KURAL 5 — REVIEWER OLARAK İNCELENEN VE ONAYLANAN GITLAB MR\'LARI (reviewedMergeRequests):',
+    '- `reviewedMergeRequests` dizisi doluysa, geliştiricinin reviewer rolüyle kontrol ettiği, yorum bıraktığı (`actions` içinde `"commented"`) ve/veya onayladığı (`actions` içinde `"approved"`) Merge Request\'ler için mutlaka `category: "analysis"`, `itemStatus: "completed"` olarak rapor maddesi üret ve `evidenceIds` kimliklerini eksiksiz bağla.',
+    '- Rapor maddesinde **MR numaralarını (`!142`, `!145` vb.) mutlaka paylaş**; yorum atılan MR\'larda hangi teknik konularda/dosyalarda (`myComments`, `reviewedFiles`) geri bildirim verildiğini kurumsal dille özetle ve onaylanan MR numaralarını açıkça belirt.',
+    '- İncelenen MR\'larda ekip arkadaşlarının isimlerini yazma ve başkasının MR\'ına ait Jira biletini geliştiricinin kendi geliştirmesi gibi gösterme.',
     '',
     'YAZIM FORMATI VE ÖRNEK ÜSLUP:',
     '- Maddelerin başına "[Proje - BAM-123]" gibi köşeli parantezler, Jira numaraları veya ham dosya uzantıları EKLEME.',

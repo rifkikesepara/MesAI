@@ -8,6 +8,7 @@ import type {
   AppSettings,
   DailyReport,
   Evidence,
+  GitLabReviewedMrItem,
   Project,
   ReportItem,
   SourceType,
@@ -784,6 +785,266 @@ export class MesaiRepository {
     return { created: true, activityId };
   }
 
+  /**
+   * Records or updates a GitLab reviewer MR activity (commented and/or approved)
+   * as a first-class Timeline activity (source_type = 'gitlab_mr_review').
+   * Deduplicated per (project, mrIid, reportDate) so same-day comment + approval merge cleanly.
+   */
+  public ingestGitLabMrReviewActivity(
+    input: GitLabReviewedMrItem & { reportDate: string }
+  ): { created: boolean; updated: boolean; activityId: string } {
+    const projectScope =
+      input.gitlabProjectId !== null && input.gitlabProjectId !== undefined
+        ? String(input.gitlabProjectId)
+        : input.projectName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    const dedupKey = `gitlab:review:${projectScope}:${input.mrIid}:${input.reportDate}`;
+    const rawTime =
+      input.occurredAtIso && input.occurredAtIso.length >= 16
+        ? input.occurredAtIso.slice(11, 16)
+        : '09:00';
+    const links = input.webUrl ? [input.webUrl] : [];
+    const now = new Date().toISOString();
+
+    const buildTitleAndSummary = (
+      actions: Array<'commented' | 'approved'>,
+      myComments: string[],
+      reviewedFiles: string[],
+      mrTitle: string
+    ): { title: string; summary: string } => {
+      const hasComment = actions.includes('commented');
+      const hasApprove = actions.includes('approved');
+      const actionBadge =
+        hasComment && hasApprove
+          ? 'İnceleme & Onay'
+          : hasApprove
+            ? 'Onaylandı'
+            : 'İnceleme (Yorum)';
+      const cleanMrTitle = (mrTitle || `MR !${input.mrIid}`).trim();
+      const title = `MR !${input.mrIid} ${actionBadge} — ${cleanMrTitle}`;
+
+      const parts: string[] = [];
+      if (hasComment) {
+        if (myComments.length > 0) {
+          parts.push(`Yorum (${myComments.length}): ${myComments.slice(0, 2).join(' | ')}`);
+        } else {
+          parts.push('İnceleme yorumu eklendi');
+        }
+      }
+      if (hasApprove) {
+        parts.push('MR onaylandı');
+      }
+      if (reviewedFiles.length > 0) {
+        parts.push(`İncelenen dosyalar: ${reviewedFiles.slice(0, 4).join(', ')}`);
+      }
+      return { title, summary: parts.join(' • ') || cleanMrTitle };
+    };
+
+    const existing = this.db
+      .prepare('SELECT id, raw_payload_json, resolved_timestamp_iso FROM source_records WHERE dedup_key = ?')
+      .get(dedupKey) as
+      | { id: string; raw_payload_json?: string; resolved_timestamp_iso?: string | null }
+      | undefined;
+
+    if (existing) {
+      let prevMeta: Record<string, unknown> = {};
+      try {
+        prevMeta = JSON.parse(existing.raw_payload_json || '{}');
+      } catch {
+        prevMeta = {};
+      }
+      const prevActions = Array.isArray(prevMeta.actions)
+        ? (prevMeta.actions.filter((a): a is 'commented' | 'approved' => a === 'commented' || a === 'approved'))
+        : [];
+      const mergedActions = Array.from(new Set<'commented' | 'approved'>([...prevActions, ...input.actions]));
+
+      const prevComments = Array.isArray(prevMeta.myComments)
+        ? prevMeta.myComments.filter((c): c is string => typeof c === 'string')
+        : [];
+      const mergedComments = Array.from(new Set<string>([...prevComments, ...input.myComments])).slice(0, 8);
+
+      const prevFiles = Array.isArray(prevMeta.reviewedFiles)
+        ? prevMeta.reviewedFiles.filter((f): f is string => typeof f === 'string')
+        : [];
+      const mergedFiles = Array.from(new Set<string>([...prevFiles, ...input.reviewedFiles])).slice(0, 12);
+
+      const effectiveTitle = input.mrTitle || (typeof prevMeta.mrTitle === 'string' ? prevMeta.mrTitle : `MR !${input.mrIid}`);
+      const effectiveOccurredAt =
+        existing.resolved_timestamp_iso && existing.resolved_timestamp_iso > input.occurredAtIso
+          ? existing.resolved_timestamp_iso
+          : input.occurredAtIso;
+      const effectiveRawTime =
+        effectiveOccurredAt && effectiveOccurredAt.length >= 16 ? effectiveOccurredAt.slice(11, 16) : rawTime;
+
+      const { title, summary } = buildTitleAndSummary(mergedActions, mergedComments, mergedFiles, effectiveTitle);
+      const nextMeta = {
+        mrIid: input.mrIid,
+        mrTitle: effectiveTitle,
+        mrState: input.mrState || (typeof prevMeta.mrState === 'string' ? prevMeta.mrState : 'opened'),
+        gitlabProjectId: input.gitlabProjectId ?? (typeof prevMeta.gitlabProjectId === 'number' ? prevMeta.gitlabProjectId : null),
+        projectName: input.projectName,
+        sourceBranch: input.sourceBranch ?? (typeof prevMeta.sourceBranch === 'string' ? prevMeta.sourceBranch : undefined),
+        webUrl: input.webUrl ?? (typeof prevMeta.webUrl === 'string' ? prevMeta.webUrl : undefined),
+        actions: mergedActions,
+        myComments: mergedComments,
+        reviewedFiles: mergedFiles
+      };
+      const nextMetaJson = JSON.stringify(nextMeta);
+      const changed = nextMetaJson !== (existing.raw_payload_json || '{}');
+
+      const actRow = this.db
+        .prepare('SELECT activity_id FROM evidences WHERE source_record_id = ? LIMIT 1')
+        .get(existing.id) as { activity_id: string } | undefined;
+
+      this.db.exec('BEGIN;');
+      try {
+        this.db
+          .prepare(
+            `UPDATE source_records
+             SET last_seen_at = ?, resolved_timestamp_iso = ?, raw_timestamp_text = ?,
+                 text_content = ?, links_json = ?, raw_payload_json = ?
+             WHERE id = ?`
+          )
+          .run(now, effectiveOccurredAt, effectiveRawTime, summary, JSON.stringify(links), nextMetaJson, existing.id);
+
+        this.db
+          .prepare(
+            `UPDATE evidences
+             SET title = ?, snippet = ?, raw_timestamp_text = ?, resolved_timestamp_iso = ?,
+                 links_json = ?, metadata_json = ?
+             WHERE source_record_id = ?`
+          )
+          .run(title, summary, effectiveRawTime, effectiveOccurredAt, JSON.stringify(links), nextMetaJson, existing.id);
+
+        if (actRow?.activity_id) {
+          this.db
+            .prepare(
+              `UPDATE activities
+               SET project_id = COALESCE(?, project_id),
+                   title = ?, summary = ?, chat_or_repo_name = ?,
+                   raw_timestamp_text = ?, occurred_at_iso = ?
+               WHERE id = ?`
+            )
+            .run(
+              input.projectId,
+              title,
+              summary,
+              input.projectName,
+              effectiveRawTime,
+              effectiveOccurredAt,
+              actRow.activity_id
+            );
+        }
+        this.db.exec('COMMIT;');
+      } catch (err) {
+        this.db.exec('ROLLBACK;');
+        throw err;
+      }
+
+      return { created: false, updated: changed, activityId: actRow?.activity_id ?? '' };
+    }
+
+    const sourceRecordId = `sr_${sha256Hex(dedupKey).slice(0, 16)}`;
+    const activityId = `act_${sha256Hex(dedupKey).slice(0, 16)}`;
+    const evidenceId = `ev_${sha256Hex(dedupKey).slice(0, 16)}`;
+    const tz = extractTimezoneOffset(input.occurredAtIso);
+    const { title, summary } = buildTitleAndSummary(
+      input.actions,
+      input.myComments,
+      input.reviewedFiles,
+      input.mrTitle
+    );
+    const payloadMetaJson = JSON.stringify({
+      mrIid: input.mrIid,
+      mrTitle: input.mrTitle,
+      mrState: input.mrState,
+      gitlabProjectId: input.gitlabProjectId,
+      projectName: input.projectName,
+      sourceBranch: input.sourceBranch,
+      webUrl: input.webUrl,
+      actions: input.actions,
+      myComments: input.myComments.slice(0, 8),
+      reviewedFiles: input.reviewedFiles.slice(0, 12)
+    });
+
+    this.db.exec('BEGIN;');
+    try {
+      this.db
+        .prepare(`
+          INSERT INTO source_records (
+            id, source_type, dedup_key, external_id, session_id, chat_name,
+            sender, sender_resolved, raw_timestamp_text, resolved_timestamp_iso,
+            timestamp_confidence, timezone_offset, message_type, text_content,
+            links_json, raw_payload_json, first_seen_at, last_seen_at
+          ) VALUES (?, 'gitlab_mr_review', ?, ?, ?, ?, NULL, NULL, ?, ?, 'exact', ?, 'gitlab_mr_review', ?, ?, ?, ?, ?)
+        `)
+        .run(
+          sourceRecordId,
+          dedupKey,
+          `!${input.mrIid}`,
+          input.sourceBranch ?? null,
+          input.projectName,
+          rawTime,
+          input.occurredAtIso,
+          tz,
+          summary,
+          JSON.stringify(links),
+          payloadMetaJson,
+          now,
+          now
+        );
+
+      this.db
+        .prepare(`
+          INSERT INTO activities (
+            id, project_id, source_type, category, status, title, summary,
+            chat_or_repo_name, sender, raw_timestamp_text, occurred_at_iso,
+            timestamp_confidence, is_time_estimated, duration_minutes, confidence, created_at
+          ) VALUES (?, ?, 'gitlab_mr_review', 'analysis', 'completed', ?, ?, ?, NULL, ?, ?, 'exact', 0, NULL, 1.0, ?)
+        `)
+        .run(
+          activityId,
+          input.projectId,
+          title,
+          summary,
+          input.projectName,
+          rawTime,
+          input.occurredAtIso,
+          now
+        );
+
+      this.db
+        .prepare(`
+          INSERT INTO evidences (
+            id, activity_id, source_record_id, source_type, external_ref,
+            title, snippet, raw_timestamp_text, resolved_timestamp_iso,
+            timestamp_confidence, sender, chat_or_repo_name, links_json,
+            collected_at, metadata_json
+          ) VALUES (?, ?, ?, 'gitlab_mr_review', ?, ?, ?, ?, ?, 'exact', NULL, ?, ?, ?, ?)
+        `)
+        .run(
+          evidenceId,
+          activityId,
+          sourceRecordId,
+          `!${input.mrIid}`,
+          title,
+          summary,
+          rawTime,
+          input.occurredAtIso,
+          input.projectName,
+          JSON.stringify(links),
+          now,
+          payloadMetaJson
+        );
+
+      this.db.exec('COMMIT;');
+    } catch (err) {
+      this.db.exec('ROLLBACK;');
+      throw err;
+    }
+
+    return { created: true, updated: false, activityId };
+  }
+
   // ==================== MANUAL NOTE ====================
   public addManualNote(input: ManualNoteInput): Activity {
     const now = toLocalIsoString(new Date());
@@ -1396,6 +1657,7 @@ export class MesaiRepository {
       }
       for (const k of extractJiraKeysFromText(item.text)) candidateKeys.add(k);
       for (const ev of item.evidences ?? []) {
+        if (ev.sourceType === 'gitlab_mr_review') continue;
         for (const k of extractJiraKeysFromText(ev.externalRef)) candidateKeys.add(k);
         for (const k of extractJiraKeysFromText(ev.title)) candidateKeys.add(k);
         for (const k of extractJiraKeysFromText(ev.snippet)) candidateKeys.add(k);
@@ -1433,8 +1695,12 @@ export class MesaiRepository {
         continue;
       }
 
-      // Never extract Jira keys from zoom_chat or zoom_call activities into the report
-      if (act.sourceType === 'zoom_chat' || act.sourceType === 'zoom_call') {
+      // Never extract Jira keys from zoom_chat, zoom_call, or gitlab_mr_review (teammates' MRs) into the report
+      if (
+        act.sourceType === 'zoom_chat' ||
+        act.sourceType === 'zoom_call' ||
+        act.sourceType === 'gitlab_mr_review'
+      ) {
         continue;
       }
 

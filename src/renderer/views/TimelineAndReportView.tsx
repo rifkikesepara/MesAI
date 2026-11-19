@@ -46,6 +46,8 @@ export const TimelineView: React.FC<{
   });
 
   const [showNoteForm, setShowNoteForm] = useState(false);
+  const [syncingGitLabMrs, setSyncingGitLabMrs] = useState(false);
+  const [gitlabSyncNotice, setGitlabSyncNotice] = useState<string | null>(null);
   const [noteTitle, setNoteTitle] = useState('');
   const [noteSummary, setNoteSummary] = useState('');
   const [noteCategory, setNoteCategory] = useState<ActivityCategory>('meeting');
@@ -156,20 +158,74 @@ export const TimelineView: React.FC<{
     new Set(activities.map((a) => a.chatOrRepoName).filter(Boolean) as string[])
   );
 
+  const handleSyncGitLabReviews = async () => {
+    setSyncingGitLabMrs(true);
+    setGitlabSyncNotice('Son 30 günlük GitLab MR inceleme ve onayları senkronize ediliyor...');
+    try {
+      const res = await window.mesaiApi.syncGitLabReviews(30);
+      setGitlabSyncNotice(res.message);
+      if (res.ok) {
+        await loadActivities(false);
+      }
+    } catch (err) {
+      setGitlabSyncNotice(`GitLab MR senkronizasyon hatası: ${(err as Error).message}`);
+    } finally {
+      setSyncingGitLabMrs(false);
+    }
+  };
+
   return (
     <div>
       <div className="card">
         <div className="card-header">
           <h3 className="card-title">Aktivite Akışı (Timeline) & Kanıt Filtreleri</h3>
-          <button
-            className="btn btn-primary btn-sm"
-            onClick={() => setShowNoteForm(!showNoteForm)}
-            style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
-          >
-            {showNoteForm ? <CloseIcon size={14} /> : <PlusIcon size={14} />}
-            <span>{showNoteForm ? 'Kapat' : 'Hızlı Toplantı / Teknik Not Ekle'}</span>
-          </button>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            <button
+              className="btn btn-sm"
+              onClick={handleSyncGitLabReviews}
+              disabled={syncingGitLabMrs}
+              title="Son 30 günde reviewer olarak yorum yaptığınız veya onayladığınız GitLab MR'larını çeker"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+            >
+              <RefreshIcon size={14} />
+              <span>{syncingGitLabMrs ? 'MR Senkronize Ediliyor...' : 'GitLab MR Senkronize Et (30 Gün)'}</span>
+            </button>
+            <button
+              className="btn btn-primary btn-sm"
+              onClick={() => setShowNoteForm(!showNoteForm)}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+            >
+              {showNoteForm ? <CloseIcon size={14} /> : <PlusIcon size={14} />}
+              <span>{showNoteForm ? 'Kapat' : 'Hızlı Toplantı / Teknik Not Ekle'}</span>
+            </button>
+          </div>
         </div>
+
+        {gitlabSyncNotice && (
+          <div
+            style={{
+              background: 'var(--bg-primary)',
+              border: '1px solid var(--border-color)',
+              borderRadius: '6px',
+              padding: '8px 12px',
+              marginBottom: '12px',
+              fontSize: '12.5px',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: '8px'
+            }}
+          >
+            <span>{gitlabSyncNotice}</span>
+            <button
+              className="btn btn-sm"
+              onClick={() => setGitlabSyncNotice(null)}
+              style={{ padding: '2px 6px' }}
+            >
+              <CloseIcon size={12} />
+            </button>
+          </div>
+        )}
 
         {showNoteForm && (
           <form
@@ -277,6 +333,7 @@ export const TimelineView: React.FC<{
             <option value="git_commit">Git Commit</option>
             <option value="git_working_tree">Git Çalışma Ağacı</option>
             <option value="file_change">Dosya Değişikliği</option>
+            <option value="gitlab_mr_review">GitLab MR İnceleme / Onay</option>
             <option value="manual_note">Manuel Not</option>
           </select>
           <select

@@ -392,6 +392,12 @@ export function createRpcHandlers(deps: {
     return integrations.testConnection(service);
   });
 
+  handlers.set(IPC_CHANNELS.GITLAB_SYNC_REVIEWS, async (days?: unknown) => {
+    const parsedDays =
+      typeof days === 'number' && Number.isFinite(days) ? Math.floor(days) : 30;
+    return integrations.syncGitLabReviewsHistory(parsedDays);
+  });
+
   handlers.set(IPC_CHANNELS.AI_SAVE_KEY, async (input: unknown) => {
     if (!input || typeof input !== 'object') {
       throw new Error('Geçersiz AI entegrasyon verisi.');

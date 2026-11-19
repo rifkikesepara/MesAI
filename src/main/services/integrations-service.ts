@@ -16,9 +16,21 @@ import type {
   Activity,
   AppSettings,
   GitLabMrReviewContext,
+  GitLabReviewedMrItem,
+  GitLabSyncReviewsResult,
   IntegrationHealth,
   ZoomReaderStatus
 } from '../../shared/types';
+import { toLocalIsoString } from './timestamp-resolver';
+
+function shiftIsoDate(dateStr: string, deltaDays: number): string {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, (m || 1) - 1, (d || 1) + deltaDays));
+  const yy = dt.getUTCFullYear();
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(dt.getUTCDate()).padStart(2, '0');
+  return `${yy}-${mm}-${dd}`;
+}
 
 export function extractGitLabProjectPath(repositoryUrl: string | null | undefined): string | null {
   if (!repositoryUrl || !repositoryUrl.trim()) return null;
@@ -52,6 +64,8 @@ export class IntegrationsService {
     string,
     { timestamp: number; signature: string; data: Record<string, GitLabMrReviewContext> }
   >();
+  private readonly gitlabReviewerDaySyncedAt = new Map<string, number>();
+  private gitlabCurrentUsername: string | null = null;
   private readonly jiraKeySyncedAt = new Map<string, number>();
   private gitlabUnreachableUntil = 0;
   private jiraUnreachableUntil = 0;
@@ -126,6 +140,8 @@ export class IntegrationsService {
       this.repo.updateSettings({ gitlabUrl: cleanUrl, gitlabUsername: cleanUser });
       this.gitlabUnreachableUntil = 0;
       this.gitlabMrCache.clear();
+      this.gitlabReviewerDaySyncedAt.clear();
+      this.gitlabCurrentUsername = null;
     } else {
       this.repo.updateSettings({ jenkinsUrl: cleanUrl, jenkinsUsername: cleanUser });
     }
@@ -754,10 +770,475 @@ export class IntegrationsService {
     );
   }
 
+  private async resolveCurrentGitLabUsername(
+    baseUrl: string,
+    headers: Record<string, string>,
+    configuredUsername: string
+  ): Promise<string | null> {
+    if (configuredUsername.trim()) return configuredUsername.trim();
+    if (this.gitlabCurrentUsername) return this.gitlabCurrentUsername;
+    try {
+      const resp = await fetch(`${baseUrl}/api/v4/user`, {
+        method: 'GET',
+        headers,
+        signal: AbortSignal.timeout(2_500)
+      });
+      if (resp.ok) {
+        const data = (await resp.json()) as { username?: string };
+        if (data.username && data.username.trim()) {
+          this.gitlabCurrentUsername = data.username.trim();
+          return this.gitlabCurrentUsername;
+        }
+      }
+    } catch {
+      // ignore user lookup failure
+    }
+    return null;
+  }
+
+  /**
+   * Fetches reviewer-side GitLab MR activities (comments and approvals) across [startDate, endDate]
+   * and persists each (project, mrIid, date) as a first-class 'gitlab_mr_review' Timeline activity.
+   */
+  public async syncGitLabReviewerActivities(options: {
+    startDate: string;
+    endDate: string;
+    maxPages?: number;
+  }): Promise<{ ok: boolean; createdCount: number; updatedCount: number; totalMrs: number; error?: string }> {
+    const settings = this.repo.getSettings();
+    const token = this.getDecryptedToken('gitlab');
+    if (!settings.gitlabUrl || !token) {
+      return {
+        ok: false,
+        createdCount: 0,
+        updatedCount: 0,
+        totalMrs: 0,
+        error: 'GitLab URL veya Personal Access Token yapılandırılmadı.'
+      };
+    }
+
+    const baseUrl = settings.gitlabUrl.trim().replace(/\/+$/, '');
+    const headers: Record<string, string> = {
+      'PRIVATE-TOKEN': token,
+      Accept: 'application/json'
+    };
+    const maxPages = Math.max(1, Math.min(options.maxPages ?? 2, 15));
+
+    const currentUsername = await this.resolveCurrentGitLabUsername(
+      baseUrl,
+      headers,
+      settings.gitlabUsername || ''
+    );
+
+    interface GitLabEventApiItem {
+      id?: number;
+      project_id?: number;
+      action_name?: string;
+      target_type?: string | null;
+      target_iid?: number | null;
+      target_title?: string | null;
+      created_at?: string;
+      note?: {
+        id?: number;
+        body?: string;
+        system?: boolean;
+        noteable_type?: string;
+        noteable_iid?: number;
+        position?: { new_path?: string; old_path?: string } | null;
+      } | null;
+    }
+
+    interface GitLabMrDetailApiItem {
+      iid: number;
+      project_id?: number;
+      title?: string;
+      state?: string;
+      source_branch?: string;
+      web_url?: string;
+      author?: { username?: string; name?: string };
+      references?: { full?: string; short?: string };
+    }
+
+    interface DayMrDraft {
+      reportDate: string;
+      gitlabProjectId: number;
+      mrIid: number;
+      mrTitle: string;
+      actions: Set<'commented' | 'approved'>;
+      myComments: string[];
+      reviewedFiles: Set<string>;
+      occurredAtIso: string;
+    }
+
+    const drafts = new Map<string, DayMrDraft>();
+    const mrDetailsCache = new Map<string, GitLabMrDetailApiItem>();
+    let hadNetworkSuccess = false;
+    let hadNetworkError = false;
+
+    const getOrCreateDraft = (
+      reportDate: string,
+      gitlabProjectId: number,
+      mrIid: number,
+      occurredAtIso: string,
+      fallbackTitle?: string
+    ): DayMrDraft => {
+      const key = `${reportDate}|${gitlabProjectId}|${mrIid}`;
+      let d = drafts.get(key);
+      if (!d) {
+        d = {
+          reportDate,
+          gitlabProjectId,
+          mrIid,
+          mrTitle: fallbackTitle || `MR !${mrIid}`,
+          actions: new Set<'commented' | 'approved'>(),
+          myComments: [],
+          reviewedFiles: new Set<string>(),
+          occurredAtIso
+        };
+        drafts.set(key, d);
+      } else {
+        if (occurredAtIso > d.occurredAtIso) d.occurredAtIso = occurredAtIso;
+        if (fallbackTitle && d.mrTitle === `MR !${mrIid}`) d.mrTitle = fallbackTitle;
+      }
+      return d;
+    };
+
+    const afterDate = shiftIsoDate(options.startDate, -2);
+    const beforeDate = shiftIsoDate(options.endDate, 1);
+
+    // 1. Primary source: User Events API (/api/v4/events)
+    for (let page = 1; page <= maxPages; page++) {
+      try {
+        const resp = await fetch(
+          `${baseUrl}/api/v4/events?after=${afterDate}&before=${beforeDate}&per_page=100&page=${page}`,
+          {
+            method: 'GET',
+            headers,
+            signal: AbortSignal.timeout(4_000)
+          }
+        );
+        hadNetworkSuccess = true;
+        if (!resp.ok) {
+          if (page === 1) hadNetworkError = true;
+          break;
+        }
+        const events = (await resp.json()) as GitLabEventApiItem[];
+        if (!Array.isArray(events) || events.length === 0) break;
+
+        for (const ev of events) {
+          if (!ev.created_at || !ev.project_id) continue;
+          const localIso = toLocalIsoString(new Date(ev.created_at));
+          const localDate = localIso.slice(0, 10);
+          if (localDate < options.startDate || localDate > options.endDate) continue;
+
+          const actionName = (ev.action_name || '').toLowerCase().trim();
+          if (actionName === 'approved' && ev.target_type === 'MergeRequest' && ev.target_iid) {
+            const draft = getOrCreateDraft(
+              localDate,
+              ev.project_id,
+              ev.target_iid,
+              localIso,
+              ev.target_title || undefined
+            );
+            draft.actions.add('approved');
+          } else if (
+            actionName === 'commented on' &&
+            ev.note &&
+            !ev.note.system &&
+            ev.note.noteable_type === 'MergeRequest' &&
+            ev.note.noteable_iid
+          ) {
+            const draft = getOrCreateDraft(
+              localDate,
+              ev.project_id,
+              ev.note.noteable_iid,
+              localIso,
+              ev.target_title || undefined
+            );
+            draft.actions.add('commented');
+            const diffPath = (ev.note.position?.new_path || ev.note.position?.old_path || '')
+              .replace(/\\/g, '/')
+              .trim();
+            if (diffPath) {
+              draft.reviewedFiles.add(diffPath);
+            }
+            const cleanBody = (ev.note.body || '').replace(/\s+/g, ' ').trim().slice(0, 220);
+            if (cleanBody) {
+              const prefix = diffPath ? `[${path.posix.basename(diffPath)}] ` : '';
+              const entry = `${prefix}${cleanBody}`;
+              if (!draft.myComments.includes(entry)) {
+                draft.myComments.push(entry);
+              }
+            }
+          }
+        }
+
+        if (events.length < 100) break;
+      } catch {
+        hadNetworkError = true;
+        break;
+      }
+    }
+
+    // 2. Complementary approval fallback: MRs approved by current user (in case /events omits 'approved')
+    if (currentUsername) {
+      try {
+        const updatedAfter = `${shiftIsoDate(options.startDate, -1)}T00:00:00Z`;
+        const resp = await fetch(
+          `${baseUrl}/api/v4/merge_requests?scope=all&approved_by_usernames[]=${encodeURIComponent(currentUsername)}&updated_after=${encodeURIComponent(updatedAfter)}&per_page=20`,
+          {
+            method: 'GET',
+            headers,
+            signal: AbortSignal.timeout(3_500)
+          }
+        );
+        hadNetworkSuccess = true;
+        if (resp.ok) {
+          const approvedMrs = (await resp.json()) as GitLabMrDetailApiItem[];
+          if (Array.isArray(approvedMrs)) {
+            const candidatesToCheck = approvedMrs.filter((mr) => {
+              if (!mr.project_id || !mr.iid) return false;
+              const mrKey = `${mr.project_id}:${mr.iid}`;
+              mrDetailsCache.set(mrKey, mr);
+              // Skip if we already recorded an 'approved' event for this MR in drafts
+              for (const d of drafts.values()) {
+                if (d.gitlabProjectId === mr.project_id && d.mrIid === mr.iid && d.actions.has('approved')) {
+                  return false;
+                }
+              }
+              return true;
+            });
+
+            await Promise.all(
+              candidatesToCheck.slice(0, 12).map(async (mr) => {
+                try {
+                  const notesResp = await fetch(
+                    `${baseUrl}/api/v4/projects/${mr.project_id}/merge_requests/${mr.iid}/notes?per_page=40`,
+                    {
+                      method: 'GET',
+                      headers,
+                      signal: AbortSignal.timeout(2_500)
+                    }
+                  );
+                  if (!notesResp.ok) return;
+                  const notes = (await notesResp.json()) as Array<{
+                    system?: boolean;
+                    body?: string;
+                    created_at?: string;
+                    author?: { username?: string };
+                  }>;
+                  if (!Array.isArray(notes)) return;
+                  for (const n of notes) {
+                    if (
+                      n.system &&
+                      n.created_at &&
+                      n.author?.username?.toLowerCase() === currentUsername.toLowerCase() &&
+                      /approved this merge request/i.test(n.body || '')
+                    ) {
+                      const localIso = toLocalIsoString(new Date(n.created_at));
+                      const localDate = localIso.slice(0, 10);
+                      if (localDate >= options.startDate && localDate <= options.endDate) {
+                        const draft = getOrCreateDraft(
+                          localDate,
+                          mr.project_id!,
+                          mr.iid,
+                          localIso,
+                          mr.title || undefined
+                        );
+                        draft.actions.add('approved');
+                      }
+                    }
+                  }
+                } catch {
+                  // ignore individual note fetch error
+                }
+              })
+            );
+          }
+        }
+      } catch {
+        // ignore fallback failure
+      }
+    }
+
+    if (hadNetworkError && !hadNetworkSuccess) {
+      this.gitlabUnreachableUntil = Date.now() + 60_000;
+      return {
+        ok: false,
+        createdCount: 0,
+        updatedCount: 0,
+        totalMrs: 0,
+        error: 'GitLab sunucusuna erişilemedi.'
+      };
+    }
+
+    // 3. Enrich unique (gitlabProjectId, mrIid) metadata in bounded batches
+    const uniqueMrKeys = Array.from(
+      new Set(Array.from(drafts.values()).map((d) => `${d.gitlabProjectId}:${d.mrIid}`))
+    ).filter((k) => !mrDetailsCache.has(k));
+
+    const BATCH_SIZE = 5;
+    for (let i = 0; i < Math.min(uniqueMrKeys.length, 40); i += BATCH_SIZE) {
+      const batch = uniqueMrKeys.slice(i, i + BATCH_SIZE);
+      await Promise.all(
+        batch.map(async (mrKey) => {
+          const [projIdStr, iidStr] = mrKey.split(':');
+          try {
+            const resp = await fetch(
+              `${baseUrl}/api/v4/projects/${projIdStr}/merge_requests/${iidStr}`,
+              {
+                method: 'GET',
+                headers,
+                signal: AbortSignal.timeout(2_500)
+              }
+            );
+            if (resp.ok) {
+              const detail = (await resp.json()) as GitLabMrDetailApiItem;
+              if (detail && detail.iid) {
+                mrDetailsCache.set(mrKey, detail);
+              }
+            }
+          } catch {
+            // ignore detail fetch failure; we still have event data
+          }
+        })
+      );
+    }
+
+    // 4. Resolve local projects & persist to SQLite
+    const localProjects = this.repo.listProjects();
+    const localProjectByPath = new Map<string, { id: string; name: string }>();
+    for (const p of localProjects) {
+      const pPath = extractGitLabProjectPath(p.repositoryUrl);
+      if (pPath) {
+        localProjectByPath.set(pPath.toLowerCase(), { id: p.id, name: p.name });
+      }
+    }
+
+    let createdCount = 0;
+    let updatedCount = 0;
+    let totalMrs = 0;
+
+    for (const draft of drafts.values()) {
+      const mrKey = `${draft.gitlabProjectId}:${draft.mrIid}`;
+      const detail = mrDetailsCache.get(mrKey);
+      const authorUsername = detail?.author?.username?.trim().toLowerCase() || '';
+
+      // Exclude self-authored comment-only MRs (author replying to reviewers is tracked via reviewFixes)
+      if (
+        currentUsername &&
+        authorUsername &&
+        authorUsername === currentUsername.toLowerCase() &&
+        !draft.actions.has('approved')
+      ) {
+        continue;
+      }
+
+      // Resolve project name & optional local projectId
+      let localProjectId: string | null = null;
+      let rawProjectName = '';
+
+      const refFull = detail?.references?.full || '';
+      const refPathMatch = refFull.match(/^(.+)!\d+$/);
+      const webUrlPathMatch = (detail?.web_url || '').match(/^https?:\/\/[^/]+\/(.+?)\/-\/merge_requests\/\d+/i);
+      const gitlabRepoPath = (refPathMatch?.[1] || webUrlPathMatch?.[1] || '').replace(/^\/+|\/+$/g, '');
+
+      if (gitlabRepoPath) {
+        const matchedLocal = localProjectByPath.get(gitlabRepoPath.toLowerCase());
+        if (matchedLocal) {
+          localProjectId = matchedLocal.id;
+          rawProjectName = matchedLocal.name;
+        } else {
+          rawProjectName = gitlabRepoPath.split('/').pop() || gitlabRepoPath;
+        }
+      }
+      const projectName = rawProjectName
+        ? formatCorporateProjectName(rawProjectName)
+        : `GitLab Proje #${draft.gitlabProjectId}`;
+
+      const item: GitLabReviewedMrItem & { reportDate: string } = {
+        reportDate: draft.reportDate,
+        projectId: localProjectId,
+        gitlabProjectId: draft.gitlabProjectId,
+        projectName,
+        mrIid: draft.mrIid,
+        mrTitle: (detail?.title || draft.mrTitle || `MR !${draft.mrIid}`).trim(),
+        mrState: detail?.state || 'opened',
+        sourceBranch: detail?.source_branch,
+        webUrl: detail?.web_url,
+        actions: Array.from(draft.actions),
+        myComments: draft.myComments,
+        reviewedFiles: Array.from(draft.reviewedFiles),
+        occurredAtIso: draft.occurredAtIso
+      };
+
+      const res = this.repo.ingestGitLabMrReviewActivity(item);
+      if (res.created) createdCount++;
+      else if (res.updated) updatedCount++;
+      totalMrs++;
+    }
+
+    const nowIso = new Date().toISOString();
+    this.repo.updateSyncState({
+      connector: 'gitlab',
+      status: 'connected',
+      lastAttemptAt: nowIso,
+      lastSuccessAt: nowIso,
+      lastError: null,
+      recordsCount: totalMrs
+    });
+
+    return { ok: true, createdCount, updatedCount, totalMrs };
+  }
+
+  /**
+   * Manually backfills GitLab reviewer MR activities (comments & approvals) for the past N days (default 30).
+   */
+  public async syncGitLabReviewsHistory(days = 30): Promise<GitLabSyncReviewsResult> {
+    const clampedDays = Math.max(1, Math.min(Math.floor(days || 30), 90));
+    const endDate = toLocalIsoString(new Date()).slice(0, 10);
+    const startDate = shiftIsoDate(endDate, -(clampedDays - 1));
+    this.gitlabUnreachableUntil = 0;
+
+    const res = await this.syncGitLabReviewerActivities({
+      startDate,
+      endDate,
+      maxPages: 10
+    });
+
+    if (!res.ok) {
+      return {
+        ok: false,
+        days: clampedDays,
+        createdCount: 0,
+        updatedCount: 0,
+        totalMrs: 0,
+        message: res.error || 'GitLab MR senkronizasyonu başarısız oldu.'
+      };
+    }
+
+    this.gitlabReviewerDaySyncedAt.clear();
+    const message =
+      res.totalMrs > 0
+        ? `Son ${clampedDays} gün için ${res.totalMrs} GitLab MR inceleme/onay kaydı senkronize edildi (${res.createdCount} yeni, ${res.updatedCount} güncellendi).`
+        : `Son ${clampedDays} gün içinde reviewer olarak yorum yapılan veya onaylanan GitLab MR bulunmadı.`;
+
+    return {
+      ok: true,
+      days: clampedDays,
+      createdCount: res.createdCount,
+      updatedCount: res.updatedCount,
+      totalMrs: res.totalMrs,
+      message
+    };
+  }
+
   /**
    * Queries GitLab REST API v4 (read-only) using the configured Personal Access Token
-   * to check whether the day's Git commits, working-tree edits, or file changes correspond
-   * to opened Merge Requests and MR code review feedback (Notes / DiffNotes).
+   * to:
+   * 1. Sync reviewer-side MR comments & approvals for `reportDate` into SQLite (`gitlab_mr_review`),
+   * 2. Check whether the day's Git commits, working-tree edits, or file changes correspond
+   *    to opened Merge Requests and MR code review feedback (Notes / DiffNotes).
    */
   public async resolveGitLabMrReviewsIfConfigured(
     reportDate: string,
@@ -768,6 +1249,22 @@ export class IntegrationsService {
     const token = this.getDecryptedToken('gitlab');
     if (!settings.gitlabUrl || !token) return result;
 
+    // 1. Always sync reviewer-side MR activities for reportDate (throttled to 5 min per date)
+    const lastReviewerSync = this.gitlabReviewerDaySyncedAt.get(reportDate) ?? 0;
+    const shouldSyncReviewer =
+      Date.now() >= this.gitlabUnreachableUntil && Date.now() - lastReviewerSync >= 5 * 60_000;
+    const reviewerSyncPromise = shouldSyncReviewer
+      ? this.syncGitLabReviewerActivities({
+          startDate: reportDate,
+          endDate: reportDate,
+          maxPages: 2
+        })
+          .then((r) => {
+            if (r.ok) this.gitlabReviewerDaySyncedAt.set(reportDate, Date.now());
+          })
+          .catch(() => undefined)
+      : Promise.resolve();
+
     const baseUrl = settings.gitlabUrl.trim().replace(/\/+$/, '');
     const devActs = activities.filter(
       (a) =>
@@ -776,14 +1273,19 @@ export class IntegrationsService {
           a.sourceType === 'file_change') &&
         (!a.occurredAtIso || a.occurredAtIso.slice(0, 10) === reportDate)
     );
-    if (devActs.length === 0) return result;
+    if (devActs.length === 0) {
+      await reviewerSyncPromise;
+      return result;
+    }
 
     const signature = devActs.map((a) => `${a.id}:${a.occurredAtIso}`).join('|');
     const cached = this.gitlabMrCache.get(reportDate);
     if (cached && cached.signature === signature && Date.now() - cached.timestamp < 5 * 60_000) {
+      await reviewerSyncPromise;
       return cached.data;
     }
     if (Date.now() < this.gitlabUnreachableUntil) {
+      await reviewerSyncPromise;
       return cached?.data ?? result;
     }
 
@@ -1097,6 +1599,8 @@ export class IntegrationsService {
           }
         })
     );
+
+    await reviewerSyncPromise;
 
     if (hadNetworkError && !hadNetworkSuccess) {
       this.gitlabUnreachableUntil = Date.now() + 60_000;

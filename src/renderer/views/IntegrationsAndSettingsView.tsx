@@ -39,6 +39,7 @@ export const IntegrationsView: React.FC<{
   const [gitlabUrl, setGitlabUrl] = useState("");
   const [gitlabUser, setGitlabUser] = useState("");
   const [gitlabToken, setGitlabToken] = useState("");
+  const [syncingGitlabReviews, setSyncingGitlabReviews] = useState(false);
 
   const [jenkinsUrl, setJenkinsUrl] = useState("");
   const [jenkinsUser, setJenkinsUser] = useState("");
@@ -192,6 +193,20 @@ export const IntegrationsView: React.FC<{
     const res = await window.mesaiApi.testIntegrationConnection("gitlab");
     setFeedback(res.message);
     await loadHealth();
+  };
+
+  const handleSyncGitLabReviews = async () => {
+    setSyncingGitlabReviews(true);
+    setFeedback("Son 30 günlük GitLab MR inceleme ve onayları senkronize ediliyor...");
+    try {
+      const res = await window.mesaiApi.syncGitLabReviews(30);
+      setFeedback(res.message);
+      await loadHealth();
+    } catch (err) {
+      setFeedback(`GitLab MR senkronizasyon hatası: ${(err as Error).message}`);
+    } finally {
+      setSyncingGitlabReviews(false);
+    }
   };
 
   const handleSaveJenkins = async (e: React.FormEvent) => {
@@ -1471,7 +1486,7 @@ export const IntegrationsView: React.FC<{
                 {health.gitlab.lastError}
               </div>
             )}
-            <div style={{ display: "flex", gap: "8px" }}>
+            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
               <button type="submit" className="btn btn-sm btn-primary">
                 Şifreli Kaydet
               </button>
@@ -1481,6 +1496,17 @@ export const IntegrationsView: React.FC<{
                 onClick={handleTestGitLab}
               >
                 Gerçek Bağlantı Testi Yap
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm"
+                disabled={syncingGitlabReviews || !health.gitlab?.configured}
+                onClick={handleSyncGitLabReviews}
+                title="Son 30 günde reviewer olarak yorum yaptığınız veya onayladığınız GitLab MR'larını Zaman Çizelgesi'ne aktarır"
+              >
+                {syncingGitlabReviews
+                  ? "MR Senkronize Ediliyor..."
+                  : "Son 30 Gün MR Senkronize Et"}
               </button>
             </div>
           </form>

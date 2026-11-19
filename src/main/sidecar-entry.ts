@@ -380,6 +380,11 @@ async function main(): Promise<void> {
 
   // Startup tasks
   const initialSettings = repo.getSettings();
+  if (isPackaged) {
+    void hostBridge.setAutoLaunch(Boolean(initialSettings.autoLaunchOnStartup)).catch((err) => {
+      process.stderr.write(`[sidecar] Autostart sync error: ${(err as Error).message}\n`);
+    });
+  }
   if (initialSettings.watchRootPath) {
     try {
       await gitWatcher.discoverGitProjects(initialSettings.watchRootPath, true);

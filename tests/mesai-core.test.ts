@@ -1473,6 +1473,247 @@ describe('MesAI Core Verification Suite', () => {
 
     db.close();
   });
+
+  it('GitLab Reviewer MR Sync (30-day backfill + daily report): persists gitlab_mr_review Timeline rows, deduplicates updates, isolates teammates Jira keys, and includes MR numbers in reports even with zero local git/zoom activities', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mesai-gitlab-reviewer-test-'));
+    const db = new MesaiDatabase(':memory:');
+    const repo = new MesaiRepository(db);
+    const zoom = new ZoomReaderAdapter(repo, new MatcherService(repo));
+    const git = new GitFileWatcherService(repo, new MatcherService(repo));
+    const rep = new ReportService(repo);
+
+    const mockDpapi = {
+      encrypt: (plain: string) => Buffer.from(`ENC:${plain}`, 'utf8').toString('base64'),
+      decrypt: (cipher: string) => Buffer.from(cipher, 'base64').toString('utf8').replace(/^ENC:/, '')
+    };
+
+    const integrations = new IntegrationsService(repo, zoom, git, rep, {
+      userDataDir: tmpDir,
+      secretProvider: mockDpapi
+    });
+
+    integrations.saveIntegrationCredential({
+      service: 'gitlab',
+      url: 'https://gitlab.example.com',
+      usernameOrEmail: 'rifkik',
+      token: 'glpat-REVIEWER-TEST'
+    });
+
+    const localProj = repo.upsertDiscoveredProject({
+      name: 'CustomPortal',
+      rootPath: 'C:\\Repos\\CustomPortal',
+      repositoryUrl: 'https://gitlab.example.com/corp/custom-portal.git'
+    });
+
+    const todayStr = getTodayLocalDate();
+    const todayCommentIso = `${todayStr}T10:15:00+03:00`;
+    const todayApproveIso = `${todayStr}T11:30:00+03:00`;
+    const todayFallbackApproveIso = `${todayStr}T14:20:00+03:00`;
+
+    let includeSecondComment = false;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async (url: any) => {
+        const u = String(url);
+        if (u.includes('/api/v4/events')) {
+          const events: any[] = [
+            // 1. Reviewer DiffNote comment on teammate's MR !142
+            {
+              id: 1,
+              project_id: 101,
+              action_name: 'commented on',
+              target_type: 'DiffNote',
+              target_title: 'TEAM-999: Login form validasyonu',
+              created_at: todayCommentIso,
+              note: {
+                id: 501,
+                body: 'Null check eklenmeli ve hata mesajı i18n üzerinden okunmalı.',
+                system: false,
+                noteable_type: 'MergeRequest',
+                noteable_iid: 142,
+                position: { new_path: 'src/components/LoginForm.tsx' }
+              }
+            },
+            // 2. Reviewer approval on teammate's MR !142
+            {
+              id: 2,
+              project_id: 101,
+              action_name: 'approved',
+              target_type: 'MergeRequest',
+              target_iid: 142,
+              target_title: 'TEAM-999: Login form validasyonu',
+              created_at: todayApproveIso
+            },
+            // 3. Author commenting on OWN MR !99 -> must be excluded from reviewer activities
+            {
+              id: 3,
+              project_id: 101,
+              action_name: 'commented on',
+              target_type: 'DiscussionNote',
+              target_title: 'PORTAL-10: Kendi MR cevabım',
+              created_at: todayCommentIso,
+              note: {
+                id: 502,
+                body: 'Düzelttim, tekrar bakabilir misin?',
+                system: false,
+                noteable_type: 'MergeRequest',
+                noteable_iid: 99
+              }
+            }
+          ];
+          if (includeSecondComment) {
+            events.push({
+              id: 4,
+              project_id: 101,
+              action_name: 'commented on',
+              target_type: 'Note',
+              target_title: 'TEAM-999: Login form validasyonu',
+              created_at: `${todayStr}T15:05:00+03:00`,
+              note: {
+                id: 503,
+                body: 'Eline sağlık, son revizyon uygun görünüyor.',
+                system: false,
+                noteable_type: 'MergeRequest',
+                noteable_iid: 142
+              }
+            });
+          }
+          return new Response(JSON.stringify(events), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+
+        // Fallback approved_by_usernames[] catches MR !150 (not in /events)
+        if (u.includes('/api/v4/merge_requests') && u.includes('approved_by_usernames')) {
+          return new Response(
+            JSON.stringify([
+              {
+                iid: 150,
+                project_id: 202,
+                title: 'OTHER-77: Shared lib buton güncellemesi',
+                state: 'merged',
+                source_branch: 'feature/OTHER-77',
+                web_url: 'https://gitlab.example.com/corp/bam-shared-lib/-/merge_requests/150',
+                author: { username: 'teammate2', name: 'Ekip Arkadaşı' },
+                references: { full: 'corp/bam-shared-lib!150' }
+              }
+            ]),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+
+        if (u.includes('/projects/202/merge_requests/150/notes')) {
+          return new Response(
+            JSON.stringify([
+              {
+                id: 701,
+                system: true,
+                body: 'approved this merge request',
+                created_at: todayFallbackApproveIso,
+                author: { username: 'rifkik' }
+              }
+            ]),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+
+        if (u.includes('/projects/101/merge_requests/142')) {
+          return new Response(
+            JSON.stringify({
+              iid: 142,
+              project_id: 101,
+              title: 'TEAM-999: Login form validasyonu',
+              state: 'opened',
+              source_branch: 'feature/TEAM-999',
+              web_url: 'https://gitlab.example.com/corp/custom-portal/-/merge_requests/142',
+              author: { username: 'teammate1', name: 'Ekip Arkadaşı 1' },
+              references: { full: 'corp/custom-portal!142' }
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+
+        if (u.includes('/projects/101/merge_requests/99')) {
+          return new Response(
+            JSON.stringify({
+              iid: 99,
+              project_id: 101,
+              title: 'PORTAL-10: Kendi MR cevabım',
+              state: 'opened',
+              source_branch: 'feature/PORTAL-10',
+              web_url: 'https://gitlab.example.com/corp/custom-portal/-/merge_requests/99',
+              author: { username: 'rifkik', name: 'Rıfkı Kesepara' },
+              references: { full: 'corp/custom-portal!99' }
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+
+        return new Response('Not found', { status: 404 });
+      };
+
+      // 1. Run 30-day backfill sync
+      const syncRes = await integrations.syncGitLabReviewsHistory(30);
+      assert.equal(syncRes.ok, true);
+      assert.equal(syncRes.totalMrs, 2, 'Should sync MR !142 and fallback MR !150 (excluding own MR !99)');
+      assert.equal(syncRes.createdCount, 2);
+
+      // Verify Timeline activities persisted as separate rows with sourceType = 'gitlab_mr_review'
+      const timelineMrs = repo.listActivities({ date: todayStr, sourceType: 'gitlab_mr_review' });
+      assert.equal(timelineMrs.length, 2);
+      const mr142Act = timelineMrs.find((a) => a.title.includes('!142'));
+      const mr150Act = timelineMrs.find((a) => a.title.includes('!150'));
+      assert.ok(mr142Act, 'MR !142 must appear as a Timeline row');
+      assert.equal(mr142Act.projectId, localProj.id, 'MR !142 must link to matched local project');
+      assert.ok(mr142Act.title.includes('İnceleme & Onay'));
+      assert.ok(mr150Act, 'Fallback-approved MR !150 must appear as a Timeline row');
+      assert.ok(mr150Act.title.includes('Onaylandı'));
+      assert.equal(
+        timelineMrs.some((a) => a.title.includes('!99')),
+        false,
+        'Self-authored MR !99 comment must NOT be persisted as reviewer activity'
+      );
+
+      // 2. Re-sync with an extra comment on !142 -> must update existing row, NOT duplicate
+      includeSecondComment = true;
+      const syncRes2 = await integrations.syncGitLabReviewsHistory(30);
+      assert.equal(syncRes2.createdCount, 0);
+      assert.equal(syncRes2.updatedCount, 1);
+      assert.equal(repo.listActivities({ date: todayStr, sourceType: 'gitlab_mr_review' }).length, 2);
+
+      // 3. Teammates' Jira keys (TEAM-999, OTHER-77) must NOT leak into user's Jira keys
+      const extractedJira = repo.extractJiraKeysForDate(todayStr);
+      assert.equal(extractedJira.includes('TEAM-999'), false);
+      assert.equal(extractedJira.includes('OTHER-77'), false);
+
+      // 4. Daily report preview & local_rule generation with ZERO local git/zoom activities
+      const preview = await rep.previewAiPayload(todayStr, 1000, 'gemini_cli');
+      assert.ok(
+        preview.sanitizedPromptPreview.includes('"reviewedMergeRequests"') &&
+          preview.sanitizedPromptPreview.includes('"!142"') &&
+          preview.sanitizedPromptPreview.includes('"!150"'),
+        'AI prompt preview must include reviewedMergeRequests with !142 and !150'
+      );
+
+      const report = await rep.generateReport({
+        reportDate: todayStr,
+        provider: 'local_rule'
+      });
+      assert.ok(report.items.length >= 1, 'Daily report must generate reviewer MR item even without git/zoom activities');
+      const reviewItem = report.items.find((i) => i.category === 'analysis');
+      assert.ok(reviewItem, 'Reviewer MR report item must have category analysis');
+      assert.ok(
+        reviewItem.text.includes('!142') && reviewItem.text.includes('!150'),
+        `Report prose must share MR numbers !142 and !150, got: ${reviewItem.text}`
+      );
+      assert.ok(reviewItem.evidenceIds.length >= 2, 'Report item must preserve real evidenceIds from persisted MR rows');
+    } finally {
+      globalThis.fetch = originalFetch;
+      db.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
 
 

@@ -318,6 +318,27 @@ fn handle_sidecar_event(app: &AppHandle, event_name: &str, payload: Value) {
     }
 }
 
+#[cfg(windows)]
+fn cleanup_legacy_electron_autostart() {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let _ = std::process::Command::new("reg")
+        .args([
+            "delete",
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+            "/v",
+            "electron.app.MesAI",
+            "/f",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+#[cfg(not(windows))]
+fn cleanup_legacy_electron_autostart() {}
+
 async fn handle_host_method(app: &AppHandle, method: &str, params: Value) -> Result<Value, String> {
     match method {
         "dialog:selectFolder" => {
@@ -411,10 +432,15 @@ async fn handle_host_method(app: &AppHandle, method: &str, params: Value) -> Res
                 .unwrap_or(false);
             let manager = app.autolaunch();
             if enabled {
-                let _ = manager.enable();
-            } else {
-                let _ = manager.disable();
+                manager
+                    .enable()
+                    .map_err(|e| format!("Otomatik başlatma etkinleştirilemedi: {e}"))?;
+            } else if manager.is_enabled().unwrap_or(false) {
+                manager
+                    .disable()
+                    .map_err(|e| format!("Otomatik başlatma devre dışı bırakılamadı: {e}"))?;
             }
+            cleanup_legacy_electron_autostart();
             Ok(Value::Bool(true))
         }
         "power:getIdleState" => {
