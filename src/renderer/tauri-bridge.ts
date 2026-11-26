@@ -24,6 +24,9 @@ export function createTauriMesaiApi(): MesaiApi {
 
     listActivities: (filter) => rpc(IPC_CHANNELS.ACTIVITIES_LIST, filter),
     addManualNote: (input) => rpc(IPC_CHANNELS.ACTIVITIES_ADD_NOTE, input),
+    addActivityComment: (input) => rpc(IPC_CHANNELS.ACTIVITIES_ADD_COMMENT, input),
+    updateActivityComment: (input) => rpc(IPC_CHANNELS.ACTIVITIES_UPDATE_COMMENT, input),
+    deleteActivityComment: (commentId) => rpc(IPC_CHANNELS.ACTIVITIES_DELETE_COMMENT, commentId),
     getEvidenceById: (evidenceId) => rpc(IPC_CHANNELS.EVIDENCE_GET, evidenceId),
     updateActivityLink: (input) => rpc(IPC_CHANNELS.MATCH_UPDATE_LINK, input),
     listWorkItems: () => rpc(IPC_CHANNELS.WORK_ITEMS_LIST),

@@ -9,6 +9,7 @@ import { getTodayLocalDate, resolveZoomTimestamp } from '../src/main/services/ti
 import { MatcherService } from '../src/main/services/matcher-service';
 import { GitFileWatcherService, shouldExcludeFilePath } from '../src/main/services/git-file-watcher';
 import { GeminiCliProvider, buildSanitizedAiPrompt } from '../src/main/services/ai-provider';
+import { correlateZoomCallsForChat } from '../src/main/services/zoom-call-context';
 import { ReportService } from '../src/main/services/report-service';
 import { ZoomReaderAdapter } from '../src/main/services/zoom-adapter';
 import { IntegrationsService } from '../src/main/services/integrations-service';
@@ -254,10 +255,45 @@ describe('MesAI Core Verification Suite', () => {
       defaultJiraKeys: ['BAM']
     });
 
-    // 1. Ingest Zoom chat mentioning BAM-4066 + a call record
+    // 1. Ingest Zoom chat mentioning BAM-4066 + a contextual call record in BAM Ekibi,
+    // plus a separate contextless call record in another chat to verify insufficient-evidence safety!
     const snap = createSampleSnapshot();
     const zoomIngest = repo.ingestZoomSnapshot(snap);
     for (const actId of zoomIngest.newActivityIds) {
+      matcher.matchActivityById(actId);
+    }
+
+    const contextlessCallSnap = createSampleSnapshot({
+      chatName: 'Dış Paydaş',
+      chatType: 'Direct',
+      sessionId: 'session-ext-call',
+      messages: [
+        {
+          indexInDom: 1,
+          occurrenceIndexInView: 1,
+          fingerprint: 'fp_ext_call_1',
+          uiaRuntimeId: '42.9.1',
+          persistentMessageId: null,
+          isGroupedFollowUp: false,
+          dateGroup: 'Today',
+          visibleTimestamp: '11:00',
+          sender: 'Dış Paydaş',
+          senderResolved: 'Dış Paydaş',
+          isSentByMe: false,
+          messageType: 'call',
+          text: null,
+          links: [],
+          callRecord: {
+            direction: 'incoming',
+            iconLabel: 'Audio Incoming',
+            statusText: 'Incoming audio call - accepted'
+          },
+          rawAccessibleLabel: 'Dış Paydaş, Incoming audio call, 11:00'
+        }
+      ]
+    });
+    const extCallIngest = repo.ingestZoomSnapshot(contextlessCallSnap);
+    for (const actId of extCallIngest.newActivityIds) {
       matcher.matchActivityById(actId);
     }
 
@@ -319,10 +355,14 @@ describe('MesAI Core Verification Suite', () => {
     assert.ok(!report1.formattedSummary?.includes('[BAM-Service'), 'Must not include noisy bracket prefixes in bullet text');
     assert.ok((report1.formattedSummary?.length ?? 0) <= 600, 'Formatted summary must respect maxChars limit');
 
-    // Find the consolidated BAM-4066 item and verify it links to BOTH Zoom and Git evidences
+    // Find the consolidated BAM-4066 item and verify it links to Git + Zoom chat + contextual Zoom call evidences
     const bamItem = report1.items.find((i) => i.jiraKey === 'BAM-4066');
     assert.ok(bamItem, 'Consolidated BAM-4066 report item must exist');
-    assert.equal(bamItem.evidenceIds.length, 2, 'Must preserve both Zoom and Git evidence IDs');
+    assert.equal(
+      bamItem.evidenceIds.length,
+      3,
+      'Must preserve Git commit + Zoom chat + correlated Zoom call evidence IDs'
+    );
 
     for (const evId of bamItem.evidenceIds) {
       const ev = repo.getEvidenceById(evId);
@@ -1713,6 +1753,477 @@ describe('MesAI Core Verification Suite', () => {
       db.close();
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  it('18. Zoom voice/video call context inference: [-90m / -240m] + [+30m] temporal window, >60m gap isolation, missed call filtering, and ±90m Git suggestion', async () => {
+    const db = new MesaiDatabase(':memory:');
+    const repo = new MesaiRepository(db);
+    const matcher = new MatcherService(repo);
+    const rep = new ReportService(repo);
+
+    // 1. Seda Kaya DM:
+    // - 09:10 unrelated morning topic (>4h silence before 14:00 call -> must be excluded from call context)
+    // - 13:50 technical issue before call
+    // - 13:58 "Müsait misin sesli bakalım mı?" coordination filler
+    // - 14:00 answered video call
+    // - 14:18 post-call decision note (+18m -> must be included in call context)
+    const sedaIngest = repo.ingestZoomSnapshot(
+      createSampleSnapshot({
+        chatName: 'Seda Kaya',
+        chatType: 'Direct',
+        sessionId: 'sess-seda-call',
+        capturedAt: '2026-10-28T15:00:00.000+03:00',
+        messages: [
+          {
+            indexInDom: 1,
+            occurrenceIndexInView: 1,
+            fingerprint: 'fp_seda_morning',
+            uiaRuntimeId: '50.1',
+            persistentMessageId: null,
+            isGroupedFollowUp: false,
+            dateGroup: 'Today',
+            visibleTimestamp: '09:10',
+            sender: 'Seda Kaya',
+            senderResolved: 'Seda Kaya',
+            isSentByMe: false,
+            messageType: 'text',
+            text: 'Eğitim portalı ikon hizalamasını dün tamamlamıştık',
+            links: [],
+            rawAccessibleLabel: null
+          },
+          {
+            indexInDom: 2,
+            occurrenceIndexInView: 1,
+            fingerprint: 'fp_seda_pre',
+            uiaRuntimeId: '50.2',
+            persistentMessageId: null,
+            isGroupedFollowUp: false,
+            dateGroup: 'Today',
+            visibleTimestamp: '13:50',
+            sender: 'Seda Kaya',
+            senderResolved: 'Seda Kaya',
+            isSentByMe: false,
+            messageType: 'text',
+            text: 'fatura-kesim-sureci ekranında KDV yuvarlama servisi 500 hatası veriyor',
+            links: [],
+            rawAccessibleLabel: null
+          },
+          {
+            indexInDom: 3,
+            occurrenceIndexInView: 1,
+            fingerprint: 'fp_seda_coord',
+            uiaRuntimeId: '50.3',
+            persistentMessageId: null,
+            isGroupedFollowUp: true,
+            dateGroup: 'Today',
+            visibleTimestamp: '13:58',
+            sender: 'You',
+            senderResolved: 'Rıfkı Kesepara',
+            isSentByMe: true,
+            messageType: 'text',
+            text: 'sesli bakalım mı?',
+            links: [],
+            rawAccessibleLabel: null
+          },
+          {
+            indexInDom: 4,
+            occurrenceIndexInView: 1,
+            fingerprint: 'fp_seda_call',
+            uiaRuntimeId: '50.4',
+            persistentMessageId: null,
+            isGroupedFollowUp: false,
+            dateGroup: 'Today',
+            visibleTimestamp: '14:00',
+            sender: 'Seda Kaya',
+            senderResolved: 'Seda Kaya',
+            isSentByMe: false,
+            messageType: 'call',
+            text: null,
+            links: [],
+            callRecord: {
+              direction: 'incoming',
+              iconLabel: 'Video Incoming',
+              statusText: 'Incoming video call - accepted'
+            },
+            rawAccessibleLabel: null
+          },
+          {
+            indexInDom: 5,
+            occurrenceIndexInView: 1,
+            fingerprint: 'fp_seda_post',
+            uiaRuntimeId: '50.5',
+            persistentMessageId: null,
+            isGroupedFollowUp: false,
+            dateGroup: 'Today',
+            visibleTimestamp: '14:18',
+            sender: 'You',
+            senderResolved: 'Rıfkı Kesepara',
+            isSentByMe: true,
+            messageType: 'text',
+            text: 'BigDecimal ölçeğini 4 haneye çekerek yuvarlama kararını netleştirdik',
+            links: [],
+            rawAccessibleLabel: null
+          }
+        ]
+      })
+    );
+    for (const id of sedaIngest.newActivityIds) matcher.matchActivityById(id);
+
+    // 2. Mert Demir DM: Missed call + Declined call -> must be ignored completely!
+    const mertIngest = repo.ingestZoomSnapshot(
+      createSampleSnapshot({
+        chatName: 'Mert Demir',
+        chatType: 'Direct',
+        sessionId: 'sess-mert-missed',
+        capturedAt: '2026-10-28T15:00:00.000+03:00',
+        messages: [
+          {
+            indexInDom: 1,
+            occurrenceIndexInView: 1,
+            fingerprint: 'fp_mert_missed',
+            uiaRuntimeId: '60.1',
+            persistentMessageId: null,
+            isGroupedFollowUp: false,
+            dateGroup: 'Today',
+            visibleTimestamp: '12:10',
+            sender: 'Mert Demir',
+            senderResolved: 'Mert Demir',
+            isSentByMe: false,
+            messageType: 'call',
+            text: null,
+            links: [],
+            callRecord: {
+              direction: 'incoming',
+              iconLabel: 'Audio Incoming',
+              statusText: 'Missed audio call'
+            },
+            rawAccessibleLabel: null
+          },
+          {
+            indexInDom: 2,
+            occurrenceIndexInView: 1,
+            fingerprint: 'fp_mert_declined',
+            uiaRuntimeId: '60.2',
+            persistentMessageId: null,
+            isGroupedFollowUp: false,
+            dateGroup: 'Today',
+            visibleTimestamp: '12:15',
+            sender: 'Mert Demir',
+            senderResolved: 'Mert Demir',
+            isSentByMe: false,
+            messageType: 'call',
+            text: null,
+            links: [],
+            callRecord: {
+              direction: 'outgoing',
+              iconLabel: 'Video Outgoing',
+              statusText: 'Call declined'
+            },
+            rawAccessibleLabel: null
+          }
+        ]
+      })
+    );
+    for (const id of mertIngest.newActivityIds) matcher.matchActivityById(id);
+
+    // 3. Canan Arslan DM: Extended [-240m] fallback when near window only has "Müsait misin?"
+    const cananIngest = repo.ingestZoomSnapshot(
+      createSampleSnapshot({
+        chatName: 'Canan Arslan',
+        chatType: 'Direct',
+        sessionId: 'sess-canan-ext',
+        capturedAt: '2026-10-28T15:00:00.000+03:00',
+        messages: [
+          {
+            indexInDom: 1,
+            occurrenceIndexInView: 1,
+            fingerprint: 'fp_canan_topic',
+            uiaRuntimeId: '70.1',
+            persistentMessageId: null,
+            isGroupedFollowUp: false,
+            dateGroup: 'Today',
+            visibleTimestamp: '10:20',
+            sender: 'Canan Arslan',
+            senderResolved: 'Canan Arslan',
+            isSentByMe: false,
+            messageType: 'text',
+            text: 'multi-pod ortamında websocket bağlantısı kopuyor, nginx sticky session bakalım',
+            links: [],
+            rawAccessibleLabel: null
+          },
+          {
+            indexInDom: 2,
+            occurrenceIndexInView: 1,
+            fingerprint: 'fp_canan_avail',
+            uiaRuntimeId: '70.2',
+            persistentMessageId: null,
+            isGroupedFollowUp: false,
+            dateGroup: 'Today',
+            visibleTimestamp: '12:45',
+            sender: 'Canan Arslan',
+            senderResolved: 'Canan Arslan',
+            isSentByMe: false,
+            messageType: 'text',
+            text: 'Müsait misin?',
+            links: [],
+            rawAccessibleLabel: null
+          },
+          {
+            indexInDom: 3,
+            occurrenceIndexInView: 1,
+            fingerprint: 'fp_canan_call',
+            uiaRuntimeId: '70.3',
+            persistentMessageId: null,
+            isGroupedFollowUp: false,
+            dateGroup: 'Today',
+            visibleTimestamp: '12:47',
+            sender: 'You',
+            senderResolved: 'Rıfkı Kesepara',
+            isSentByMe: true,
+            messageType: 'call',
+            text: null,
+            links: [],
+            callRecord: {
+              direction: 'outgoing',
+              iconLabel: 'Audio Outgoing',
+              statusText: 'Outgoing audio call - answered'
+            },
+            rawAccessibleLabel: null
+          }
+        ]
+      })
+    );
+    for (const id of cananIngest.newActivityIds) matcher.matchActivityById(id);
+
+    // Verify correlateZoomCallsForChat directly on Seda Kaya's room
+    const sedaActs = repo.listActivities({ date: '2026-10-28', chatOrRepoName: 'Seda Kaya' });
+    const sedaCalls = sedaActs.filter((a) => a.sourceType === 'zoom_call');
+    const sedaChats = sedaActs.filter((a) => a.sourceType === 'zoom_chat');
+    const sedaSessions = correlateZoomCallsForChat(sedaCalls, sedaChats);
+    assert.equal(sedaSessions.length, 1);
+    assert.equal(
+      sedaSessions[0].preCallMessages.length,
+      1,
+      'Must capture 13:50 pre-call message while excluding 09:10 (>60m gap) and 13:58 coordination filler'
+    );
+    assert.ok(sedaSessions[0].preCallMessages[0].summary.includes('KDV yuvarlama'));
+    assert.equal(sedaSessions[0].postCallMessages.length, 1, 'Must capture +18m post-call follow-up message');
+    assert.ok(sedaSessions[0].postCallMessages[0].summary.includes('BigDecimal'));
+
+    // Verify AI prompt structure embeds calls with pre/post context and excludes missed calls
+    const allDayActs = repo.listActivities({ date: '2026-10-28' });
+    const prompt = buildSanitizedAiPrompt('2026-10-28', allDayActs, 1500);
+    assert.ok(!prompt.includes('Mert Demir'), 'Missed/declined calls must be excluded from AI prompt');
+    assert.ok(prompt.includes('"preCallContextMessages"'), 'AI prompt must embed preCallContextMessages');
+    assert.ok(prompt.includes('"postCallFollowUpMessages"'), 'AI prompt must embed postCallFollowUpMessages');
+
+    // Verify LocalRuleProvider produces 2 contextual meeting items (Seda + Canan) and 0 generic/missed items
+    const report = await rep.generateReport({
+      reportDate: '2026-10-28',
+      provider: 'local_rule',
+      maxChars: 1500
+    });
+    assert.equal(report.items.length, 2, 'Must produce 1 merged meeting item per contextual call conversation and ignore missed calls');
+
+    const sedaItem = report.items.find((i) => i.text.includes('KDV yuvarlama') || i.text.includes('Fatura Kesim Süreci'));
+    assert.ok(sedaItem, `Seda video call item must describe Fatura Kesim / KDV topic, got: ${JSON.stringify(report.items.map((x) => x.text))}`);
+    assert.equal(sedaItem.category, 'meeting');
+    assert.equal(sedaItem.isInsufficientEvidence, false, 'Call with chat context must NOT be flagged as insufficient evidence');
+    assert.ok(sedaItem.text.includes('görüntülü'), 'Video call item must mention video meeting');
+
+    const cananItem = report.items.find((i) => i.text.includes('WebSocket'));
+    assert.ok(cananItem, 'Canan audio call item must infer WebSocket topic via -240m fallback');
+    assert.equal(cananItem.category, 'meeting');
+    assert.equal(cananItem.isInsufficientEvidence, false);
+    assert.ok(cananItem.text.includes('sesli'), 'Audio call item must mention audio meeting');
+
+    db.close();
+  });
+
+  it('19. Activity comments CRUD, re-approval trigger, and comment-driven AI & local report evaluation (including exclusion directive)', async () => {
+    const db = new MesaiDatabase(':memory:');
+    const repo = new MesaiRepository(db);
+    const matcher = new MatcherService(repo);
+    const rep = new ReportService(repo);
+
+    const proj = repo.upsertDiscoveredProject({
+      name: 'custom-portal',
+      rootPath: 'C:\\Repos\\custom-portal',
+      currentBranch: 'feature/BAM-4090',
+      defaultJiraKeys: ['BAM']
+    });
+
+    // 1. Ingest a vague commit ("fix"), a contextless Zoom call, and an off-topic Zoom chat
+    const vagueCommit = repo.ingestGitOrFileActivity({
+      projectId: proj.id,
+      projectName: proj.name,
+      sourceType: 'git_commit',
+      dedupKey: 'git:commit:cp:vague1',
+      externalId: 'vague1',
+      branchName: 'feature/BAM-4090',
+      occurredAtIso: '2026-10-29T10:15:00+03:00',
+      rawTimestampText: '10:15',
+      title: 'custom-portal — Commit vague1',
+      summary: 'fix'
+    });
+    matcher.matchActivityById(vagueCommit.activityId);
+
+    const zoomBatch = repo.ingestZoomSnapshot(
+      createSampleSnapshot({
+        chatName: 'Ahmet Yılmaz',
+        chatType: 'Direct',
+        sessionId: 'sess-ahmet-comment',
+        capturedAt: '2026-10-29T16:00:00.000+03:00',
+        messages: [
+          {
+            indexInDom: 1,
+            occurrenceIndexInView: 1,
+            fingerprint: 'fp_ahmet_call_only',
+            uiaRuntimeId: '80.1',
+            persistentMessageId: null,
+            isGroupedFollowUp: false,
+            dateGroup: 'Today',
+            visibleTimestamp: '14:30',
+            sender: 'Ahmet Yılmaz',
+            senderResolved: 'Ahmet Yılmaz',
+            isSentByMe: false,
+            messageType: 'call',
+            text: null,
+            links: [],
+            callRecord: {
+              direction: 'incoming',
+              iconLabel: 'Video Incoming',
+              statusText: 'Incoming video call - accepted'
+            },
+            rawAccessibleLabel: null
+          }
+        ]
+      })
+    );
+    const callActId = zoomBatch.newActivityIds[0];
+    matcher.matchActivityById(callActId);
+
+    const personalChatBatch = repo.ingestZoomSnapshot(
+      createSampleSnapshot({
+        chatName: 'Sosyal Sohbet',
+        chatType: 'Direct',
+        sessionId: 'sess-social',
+        capturedAt: '2026-10-29T16:05:00.000+03:00',
+        messages: [
+          {
+            indexInDom: 1,
+            occurrenceIndexInView: 1,
+            fingerprint: 'fp_social_1',
+            uiaRuntimeId: '81.1',
+            persistentMessageId: null,
+            isGroupedFollowUp: false,
+            dateGroup: 'Today',
+            visibleTimestamp: '15:00',
+            sender: 'Arkadaş',
+            senderResolved: 'Arkadaş',
+            isSentByMe: false,
+            messageType: 'text',
+            text: 'Akşam halı saha maçı kadrosunu netleştirelim',
+            links: [],
+            rawAccessibleLabel: null
+          }
+        ]
+      })
+    );
+    const socialActId = personalChatBatch.newActivityIds[0];
+
+    // 2. Generate & approve initial report before comments -> call item has isInsufficientEvidence = true
+    const initialReport = await rep.generateReport({
+      reportDate: '2026-10-29',
+      provider: 'local_rule',
+      maxChars: 1500
+    });
+    const initialCallItem = initialReport.items.find((i) => i.category === 'meeting');
+    assert.ok(initialCallItem);
+    assert.equal(initialCallItem.isInsufficientEvidence, true);
+
+    const approved = repo.approveReport(initialReport.id);
+    assert.equal(approved.status, 'approved');
+
+    // 3. Add user comments onto the call, vague commit, and personal chat
+    const commentedCall = repo.addActivityComment(
+      callActId,
+      'Taslak açıklama'
+    );
+    assert.equal(commentedCall.comments?.length, 1);
+
+    // Adding a comment on an approved report's date must transition report status to 'needs_reapproval'
+    assert.equal(repo.getDailyReport('2026-10-29')?.status, 'needs_reapproval');
+
+    // Update the comment with rich technical & Jira context
+    const updatedCall = repo.updateActivityComment(
+      commentedCall.comments![0].id,
+      'Bu görüşmede BAM-4095 kapsamında Fatura Kesim Süreci KDV yuvarlama hatasını inceledik ve BigDecimal ölçeğini 4 haneye çekmeye karar verdik'
+    );
+    matcher.matchActivityById(updatedCall.id);
+    assert.ok(
+      updatedCall.comments?.[0].content.includes('BAM-4095'),
+      'Updated activity comment must persist in SQLite'
+    );
+
+    // Add explanation comment to vague "fix" commit
+    repo.addActivityComment(
+      vagueCommit.activityId,
+      'Token yenileme yarış durumu (race condition) için mutex kilidi eklendi'
+    );
+    matcher.matchActivityById(vagueCommit.activityId);
+
+    // Add exclusion directive comment to off-topic chat
+    const excludedSocial = repo.addActivityComment(socialActId, 'Rapora ekleme, kişisel görüşme');
+    assert.equal(excludedSocial.comments?.length, 1);
+
+    // 4. Verify AI prompt includes userComments and excludes the "Rapora ekleme" activity
+    const refreshedActs = repo.listActivities({ date: '2026-10-29' });
+    const prompt = buildSanitizedAiPrompt('2026-10-29', refreshedActs, 1500);
+    assert.ok(prompt.includes('BigDecimal ölçeğini 4 haneye'), 'AI prompt must surface call userComments');
+    assert.ok(prompt.includes('mutex kilidi eklendi'), 'AI prompt must surface commit userComments');
+    assert.ok(!prompt.includes('halı saha'), 'Excluded activity must be omitted from AI prompt');
+
+    // 5. Regenerate report with local_rule -> must reflect user comments and exclude social chat
+    const finalReport = await rep.generateReport({
+      reportDate: '2026-10-29',
+      provider: 'local_rule',
+      maxChars: 1500
+    });
+
+    assert.ok(
+      !finalReport.formattedSummary?.includes('halı saha'),
+      'Excluded activity must not appear in generated report'
+    );
+    assert.ok(
+      finalReport.jiraKeys?.includes('BAM-4095'),
+      'Jira key authored by user in activity comment must be included in report Jira keys'
+    );
+
+    const devItem = finalReport.items.find(
+      (i) => i.category === 'development' && i.text.includes('mutex kilidi')
+    );
+    assert.ok(
+      devItem,
+      `Development item must reflect user comment on vague commit, got: ${JSON.stringify(finalReport.items.map((x) => x.text))}`
+    );
+
+    const meetingOrMergedBam4095 = finalReport.items.find((i) => i.text.includes('BigDecimal'));
+    assert.ok(
+      meetingOrMergedBam4095,
+      `Call item must reflect user comment (BigDecimal / KDV yuvarlama), got: ${JSON.stringify(finalReport.items.map((x) => x.text))}`
+    );
+    assert.equal(
+      meetingOrMergedBam4095.isInsufficientEvidence,
+      false,
+      'Call explained by user comment must have isInsufficientEvidence = false'
+    );
+
+    // 6. Verify deleteActivityComment removes comment cleanly
+    const afterDelete = repo.deleteActivityComment(excludedSocial.comments![0].id);
+    assert.equal(afterDelete.comments?.length, 0);
+
+    db.close();
   });
 });
 

@@ -1,5 +1,11 @@
 import type { MesaiRepository } from '../db/repositories';
 import type { Activity, Project } from '../../shared/types';
+import {
+  combineActivityCommentsText,
+  correlateZoomCallsForChat,
+  isExclusionActivityComment,
+  isReportableZoomCallActivity
+} from './zoom-call-context';
 
 const JIRA_KEY_REGEX = /\b([A-Z][A-Z0-9]{1,9}-\d{1,6})\b/g;
 
@@ -22,12 +28,17 @@ export class MatcherService {
   }
 
   public matchActivity(act: Activity): void {
+    if (isExclusionActivityComment(act.comments)) return;
+    if (act.sourceType === 'zoom_call' && !isReportableZoomCallActivity(act)) return;
+
     const projects = this.repo.listProjects().filter((p) => p.enabled);
     const evidences = act.evidences ?? this.repo.getEvidencesForActivity(act.id);
+    const commentsText = combineActivityCommentsText(act);
 
     const combinedTextParts = [
       act.title,
       act.summary,
+      commentsText,
       act.chatOrRepoName ?? '',
       ...evidences.flatMap((e) => [
         e.title,
@@ -111,21 +122,96 @@ export class MatcherService {
       }
     }
 
-    // 3. Deterministic Match: Explicit Project Name mentioned in text
+    // 3. Deterministic Match: Explicit Project Name mentioned in text or user comment
     if (!act.projectId) {
-      const lowerSummary = `${act.title} ${act.summary}`.toLowerCase();
+      const lowerSummary = `${act.title} ${act.summary} ${commentsText}`.toLowerCase();
       for (const proj of projects) {
         if (proj.name.length >= 3 && lowerSummary.includes(proj.name.toLowerCase())) {
           this.repo.upsertActivityLink({
             activityId: act.id,
             workItemId: null,
             projectId: proj.id,
-            matchReason: `Metin içinde açık proje adı geçti (${proj.name})`,
+            matchReason: `Metin/yorum içinde açık proje adı geçti (${proj.name})`,
             matchType: 'deterministic',
             confidence: 0.85,
             userStatus: 'accepted'
           });
           return;
+        }
+      }
+    }
+
+    // 3b. Contextual Match for Zoom Calls: Inherit Jira key / Project from [-240m, +30m] same-chat messages
+    // Also if a Zoom chat message arrives within +30m after an unlinked Zoom call, refresh that call's match!
+    if (act.sourceType === 'zoom_call' && act.chatOrRepoName) {
+      const actDate = act.occurredAtIso.slice(0, 10);
+      if (actDate) {
+        const sameChatActs = this.repo
+          .listActivities({ date: actDate, chatOrRepoName: act.chatOrRepoName })
+          .filter((a) => a.sourceType === 'zoom_chat');
+        const sessions = correlateZoomCallsForChat([act], sameChatActs);
+        const ctxMsgs = sessions[0]?.allContextMessages ?? [];
+        if (ctxMsgs.length > 0) {
+          const ctxText = ctxMsgs
+            .map((m) => [m.summary, combineActivityCommentsText(m), ...(m.evidences ?? []).flatMap((e) => e.links)].join(' '))
+            .join(' ');
+          const ctxJiraKeys = extractJiraKeys(ctxText);
+          if (ctxJiraKeys.length > 0) {
+            for (const jiraKey of ctxJiraKeys) {
+              const prefix = jiraKey.split('-')[0].toUpperCase();
+              const matchedProject =
+                projects.find((p) => p.jiraProjectKeys.some((k) => k.toUpperCase() === prefix)) ??
+                (globalJiraKeys.includes(prefix) ? projects[0] ?? null : null) ??
+                null;
+              const workItem = this.repo.upsertWorkItem({
+                jiraKey,
+                projectId: matchedProject?.id ?? null,
+                title: `${jiraKey} İşi`,
+                description: `Otomatik tespit edilen iş anahtarı: ${jiraKey}`
+              });
+              this.repo.upsertActivityLink({
+                activityId: act.id,
+                workItemId: workItem.id,
+                projectId: workItem.projectId ?? matchedProject?.id ?? null,
+                matchReason: `Görüşme öncesi/sonrası sohbet bağlamı (${jiraKey})`,
+                matchType: 'deterministic',
+                confidence: 0.9,
+                userStatus: 'accepted'
+              });
+            }
+            return;
+          }
+          const acceptedCtxLink = ctxMsgs
+            .flatMap((m) => m.links ?? [])
+            .find((l) => l.userStatus === 'accepted' && (l.workItemId || l.projectId));
+          if (acceptedCtxLink) {
+            this.repo.upsertActivityLink({
+              activityId: act.id,
+              workItemId: acceptedCtxLink.workItemId,
+              projectId: acceptedCtxLink.projectId,
+              matchReason: 'Görüşme öncesi/sonrası sohbet bağlamından proje/iş eşleşmesi',
+              matchType: 'deterministic',
+              confidence: 0.88,
+              userStatus: 'accepted'
+            });
+            return;
+          }
+        }
+      }
+    } else if (act.sourceType === 'zoom_chat' && act.chatOrRepoName) {
+      const actDate = act.occurredAtIso.slice(0, 10);
+      const msgMs = Date.parse(act.occurredAtIso);
+      if (actDate && !Number.isNaN(msgMs)) {
+        const recentCalls = this.repo
+          .listActivities({ date: actDate, chatOrRepoName: act.chatOrRepoName })
+          .filter((c) => c.sourceType === 'zoom_call' && isReportableZoomCallActivity(c));
+        for (const callAct of recentCalls) {
+          const callMs = Date.parse(callAct.occurredAtIso);
+          const deltaMin = !Number.isNaN(callMs) ? (msgMs - callMs) / 60_000 : 999;
+          const hasAccepted = (callAct.links ?? []).some((l) => l.userStatus === 'accepted');
+          if (!hasAccepted && deltaMin >= 0 && deltaMin <= 30) {
+            this.matchActivity(callAct);
+          }
         }
       }
     }
@@ -141,7 +227,9 @@ export class MatcherService {
       .filter((other) => other.id !== act.id);
 
     const actTimeMs = Date.parse(act.occurredAtIso);
-    const actWords = this.extractSignificantWords(`${act.title} ${act.summary}`);
+    const actWords = this.extractSignificantWords(
+      `${act.title} ${act.summary} ${combineActivityCommentsText(act)}`
+    );
 
     for (const other of sameDayActivities) {
       const otherLinks = other.links ?? [];
@@ -157,8 +245,15 @@ export class MatcherService {
           ? Math.abs(actTimeMs - otherTimeMs) / 60_000
           : 999;
 
-      const otherWords = this.extractSignificantWords(`${other.title} ${other.summary}`);
+      const otherWords = this.extractSignificantWords(
+        `${other.title} ${other.summary} ${combineActivityCommentsText(other)}`
+      );
       const sharedWords = actWords.filter((w) => otherWords.includes(w));
+      const isOtherDev =
+        other.sourceType === 'git_commit' ||
+        other.sourceType === 'git_working_tree' ||
+        other.sourceType === 'file_change';
+      const proximityWindowMin = act.sourceType === 'zoom_call' ? 90 : 30;
 
       if (sharedWords.length >= 1 && diffMinutes <= 180) {
         this.repo.upsertActivityLink({
@@ -171,7 +266,7 @@ export class MatcherService {
           userStatus: 'pending'
         });
         return;
-      } else if (diffMinutes <= 30 && act.sourceType.startsWith('zoom_') && other.sourceType.startsWith('git_')) {
+      } else if (diffMinutes <= proximityWindowMin && act.sourceType.startsWith('zoom_') && isOtherDev) {
         const proj = projects.find((p) => p.id === candidateProjectId);
         this.repo.upsertActivityLink({
           activityId: act.id,

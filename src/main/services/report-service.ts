@@ -13,6 +13,10 @@ import {
   OpenAiApiProvider
 } from './ai-provider';
 import { toLocalIsoString } from './timestamp-resolver';
+import {
+  combineActivityCommentsText,
+  isExclusionActivityComment
+} from './zoom-call-context';
 import type {
   Activity,
   ActivityCategory,
@@ -129,6 +133,8 @@ export class ReportService {
       // Sync candidate Jira keys and GitLab MR reviews (author + reviewer) in parallel with a 3.5s timeout cap
       const candidateJiraKeys = new Set<string>();
       for (const act of activities) {
+        if (isExclusionActivityComment(act.comments)) continue;
+        for (const k of extractJiraKeys(combineActivityCommentsText(act))) candidateJiraKeys.add(k);
         if (act.sourceType === 'gitlab_mr_review') continue;
         for (const k of extractJiraKeys(act.title + ' ' + act.summary)) candidateJiraKeys.add(k);
         for (const ev of act.evidences ?? []) {
@@ -184,6 +190,7 @@ export class ReportService {
     const warnings: string[] = [
       `Yalnızca seçilen tarihe (${reportDate}) ait ${activities.length} aktivite rapora dahil edilir.`,
       `Maksimum karakter sınırı: ${effectiveMaxChars} karakter.`,
+      'Zoom sesli/görüntülü görüşmeleri aynı sohbetteki önceki/sonraki mesajlarla ilişkilendirilir; kullanıcı aktivite yorumları (userComments) birincil bağlam olarak değerlendirilir.',
       'Mesajlar, kod diff özetleri, Jira ve GitLab MR review bağlamları <untrusted_evidence_json> bloğu içinde güvenilmeyen kaynak verisi olarak izole edilir.'
     ];
     if (!settings.allowRemoteAiSend && effectiveProvider !== 'local_rule') {
@@ -321,9 +328,11 @@ export class ReportService {
       .listActivities({ date: input.reportDate })
       .filter((a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === input.reportDate);
 
-    // Collect candidate Jira keys from this date's activities (git, zoom, notes) to sync & verify assignee with Jira
+    // Collect candidate Jira keys from this date's activities (git, zoom, notes, user comments) to sync & verify assignee with Jira
     const candidateJiraKeys = new Set<string>();
     for (const act of activities) {
+      if (isExclusionActivityComment(act.comments)) continue;
+      for (const k of extractJiraKeys(combineActivityCommentsText(act))) candidateJiraKeys.add(k);
       if (act.sourceType === 'gitlab_mr_review') continue;
       for (const k of extractJiraKeys(act.title + ' ' + act.summary)) candidateJiraKeys.add(k);
       for (const ev of act.evidences ?? []) {
@@ -425,6 +434,16 @@ export class ReportService {
         timestamp: getNowHhmmss(),
         step: 'context',
         message: `GitLab üzerinden reviewer olarak işlem yapılan ${reviewerMrActs.length} adet MR tespit edildi${mrNums.length > 0 ? ` (${mrNums.join(', ')})` : ''}.`
+      });
+    }
+    const commentedActsCount = activities.filter(
+      (a) => (a.comments?.length ?? 0) > 0 && !isExclusionActivityComment(a.comments)
+    ).length;
+    if (commentedActsCount > 0) {
+      input.onProgress?.({
+        timestamp: getNowHhmmss(),
+        step: 'context',
+        message: `${commentedActsCount} aktivite üzerindeki kullanıcı yorumu birincil bağlam olarak eklendi.`
       });
     }
     input.onProgress?.({

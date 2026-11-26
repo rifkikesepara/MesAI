@@ -220,6 +220,11 @@ export const DashboardView: React.FC<{
                   <span className="badge badge-neutral" style={{ marginRight: '8px' }}>
                     {CATEGORY_LABELS[act.category] ?? act.category}
                   </span>
+                  {act.comments && act.comments.length > 0 && (
+                    <span className="badge badge-warning" style={{ marginRight: '8px' }}>
+                      💬 {act.comments.length} Yorum
+                    </span>
+                  )}
                   <strong>{act.title}</strong>
                 </div>
                 <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
@@ -227,6 +232,11 @@ export const DashboardView: React.FC<{
                 </div>
               </div>
               <div style={{ marginTop: '6px', color: 'var(--text-primary)' }}>{act.summary}</div>
+              {act.comments && act.comments.length > 0 && (
+                <div style={{ marginTop: '4px', fontSize: '12.5px', color: 'var(--accent)' }}>
+                  <strong>Kullanıcı Yorumu:</strong> {act.comments.map((c) => c.content).join(' • ')}
+                </div>
+              )}
               {act.evidences && act.evidences.length > 0 && (
                 <div style={{ marginTop: '6px' }}>
                   <button

@@ -3,6 +3,7 @@ import type { MesaiDatabase } from './database';
 import type {
   Activity,
   ActivityCategory,
+  ActivityComment,
   ActivityLink,
   ActivityStatus,
   AppSettings,
@@ -23,6 +24,11 @@ import {
   resolveZoomTimestamp,
   toLocalIsoString
 } from '../services/timestamp-resolver';
+import {
+  classifyZoomCallStatus,
+  isExclusionActivityComment,
+  isPureGreetingOrCallCoordination
+} from '../services/zoom-call-context';
 
 export const DEFAULT_SETTINGS: AppSettings = {
   watchRootPath: 'C:\\Repos',
@@ -489,17 +495,80 @@ export class MesaiRepository {
         let status: ActivityStatus = 'info';
         let title = '';
         let summary = '';
+        const callInfo = isCall
+          ? classifyZoomCallStatus(msg.callRecord, msg.rawAccessibleLabel)
+          : null;
 
-        if (isCall) {
+        if (isCall && callInfo) {
           category = 'meeting';
           const dirLabel =
-            msg.callRecord?.direction === 'incoming'
+            callInfo.direction === 'incoming'
               ? 'Gelen Arama'
-              : msg.callRecord?.direction === 'outgoing'
+              : callInfo.direction === 'outgoing'
                 ? 'Giden Arama'
                 : 'Arama Kaydı';
-          title = `Zoom ${dirLabel} — ${chatLabel}`;
-          summary = `${msg.callRecord?.statusText || 'Arama kaydı'} (${displaySender}). Not: Arama kaydından görüşme içeriği veya süre türetilmemiştir.`;
+          const mediaLabel =
+            callInfo.mediaType === 'video'
+              ? 'Görüntülü Görüşme'
+              : callInfo.mediaType === 'audio'
+                ? 'Sesli Görüşme'
+                : dirLabel;
+
+          if (!callInfo.isAnswered) {
+            title = `Zoom Cevapsız/İptal Arama — ${chatLabel}`;
+            summary = `${msg.callRecord?.statusText || 'Cevapsız veya iptal edilen arama'} (${displaySender}).`;
+          } else {
+            title = `Zoom ${mediaLabel} — ${chatLabel}`;
+            const callMs = occurredAtIso ? Date.parse(occurredAtIso) : NaN;
+            const nearbyTexts: string[] = [];
+            for (let j = 0; j < snapshot.messages.length; j++) {
+              if (j === i) continue;
+              const other = snapshot.messages[j];
+              if (other.messageType === 'call' || Boolean(other.callRecord)) continue;
+              const otherBody = (other.text ?? '').trim();
+              if (!otherBody || isPureGreetingOrCallCoordination(otherBody)) continue;
+              const otherDg = !other.dateGroup && firstTodayIdx > j ? 'Yesterday' : other.dateGroup;
+              const otherTs = resolveZoomTimestamp(otherDg, other.visibleTimestamp, snapshot.capturedAt);
+              const otherMs = otherTs.resolvedTimestampIso ? Date.parse(otherTs.resolvedTimestampIso) : NaN;
+              if (!Number.isNaN(callMs) && !Number.isNaN(otherMs)) {
+                const deltaMin = (otherMs - callMs) / 60_000;
+                if (deltaMin >= -240 && deltaMin <= 30) {
+                  nearbyTexts.push(otherBody.slice(0, 140));
+                }
+              } else if (j < i && i - j <= 5) {
+                nearbyTexts.push(otherBody.slice(0, 140));
+              }
+            }
+            if (nearbyTexts.length === 0 && occurredAtIso && !Number.isNaN(callMs)) {
+              const datePrefix = occurredAtIso.slice(0, 10);
+              const priorDbChats = this.db
+                .prepare(
+                  `SELECT summary, occurred_at_iso FROM activities
+                   WHERE source_type = 'zoom_chat'
+                     AND chat_or_repo_name = ?
+                     AND occurred_at_iso >= ? AND occurred_at_iso <= (? || '~')
+                   ORDER BY occurred_at_iso ASC`
+                )
+                .all(chatLabel, datePrefix, datePrefix) as Array<{
+                summary: string;
+                occurred_at_iso: string;
+              }>;
+              for (const row of priorDbChats) {
+                if (isPureGreetingOrCallCoordination(row.summary)) continue;
+                const rowMs = Date.parse(row.occurred_at_iso);
+                if (!Number.isNaN(rowMs)) {
+                  const deltaMin = (rowMs - callMs) / 60_000;
+                  if (deltaMin >= -240 && deltaMin <= 30) {
+                    nearbyTexts.push(row.summary.trim().slice(0, 140));
+                  }
+                }
+              }
+            }
+            const contextSnippet = Array.from(new Set(nearbyTexts)).slice(-2).join(' | ');
+            summary = contextSnippet
+              ? `${msg.callRecord?.statusText || mediaLabel} (${displaySender}) • İlgili sohbet bağlamı: ${contextSnippet}`
+              : `${msg.callRecord?.statusText || mediaLabel} (${displaySender}). Not: Görüşme süresi kayıttan türetilmemiştir.`;
+          }
         } else {
           const lower = textBody.toLowerCase();
           if (lower.includes('analiz') || lower.includes('incele') || lower.includes('review')) {
@@ -557,9 +626,51 @@ export class MesaiRepository {
             isThreadReply: msg.isThreadReply ?? false,
             isUnreadReply: msg.isUnreadReply ?? false,
             callRecord: msg.callRecord ?? null,
+            callAnswered: callInfo ? callInfo.isAnswered : undefined,
+            mediaType: callInfo ? callInfo.mediaType : undefined,
             sessionId: snapshot.sessionId
           })
         );
+
+        // Backfill recent contextless answered zoom_call in the same chat if a technical message arrives within +30 min
+        if (!isCall && occurredAtIso && textBody && !isPureGreetingOrCallCoordination(textBody)) {
+          const msgMs = Date.parse(occurredAtIso);
+          if (!Number.isNaN(msgMs)) {
+            const datePrefix = occurredAtIso.slice(0, 10);
+            const recentCalls = this.db
+              .prepare(
+                `SELECT id, summary, occurred_at_iso FROM activities
+                 WHERE source_type = 'zoom_call'
+                   AND chat_or_repo_name = ?
+                   AND occurred_at_iso >= ? AND occurred_at_iso <= (? || '~')
+                   AND summary NOT LIKE '%İlgili sohbet bağlamı:%'
+                   AND title NOT LIKE '%Cevapsız%'`
+              )
+              .all(chatLabel, datePrefix, datePrefix) as Array<{
+              id: string;
+              summary: string;
+              occurred_at_iso: string;
+            }>;
+            for (const rc of recentCalls) {
+              const callMs = Date.parse(rc.occurred_at_iso);
+              if (!Number.isNaN(callMs)) {
+                const deltaMin = (msgMs - callMs) / 60_000;
+                if (deltaMin >= 0 && deltaMin <= 30) {
+                  const baseSummary = rc.summary
+                    .replace(/\s*Not:\s*Görüşme süresi kayıttan türetilmemiştir\.?$/i, '')
+                    .replace(/\.$/, '');
+                  const enriched = `${baseSummary} • İlgili sohbet bağlamı: ${textBody.slice(0, 140)}`;
+                  this.db
+                    .prepare('UPDATE activities SET summary = ? WHERE id = ?')
+                    .run(enriched, rc.id);
+                  this.db
+                    .prepare('UPDATE evidences SET snippet = ? WHERE activity_id = ?')
+                    .run(enriched, rc.id);
+                }
+              }
+            }
+          }
+        }
 
         newMessagesCount++;
         newActivityIds.push(activityId);
@@ -1114,6 +1225,7 @@ export class MesaiRepository {
     const act = this.mapActivityRow(row);
     act.evidences = this.getEvidencesForActivity(act.id);
     act.links = this.getLinksForActivity(act.id);
+    act.comments = this.getCommentsForActivity(act.id);
     return act;
   }
 
@@ -1227,12 +1339,128 @@ export class MesaiRepository {
       }
     }
 
+    // Batch fetch comments in single query
+    const commentsMap = new Map<string, ActivityComment[]>();
+    for (let i = 0; i < activityIds.length; i += 400) {
+      const chunk = activityIds.slice(i, i + 400);
+      const placeholders = chunk.map(() => '?').join(',');
+      const commentRows = this.db
+        .prepare(
+          `SELECT * FROM activity_comments WHERE activity_id IN (${placeholders}) ORDER BY created_at ASC`
+        )
+        .all(...chunk) as Array<Record<string, unknown>>;
+      for (const row of commentRows) {
+        const cm = this.mapActivityCommentRow(row);
+        const list = commentsMap.get(cm.activityId);
+        if (list) {
+          list.push(cm);
+        } else {
+          commentsMap.set(cm.activityId, [cm]);
+        }
+      }
+    }
+
     for (const act of activities) {
       act.evidences = evidenceMap.get(act.id) ?? [];
       act.links = linksMap.get(act.id) ?? [];
+      act.comments = commentsMap.get(act.id) ?? [];
     }
 
     return activities;
+  }
+
+  public getCommentsForActivity(activityId: string): ActivityComment[] {
+    const rows = this.db
+      .prepare('SELECT * FROM activity_comments WHERE activity_id = ? ORDER BY created_at ASC')
+      .all(activityId) as Array<Record<string, unknown>>;
+    return rows.map((r) => this.mapActivityCommentRow(r));
+  }
+
+  public addActivityComment(activityId: string, content: string): Activity {
+    const actRow = this.db
+      .prepare('SELECT id, occurred_at_iso FROM activities WHERE id = ?')
+      .get(activityId) as { id: string; occurred_at_iso: string } | undefined;
+    if (!actRow) throw new Error('Yorum eklenecek aktivite bulunamadı.');
+
+    const clean = content.trim();
+    if (!clean) throw new Error('Yorum içeriği boş olamaz.');
+
+    const now = toLocalIsoString(new Date());
+    const id = `ac_${sha256Hex(`${activityId}|${now}|${clean}|${Math.random()}`).slice(0, 14)}`;
+
+    this.db
+      .prepare(
+        `INSERT INTO activity_comments (id, activity_id, content, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?)`
+      )
+      .run(id, activityId, clean, now, now);
+
+    this.markDateReportNeedsReapproval(actRow.occurred_at_iso);
+    return this.getActivityById(activityId)!;
+  }
+
+  public updateActivityComment(commentId: string, content: string): Activity {
+    const existing = this.db
+      .prepare('SELECT activity_id FROM activity_comments WHERE id = ?')
+      .get(commentId) as { activity_id: string } | undefined;
+    if (!existing) throw new Error('Güncellenecek yorum bulunamadı.');
+
+    const clean = content.trim();
+    if (!clean) throw new Error('Yorum içeriği boş olamaz.');
+
+    const now = toLocalIsoString(new Date());
+    this.db
+      .prepare('UPDATE activity_comments SET content = ?, updated_at = ? WHERE id = ?')
+      .run(clean, now, commentId);
+
+    const actRow = this.db
+      .prepare('SELECT occurred_at_iso FROM activities WHERE id = ?')
+      .get(existing.activity_id) as { occurred_at_iso?: string } | undefined;
+    if (actRow?.occurred_at_iso) {
+      this.markDateReportNeedsReapproval(actRow.occurred_at_iso);
+    }
+
+    return this.getActivityById(existing.activity_id)!;
+  }
+
+  public deleteActivityComment(commentId: string): Activity {
+    const existing = this.db
+      .prepare('SELECT activity_id FROM activity_comments WHERE id = ?')
+      .get(commentId) as { activity_id: string } | undefined;
+    if (!existing) throw new Error('Silinecek yorum bulunamadı.');
+
+    this.db.prepare('DELETE FROM activity_comments WHERE id = ?').run(commentId);
+
+    const actRow = this.db
+      .prepare('SELECT occurred_at_iso FROM activities WHERE id = ?')
+      .get(existing.activity_id) as { occurred_at_iso?: string } | undefined;
+    if (actRow?.occurred_at_iso) {
+      this.markDateReportNeedsReapproval(actRow.occurred_at_iso);
+    }
+
+    return this.getActivityById(existing.activity_id)!;
+  }
+
+  private markDateReportNeedsReapproval(occurredAtIso: string): void {
+    const dateStr = (occurredAtIso || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return;
+    this.db
+      .prepare(
+        `UPDATE daily_reports
+         SET status = 'needs_reapproval'
+         WHERE report_date = ? AND status = 'approved'`
+      )
+      .run(dateStr);
+  }
+
+  private mapActivityCommentRow(row: Record<string, unknown>): ActivityComment {
+    return {
+      id: String(row.id),
+      activityId: String(row.activity_id),
+      content: String(row.content),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at)
+    };
   }
 
   public getDashboardMetrics(todayDate: string): {
@@ -1649,6 +1877,7 @@ export class MesaiRepository {
     const candidateKeys = new Set<string>();
     const reportProjectIds = new Set<string>();
     const gitKeys = new Set<string>();
+    const userCommentKeys = new Set<string>();
 
     for (const item of items) {
       if (item.projectId) reportProjectIds.add(item.projectId);
@@ -1669,6 +1898,18 @@ export class MesaiRepository {
 
     const dayActivities = this.listActivities({ date: reportDate });
     for (const act of dayActivities) {
+      if (isExclusionActivityComment(act.comments)) {
+        continue;
+      }
+
+      // User-authored activity comments are explicit developer input
+      for (const cm of act.comments ?? []) {
+        for (const k of extractJiraKeysFromText(cm.content)) {
+          userCommentKeys.add(k);
+          candidateKeys.add(k);
+        }
+      }
+
       // Record any keys definitively coming from user's git commits or working trees
       if (act.sourceType === 'git_commit' || act.sourceType === 'git_working_tree') {
         for (const k of extractJiraKeysFromText(act.title)) gitKeys.add(k);
@@ -1733,6 +1974,12 @@ export class MesaiRepository {
 
     for (const gk of gitKeys) {
       verifiedKeys.add(gk);
+    }
+
+    for (const ck of userCommentKeys) {
+      if (!isJiraConfigured || this.isUserAssigneeForJiraKey(ck) !== false) {
+        verifiedKeys.add(ck);
+      }
     }
 
     for (const cand of candidateKeys) {
@@ -2314,6 +2561,7 @@ export class MesaiRepository {
     this.db.exec(`
       DELETE FROM report_items;
       DELETE FROM daily_reports;
+      DELETE FROM activity_comments;
       DELETE FROM activity_links;
       DELETE FROM evidences;
       DELETE FROM activities;

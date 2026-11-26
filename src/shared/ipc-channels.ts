@@ -30,6 +30,9 @@ export const IPC_CHANNELS = {
 
   ACTIVITIES_LIST: 'mesai:activities:list',
   ACTIVITIES_ADD_NOTE: 'mesai:activities:addNote',
+  ACTIVITIES_ADD_COMMENT: 'mesai:activities:addComment',
+  ACTIVITIES_UPDATE_COMMENT: 'mesai:activities:updateComment',
+  ACTIVITIES_DELETE_COMMENT: 'mesai:activities:deleteComment',
   EVIDENCE_GET: 'mesai:evidence:get',
   MATCH_UPDATE_LINK: 'mesai:match:updateLink',
   WORK_ITEMS_LIST: 'mesai:workItems:list',
@@ -125,6 +128,9 @@ export interface MesaiApi {
 
   listActivities(filter: ActivityFilter): Promise<Activity[]>;
   addManualNote(input: ManualNoteInput): Promise<Activity>;
+  addActivityComment(input: { activityId: string; content: string }): Promise<Activity>;
+  updateActivityComment(input: { commentId: string; content: string }): Promise<Activity>;
+  deleteActivityComment(commentId: string): Promise<Activity>;
   getEvidenceById(evidenceId: string): Promise<Evidence | null>;
   updateActivityLink(input: {
     linkId: string;

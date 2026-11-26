@@ -10,6 +10,16 @@ import type {
   GitLabMrReviewContext,
   ReportProgressLog
 } from '../../shared/types';
+import {
+  correlateZoomCallsForChat,
+  findNearbyDevelopmentContext,
+  getActivityUserComments,
+  hasUserComments,
+  isExclusionActivityComment,
+  isPureGreetingOrCallCoordination,
+  isReportableZoomCallActivity,
+  type CorrelatedZoomCallSession
+} from './zoom-call-context';
 
 export function getNowHhmmss(): string {
   const now = new Date();
@@ -306,20 +316,153 @@ function classifyZoomChatType(chatName: string | null | undefined): 'group_chann
 }
 
 function isPureGreetingOrAvailabilityMessage(text: string): boolean {
-  const clean = text
-    .toLowerCase()
-    .replace(/[.,!?'"():;-]+/g, ' ')
+  return isPureGreetingOrCallCoordination(text);
+}
+
+function filterReportableDateActivities(rawActivities: Activity[], reportDate: string): Activity[] {
+  return rawActivities.filter((a) => {
+    if (!a.occurredAtIso || a.occurredAtIso.slice(0, 10) !== reportDate) return false;
+    if (isExclusionActivityComment(a.comments)) return false;
+    if (a.sourceType === 'zoom_call' && !isReportableZoomCallActivity(a)) return false;
+    return true;
+  });
+}
+
+function convertUserNoteToCorporateClause(rawNote: string): string {
+  let s = rawNote
+    .replace(/^[-•*]\s*/, '')
     .replace(/\s+/g, ' ')
     .trim();
-  if (!clean) return true;
-  if (clean.length > 48) return false;
+  if (!s) return '';
 
-  const greetingPatterns = [
-    /^(?:abla\s+|abi\s+|hocam\s+)?(?:selam|selamlar|merhaba|günaydın|iyi\s+çalışmalar|kolay\s+gelsin)(?:\s+abla|\s+abi|\s+hocam)?$/,
-    /^(?:müsait\s+misin|müsaitim|uygun\s+musun|bakabilir\s+misin|vaktin\s+var\s+mı)$/,
-    /^(?:tamamdır|tamam|ok|olur|teşekkürler|teşekkür\s+ederim|eline\s+sağlık|emeğine\s+sağlık|süper|harika)$/
+  // Strip conversational lead-ins like "Bu görüşmede", "Bu toplantıda", "Bu committe"
+  s = s.replace(
+    /^(?:bu\s+(?:görüşmede|toplantıda|aramada|committe|commit'te|aktivitede|kayıtta|işte)\s*[:,;-]?\s*)/i,
+    ''
+  );
+  s = s.replace(/\.+$/, '').trim();
+
+  // Transform common first-person plural/singular Turkish engineering endings into passive corporate prose
+  const replacements: Array<[RegExp, string]> = [
+    [/\bkarar\s+verdik$/i, 'kararlaştırıldı'],
+    [/\bkararlaştırdık$/i, 'kararlaştırıldı'],
+    [/\bkonuştuk$/i, 'değerlendirildi'],
+    [/\bgörüştük$/i, 'değerlendirildi'],
+    [/\bdeğerlendirdik$/i, 'değerlendirildi'],
+    [/\binceledik$/i, 'incelendi'],
+    [/\banaliz\s+ettik$/i, 'analiz edildi'],
+    [/\bnetleştirdik$/i, 'netleştirildi'],
+    [/\bçözdük$/i, 'çözümlendi'],
+    [/\bgiderdik$/i, 'giderildi'],
+    [/\bdüzelttik$/i, 'düzeltildi'],
+    [/\bekledik$/i, 'eklendi'],
+    [/\bekledim$/i, 'eklendi'],
+    [/\bgeliştirdik$/i, 'geliştirildi'],
+    [/\bgeliştirdim$/i, 'geliştirildi'],
+    [/\bgüncelledik$/i, 'güncellendi'],
+    [/\bgüncelledim$/i, 'güncellendi'],
+    [/\btamamladık$/i, 'tamamlandı'],
+    [/\btamamladım$/i, 'tamamlandı'],
+    [/\bdoğruladık$/i, 'doğrulandı'],
+    [/\btest\s+ettik$/i, 'test edildi'],
+    [/\byaptık$/i, 'yapıldı'],
+    [/\byaptım$/i, 'yapıldı']
   ];
-  return greetingPatterns.some((rx) => rx.test(clean));
+  for (const [rx, rep] of replacements) {
+    if (rx.test(s)) {
+      s = s.replace(rx, rep);
+      break;
+    }
+  }
+
+  // Also convert mid-sentence "inceledik ve" / "konuştuk," patterns smoothly
+  s = s
+    .replace(/\binceledik\s*(?:,|ve)\s*/gi, 'incelenerek ')
+    .replace(/\bkonuştuk\s*(?:,|ve)\s*/gi, 'değerlendirilerek ')
+    .replace(/\bdeğerlendirdik\s*(?:,|ve)\s*/gi, 'değerlendirilerek ')
+    .replace(/\btespit\s+ettik\s*(?:,|ve)\s*/gi, 'tespit edilerek ')
+    .replace(/\btaşımaya\s+kararlaştırıldı$/i, 'taşınması kararlaştırıldı')
+    .replace(/\bçekmeye\s+kararlaştırıldı$/i, 'çekilmesi kararlaştırıldı')
+    .replace(/\bkullanmaya\s+kararlaştırıldı$/i, 'kullanılması kararlaştırıldı')
+    .replace(/\byapmaya\s+kararlaştırıldı$/i, 'yapılması kararlaştırıldı');
+
+  const hasPassiveEnding =
+    /(?:tamamlandı|yapıldı|incelendi|analiz\s+edildi|değerlendirildi|netleştirildi|kararlaştırıldı|giderildi|çözümlendi|düzeltildi|eklendi|geliştirildi|güncellendi|sağlandı|gerçekleştirildi|doğrulandı|test\s+edildi|açıldı|verildi)$/i.test(
+      s
+    );
+  if (!hasPassiveEnding) {
+    s = `${s} değerlendirilerek gerekli teknik adımlar netleştirildi`;
+  }
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function extractDynamicTopicSummaryFromMessages(
+  messages: Activity[],
+  chatName: string,
+  chatType: 'group_channel' | 'direct_message',
+  jiraContextMap: Record<string, string>
+): string | null {
+  const combinedRaw = messages.map((m) => m.summary.trim()).filter(Boolean).join(' ');
+  if (!combinedRaw) return null;
+
+  // 1. Check if a Jira key in messages has a resolved title in jiraContextMap
+  const jiraMatches = combinedRaw.match(/\b([A-Z][A-Z0-9]{1,9}-\d{1,6})\b/g) ?? [];
+  for (const rawKey of jiraMatches) {
+    const key = rawKey.toUpperCase();
+    const ctx = jiraContextMap[key];
+    if (ctx) {
+      const titleMatch = /Başlık:\s*([^—|]+)/i.exec(ctx);
+      if (titleMatch && titleMatch[1] && !titleMatch[1].includes('İşi')) {
+        return titleMatch[1].trim().replace(/\.+$/, '');
+      }
+    }
+  }
+
+  // 2. Detect any known corporate process name mentioned in group channel name or message text
+  const lowerCombined = `${chatType === 'group_channel' ? chatName : ''} ${combinedRaw}`.toLowerCase();
+  let detectedProcess = '';
+  for (const [slug, label] of Object.entries(KNOWN_PROJECT_DISPLAY_NAMES)) {
+    if (slug.length >= 5 && (lowerCombined.includes(slug) || lowerCombined.includes(label.toLowerCase()))) {
+      detectedProcess = label;
+      break;
+    }
+  }
+
+  // 3. Extract the most informative technical sentence/clause from pre/post messages
+  const cleanedFragments: string[] = [];
+  for (const msg of messages) {
+    let text = msg.summary
+      .replace(/https?:\/\/\S+/gi, '')
+      .replace(/\b[A-Z][A-Z0-9]{1,9}-\d{1,6}\b/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    // Strip conversational questions/imperatives at the end ("bakalım mı?", "kontrol edelim", "var mı?")
+    text = text
+      .replace(
+        /[.,;:\s]*(?:bir\s+)?(?:sesli\s+|görüntülü\s+)?(?:bakalım\s+mı|konuşalım\s+mı|arayayım\s+mı|kontrol\s+edelim(?:\s+mi)?|bakabilir\s+misin(?:iz)?|inceleyelim(?:\s+mi)?|ne\s+durumda(?:ydı)?)[?!.]*$/i,
+        ''
+      )
+      .replace(/^(?:selam(?:lar)?|merhaba|abla|abi|hocam)[,\s]+/i, '')
+      .replace(/[?!.]+$/, '')
+      .trim();
+    if (text.length >= 12) {
+      cleanedFragments.push(text);
+    }
+  }
+
+  if (cleanedFragments.length === 0) {
+    return detectedProcess ? `${detectedProcess} kapsamındaki teknik gereksinimler` : null;
+  }
+
+  // Pick up to 2 concise distinct fragments to summarize the discussion subject cleanly
+  const best = cleanedFragments.slice(-2).join(' ve ');
+  const clipped = best.length > 135 ? best.slice(0, 135).replace(/\s+\S*$/, '') : best;
+  const normalizedTopic = clipped.charAt(0).toLowerCase() + clipped.slice(1);
+
+  if (detectedProcess && !normalizedTopic.toLowerCase().includes(detectedProcess.toLowerCase())) {
+    return `${detectedProcess} kapsamında ${normalizedTopic}`;
+  }
+  return normalizedTopic;
 }
 
 /**
@@ -458,6 +601,8 @@ function synthesizeHighEffortDevelopmentProse(input: {
   cleanCommitMessages: string[];
   codeDiff: string;
   chatActs: Activity[];
+  callActs?: Activity[];
+  userComments?: string[];
 }): string {
   const {
     displayProj,
@@ -470,8 +615,34 @@ function synthesizeHighEffortDevelopmentProse(input: {
     nonSharedComponents,
     cleanCommitMessages,
     codeDiff,
-    chatActs
+    chatActs,
+    callActs = [],
+    userComments = []
   } = input;
+
+  // When the developer explicitly attached comments onto the development/call activities,
+  // prioritize their explanation as the authoritative framing of the work!
+  if (userComments.length > 0) {
+    const commentClauses = userComments
+      .slice(0, 2)
+      .map((c) => convertUserNoteToCorporateClause(c))
+      .filter(Boolean);
+    if (commentClauses.length > 0) {
+      const mainClause = commentClauses.join('; ');
+      const withProj = mainClause.toLowerCase().includes(displayProj.toLowerCase())
+        ? `${mainClause}.`
+        : `${displayProj} kapsamında ${mainClause.charAt(0).toLowerCase()}${mainClause.slice(1)}.`;
+      const callSuffix =
+        callActs.length > 0 && !/görüşme|toplantı/i.test(withProj)
+          ? ' İlgili teknik detaylar ekip içi sesli/görüntülü görüşmede değerlendirilerek netleştirildi.'
+          : '';
+      const commitSuffix =
+        hasCommits && !/\bmr\b|merge\s+request/i.test(withProj)
+          ? ' Süreç doğrulanarak proje MR’ı açıldı.'
+          : '';
+      return `${withProj}${callSuffix}${commitSuffix}`.trim();
+    }
+  }
 
   const lowerDiff = codeDiff.toLowerCase();
   const lowerCtx = `${jiraContext ?? ''} ${cleanCommitMessages.join(' ')}`.toLowerCase();
@@ -631,7 +802,13 @@ function synthesizeHighEffortDevelopmentProse(input: {
     }
   }
 
-  if (chatActs.length > 0 && sentences.length < 3) {
+  if (callActs.length > 0) {
+    if (sentences.length < 3) {
+      sentences.push(
+        'İlgili geliştirme kapsamında gerçekleştirilen sesli/görüntülü teknik görüşmede gereksinimler ve uç durum senaryoları değerlendirilerek uygulama mimarisi netleştirildi.'
+      );
+    }
+  } else if (chatActs.length > 0 && sentences.length < 3) {
     sentences.push(
       'İlgili geliştirme kapsamında teknik gereksinimler ve uç durum senaryoları değerlendirilerek uygulama mimarisi netleştirildi.'
     );
@@ -642,20 +819,69 @@ function synthesizeHighEffortDevelopmentProse(input: {
 
 /**
  * Synthesizes high-effort corporate Turkish prose for an individual Zoom conversation
+ * (including correlated voice/video calls and user activity comments)
  * without mixing unrelated group channels and private 1-on-1 conversations.
  */
 function synthesizeZoomConversationProse(
   chatName: string,
   chatType: 'group_channel' | 'direct_message',
-  chatActs: Activity[]
+  chatActs: Activity[],
+  callSessions: CorrelatedZoomCallSession[] = [],
+  jiraContextMap: Record<string, string> = {}
 ): { category: ActivityCategory; itemStatus: ActivityStatus; text: string } | null {
-  // Filter out pure greeting/availability messages
-  const meaningfulActs = chatActs.filter((a) => !isPureGreetingOrAvailabilityMessage(a.summary));
-  if (meaningfulActs.length === 0) {
+  const hasCall = callSessions.length > 0;
+  const hasVideo = callSessions.some((s) => s.mediaType === 'video');
+  const hasAudio = callSessions.some((s) => s.mediaType === 'audio');
+  const callPhrase = hasVideo
+    ? 'görüntülü teknik değerlendirme toplantısı'
+    : hasAudio
+      ? 'sesli teknik değerlendirme görüşmesi'
+      : 'sesli/görüntülü teknik değerlendirme görüşmesi';
+
+  const allUserComments = Array.from(
+    new Set([
+      ...chatActs.flatMap((a) => getActivityUserComments(a)),
+      ...callSessions.flatMap((s) => s.userComments)
+    ])
+  );
+
+  if (allUserComments.length > 0) {
+    const clauses = allUserComments
+      .slice(0, 2)
+      .map((c) => convertUserNoteToCorporateClause(c))
+      .filter(Boolean);
+    if (clauses.length > 0) {
+      const joined = clauses.join('; ');
+      const lowerJoined = joined.toLowerCase();
+      const status: ActivityStatus = /kararlaştırıldı|karar\s+alındı/.test(lowerJoined)
+        ? 'decision'
+        : 'completed';
+      const text =
+        hasCall && !/görüşme|toplantı/.test(lowerJoined)
+          ? `Gerçekleştirilen ${callPhrase} kapsamında ${joined.charAt(0).toLowerCase()}${joined.slice(1)}.`
+          : `${joined}.`;
+      return {
+        category: hasCall ? 'meeting' : 'technical_discussion',
+        itemStatus: status,
+        text
+      };
+    }
+  }
+
+  // Filter out pure greeting/availability/call-setup messages
+  const meaningfulActs = chatActs.filter(
+    (a) =>
+      !isPureGreetingOrAvailabilityMessage(a.summary) ||
+      (a.evidences ?? []).some((e) => (e.links ?? []).length > 0)
+  );
+  const callContextActs = callSessions.flatMap((s) => s.allContextMessages);
+  const targetActs = hasCall && callContextActs.length > 0 ? callContextActs : meaningfulActs;
+
+  if (targetActs.length === 0) {
     return null;
   }
 
-  const combinedText = meaningfulActs
+  const combinedText = targetActs
     .map((a) => a.summary)
     .join(' ')
     .toLowerCase();
@@ -669,9 +895,11 @@ function synthesizeZoomConversationProse(
       combinedText.includes('scroll'))
   ) {
     return {
-      category: 'analysis',
+      category: hasCall ? 'meeting' : 'analysis',
       itemStatus: 'completed',
-      text: 'Frontend standartları kapsamında gönderi paylaşım/düzenleme panellerindeki emoji ve bağlantı ekleme bileşenlerinin konumu, bildirim listesi kaydırma (scroll) davranışı ve uzun metin taşma (overflow) durumları incelenerek mevcut arayüz mimarisine uygun çözüm standartları netleştirildi.'
+      text: hasCall
+        ? `Frontend standartları kapsamında gönderi paylaşım/düzenleme panellerindeki emoji ve bağlantı ekleme bileşenlerinin konumu, bildirim listesi kaydırma (scroll) davranışı ve uzun metin taşma durumları üzerine ${callPhrase} gerçekleştirilerek mevcut arayüz mimarisine uygun çözüm standartları netleştirildi.`
+        : 'Frontend standartları kapsamında gönderi paylaşım/düzenleme panellerindeki emoji ve bağlantı ekleme bileşenlerinin konumu, bildirim listesi kaydırma (scroll) davranışı ve uzun metin taşma (overflow) durumları incelenerek mevcut arayüz mimarisine uygun çözüm standartları netleştirildi.'
     };
   }
 
@@ -684,15 +912,32 @@ function synthesizeZoomConversationProse(
       combinedText.includes('onay')
     ) {
       return {
-        category: 'analysis',
+        category: hasCall ? 'meeting' : 'analysis',
         itemStatus: 'completed',
-        text: 'Ekip içi açılan MR’lar mevcut mimariye ve frontend geliştirme standartlarına uyum açısından incelenerek tespit edilen noktalara teknik geri bildirim verildi.'
+        text: hasCall
+          ? `Ekip içi açılan MR’ların mevcut mimariye ve frontend geliştirme standartlarına uyumu üzerine ${callPhrase} gerçekleştirilerek tespit edilen noktalara teknik geri bildirim verildi.`
+          : 'Ekip içi açılan MR’lar mevcut mimariye ve frontend geliştirme standartlarına uyum açısından incelenerek tespit edilen noktalara teknik geri bildirim verildi.'
+      };
+    }
+    const dynamicGroupTopic = extractDynamicTopicSummaryFromMessages(
+      targetActs,
+      chatName,
+      chatType,
+      jiraContextMap
+    );
+    if (hasCall && dynamicGroupTopic) {
+      return {
+        category: 'meeting',
+        itemStatus: combinedText.includes('karar') ? 'decision' : 'completed',
+        text: `Ekip kanalı üzerinden ${dynamicGroupTopic} konusu üzerine ${callPhrase} gerçekleştirilerek teknik gereksinimler ve çözüm adımları netleştirildi.`
       };
     }
     return {
-      category: 'technical_discussion',
+      category: hasCall ? 'meeting' : 'technical_discussion',
       itemStatus: 'completed',
-      text: 'Ekip kanalı üzerinden devam eden süreç geliştirmeleri, ortam durumları ve açık iş maddeleri değerlendirilerek teknik koordinasyon sağlandı.'
+      text: hasCall
+        ? `Ekip kanalı üzerinden devam eden süreç geliştirmeleri, ortam durumları ve açık iş maddeleri üzerine ${callPhrase} gerçekleştirilerek teknik koordinasyon sağlandı.`
+        : 'Ekip kanalı üzerinden devam eden süreç geliştirmeleri, ortam durumları ve açık iş maddeleri değerlendirilerek teknik koordinasyon sağlandı.'
     };
   }
 
@@ -704,9 +949,11 @@ function synthesizeZoomConversationProse(
     combinedText.includes('stomp')
   ) {
     return {
-      category: 'technical_discussion',
+      category: hasCall ? 'meeting' : 'technical_discussion',
       itemStatus: 'decision',
-      text: 'Multi-pod çalışma ortamında WebSocket bağlantı kopmaları, oturum yönlendirme (sticky session) ve Nginx yapılandırma gereksinimleri üzerine teknik analiz gerçekleştirilerek servisler arası mesaj iletim güvenilirliğini sağlayacak mimari yaklaşım netleştirildi.'
+      text: hasCall
+        ? `Multi-pod çalışma ortamında WebSocket bağlantı kopmaları, oturum yönlendirme (sticky session) ve Nginx yapılandırma gereksinimleri üzerine ${callPhrase} gerçekleştirilerek servisler arası mesaj iletim güvenilirliğini sağlayacak mimari yaklaşım netleştirildi.`
+        : 'Multi-pod çalışma ortamında WebSocket bağlantı kopmaları, oturum yönlendirme (sticky session) ve Nginx yapılandırma gereksinimleri üzerine teknik analiz gerçekleştirilerek servisler arası mesaj iletim güvenilirliğini sağlayacak mimari yaklaşım netleştirildi.'
     };
   }
 
@@ -718,9 +965,11 @@ function synthesizeZoomConversationProse(
     combinedText.includes('renk')
   ) {
     return {
-      category: 'technical_discussion',
+      category: hasCall ? 'meeting' : 'technical_discussion',
       itemStatus: 'completed',
-      text: 'Ortam değişkenlerine (env) göre dinamik renk ve tema alması gereken SVG/görsel asset’lerin ortak kütüphane ve projeler arasında merkezi yönetimi incelenerek runtime ve build aşamalarında stil bütünlüğünü koruyacak bileşen tabanlı uygulama yöntemi netleştirildi.'
+      text: hasCall
+        ? `Ortam değişkenlerine (env) göre dinamik renk ve tema alması gereken SVG/görsel asset’lerin ortak kütüphane ve projeler arasında merkezi yönetimi üzerine ${callPhrase} gerçekleştirilerek bileşen tabanlı uygulama yöntemi netleştirildi.`
+        : 'Ortam değişkenlerine (env) göre dinamik renk ve tema alması gereken SVG/görsel asset’lerin ortak kütüphane ve projeler arasında merkezi yönetimi incelenerek runtime ve build aşamalarında stil bütünlüğünü koruyacak bileşen tabanlı uygulama yöntemi netleştirildi.'
     };
   }
 
@@ -732,9 +981,11 @@ function synthesizeZoomConversationProse(
     combinedText.includes('bulgu')
   ) {
     return {
-      category: 'analysis',
+      category: hasCall ? 'meeting' : 'analysis',
       itemStatus: 'completed',
-      text: 'Süreç ekranlarındaki özet bileşenlerinde alan etiketleri ve değerlerin tipografik (bold) gösterim standartları ile tasarım bulguları incelenerek ortak bileşen yapısını bozmadan uygulanabilecek görünüm düzenlemeleri netleştirildi.'
+      text: hasCall
+        ? `Süreç ekranlarındaki özet bileşenlerinde alan etiketleri ve değerlerin tipografik (bold) gösterim standartları ile tasarım bulguları üzerine ${callPhrase} gerçekleştirilerek uygulanabilecek görünüm düzenlemeleri netleştirildi.`
+        : 'Süreç ekranlarındaki özet bileşenlerinde alan etiketleri ve değerlerin tipografik (bold) gösterim standartları ile tasarım bulguları incelenerek ortak bileşen yapısını bozmadan uygulanabilecek görünüm düzenlemeleri netleştirildi.'
     };
   }
 
@@ -745,16 +996,34 @@ function synthesizeZoomConversationProse(
     combinedText.includes('key')
   ) {
     return {
-      category: 'analysis',
+      category: hasCall ? 'meeting' : 'analysis',
       itemStatus: 'completed',
-      text: 'Portal ve süreç ekranlarındaki çoklu dil (i18n) çeviri anahtarları ile bileşen entegrasyon noktaları kontrol edilerek eksik veya uyumsuz anahtarların standart yapıya taşınması için teknik inceleme tamamlandı.'
+      text: hasCall
+        ? `Portal ve süreç ekranlarındaki çoklu dil (i18n) çeviri anahtarları ile bileşen entegrasyon noktaları üzerine ${callPhrase} gerçekleştirilerek eksik veya uyumsuz anahtarların standart yapıya taşınması planlandı.`
+        : 'Portal ve süreç ekranlarındaki çoklu dil (i18n) çeviri anahtarları ile bileşen entegrasyon noktaları kontrol edilerek eksik veya uyumsuz anahtarların standart yapıya taşınması için teknik inceleme tamamlandı.'
+    };
+  }
+
+  const dynamicTopic = extractDynamicTopicSummaryFromMessages(
+    targetActs,
+    chatName,
+    chatType,
+    jiraContextMap
+  );
+  if (hasCall && dynamicTopic) {
+    return {
+      category: 'meeting',
+      itemStatus: combinedText.includes('karar') ? 'decision' : 'completed',
+      text: `${dynamicTopic.charAt(0).toUpperCase()}${dynamicTopic.slice(1)} konusu üzerine ${callPhrase} gerçekleştirilerek teknik senaryolar değerlendirildi ve çözüm adımları netleştirildi.`
     };
   }
 
   return {
-    category: 'technical_discussion',
+    category: hasCall ? 'meeting' : 'technical_discussion',
     itemStatus: 'completed',
-    text: 'Geliştirme süreçlerindeki ekran akışları, bileşen davranışları ve teknik gereksinimler üzerine birebir teknik değerlendirme yapılarak ilgili sorular yanıtlandı ve çözüm adımları netleştirildi.'
+    text: hasCall
+      ? `Geliştirme süreçlerindeki ekran akışları, bileşen davranışları ve teknik gereksinimler üzerine ${callPhrase} gerçekleştirilerek ilgili sorular yanıtlandı ve çözüm adımları netleştirildi.`
+      : 'Geliştirme süreçlerindeki ekran akışları, bileşen davranışları ve teknik gereksinimler üzerine birebir teknik değerlendirme yapılarak ilgili sorular yanıtlandı ve çözüm adımları netleştirildi.'
   };
 }
 
@@ -776,18 +1045,27 @@ export class LocalRuleProvider implements AIProvider {
     gitlabMrContextMap: Record<string, GitLabMrReviewContext> = {}
   ): Promise<GeneratedDraftItem[]> {
     onProgress?.({ timestamp: getNowHhmmss(), step: 'gathering', message: `Yerel kurallı motor: ${rawActivities.length} aktivite işleniyor...` });
-    // STRICT DATE FILTER: Only include activities whose occurredAtIso local date matches reportDate
-    const activities = rawActivities.filter(
-      (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
-    );
+    // STRICT DATE & EXCLUSION FILTER: Only include reportable activities of reportDate
+    const activities = filterReportableDateActivities(rawActivities, reportDate);
 
     if (activities.length === 0) return [];
 
     const results: GeneratedDraftItem[] = [];
 
     const projectGroups = new Map<string, Activity[]>();
-    const standaloneChatActs: Activity[] = [];
+    const standaloneZoomByChat = new Map<string, { chats: Activity[]; calls: Activity[] }>();
     const standaloneOtherActs: Activity[] = [];
+
+    // Pre-index chat activities by chatOrRepoName so Zoom calls can inspect their [-240m, +30m] chat context
+    const allChatsByRoom = new Map<string, Activity[]>();
+    for (const act of activities) {
+      if (act.sourceType === 'zoom_chat') {
+        const room = (act.chatOrRepoName || 'Genel Sohbet').trim();
+        const arr = allChatsByRoom.get(room) ?? [];
+        arr.push(act);
+        allChatsByRoom.set(room, arr);
+      }
+    }
 
     for (const act of activities) {
       const acceptedLink = (act.links ?? []).find(
@@ -804,41 +1082,68 @@ export class LocalRuleProvider implements AIProvider {
         ? `proj:${formatCorporateProjectName(rawProjLabel)}`
         : act.projectId ?? acceptedLink?.projectId ?? null;
 
+      // For a Zoom call lacking its own direct workItemId, check if its [-240m, +30m] contextual chat messages carry an accepted workItemId
+      let inferredCallWorkItemId: string | null = acceptedLink?.workItemId ?? null;
+      if (act.sourceType === 'zoom_call' && !inferredCallWorkItemId) {
+        const room = (act.chatOrRepoName || 'Genel Sohbet').trim();
+        const roomChats = allChatsByRoom.get(room) ?? [];
+        const callSessions = correlateZoomCallsForChat([act], roomChats);
+        const ctxWorkItemLink = (callSessions[0]?.allContextMessages ?? [])
+          .flatMap((m) => m.links ?? [])
+          .find((l) => l.userStatus === 'accepted' && l.workItemId);
+        if (ctxWorkItemLink?.workItemId) {
+          inferredCallWorkItemId = ctxWorkItemLink.workItemId;
+        }
+      }
+
       // Prioritize grouping by Jira workItemId when present so each Jira key (e.g. BAM-4075 vs BAM-4066)
-      // gets its own dedicated analysis and cross-repo commits for the same Jira key are consolidated cleanly!
+      // gets its own dedicated analysis and cross-repo commits + Zoom chats/calls for the same Jira key consolidate cleanly!
       const groupKey =
-        (acceptedLink?.workItemId ? `wi:${acceptedLink.workItemId}` : null) ||
+        (inferredCallWorkItemId ? `wi:${inferredCallWorkItemId}` : null) ||
         normalizedProjKey ||
         (isDevSource && act.chatOrRepoName ? `repo:${act.chatOrRepoName}` : null);
 
-      // Only attach a Zoom chat to a development group if it explicitly matched a Jira workItemId
-      if (groupKey && (isDevSource || (act.sourceType === 'zoom_chat' && acceptedLink?.workItemId))) {
+      if (
+        groupKey &&
+        (isDevSource ||
+          (act.sourceType === 'zoom_chat' && acceptedLink?.workItemId) ||
+          (act.sourceType === 'zoom_call' && (inferredCallWorkItemId || acceptedLink?.projectId)))
+      ) {
         const list = projectGroups.get(groupKey) ?? [];
         list.push(act);
         projectGroups.set(groupKey, list);
-      } else if (act.sourceType === 'zoom_chat') {
-        standaloneChatActs.push(act);
+      } else if (act.sourceType === 'zoom_chat' || act.sourceType === 'zoom_call') {
+        const room = (act.chatOrRepoName || 'Genel Sohbet').trim();
+        const bucket = standaloneZoomByChat.get(room) ?? { chats: [], calls: [] };
+        if (act.sourceType === 'zoom_chat') bucket.chats.push(act);
+        else bucket.calls.push(act);
+        standaloneZoomByChat.set(room, bucket);
       } else {
         standaloneOtherActs.push(act);
       }
     }
 
-    const dayHasAnyCommit = activities.some((a) => a.sourceType === 'git_commit');
-
-    // 1. Synthesize Project / WorkItem Development bullets using deep codeDiff + Jira context analysis
+    // 1. Synthesize Project / WorkItem Development bullets using deep codeDiff + Jira + Zoom Call + User Comment analysis
     for (const [, groupActs] of projectGroups.entries()) {
       const commitActs = groupActs.filter((a) => a.sourceType === 'git_commit');
       const fileOrWtActs = groupActs.filter(
         (a) => a.sourceType === 'file_change' || a.sourceType === 'git_working_tree'
       );
       const chatActs = groupActs.filter((a) => a.sourceType === 'zoom_chat');
+      const callActs = groupActs.filter((a) => a.sourceType === 'zoom_call');
 
       const hasCommits = commitActs.length > 0;
       const hasFileOrWt = fileOrWtActs.length > 0;
 
-      // If a group only has Zoom chats (no commits or file changes on this date), route to standaloneChatActs
+      // If a group only has Zoom chats/calls (no commits or file changes on this date), route back to standaloneZoomByChat
       if (!hasCommits && !hasFileOrWt) {
-        standaloneChatActs.push(...chatActs);
+        for (const zAct of [...chatActs, ...callActs]) {
+          const room = (zAct.chatOrRepoName || 'Genel Sohbet').trim();
+          const bucket = standaloneZoomByChat.get(room) ?? { chats: [], calls: [] };
+          if (zAct.sourceType === 'zoom_chat') bucket.chats.push(zAct);
+          else bucket.calls.push(zAct);
+          standaloneZoomByChat.set(room, bucket);
+        }
         continue;
       }
 
@@ -864,7 +1169,7 @@ export class LocalRuleProvider implements AIProvider {
               (a) =>
                 a.projectName ||
                 (a.links ?? []).find((l) => l.userStatus === 'accepted')?.projectName ||
-                (a.sourceType !== 'zoom_chat' ? a.chatOrRepoName : null)
+                (a.sourceType !== 'zoom_chat' && a.sourceType !== 'zoom_call' ? a.chatOrRepoName : null)
             )
             .filter((n): n is string => Boolean(n))
             .map((n) => formatCorporateProjectName(n))
@@ -919,6 +1224,9 @@ export class LocalRuleProvider implements AIProvider {
         (projectId ? gitlabMrContextMap[`id:${projectId}`] : undefined) ??
         distinctProjNames.map((p) => gitlabMrContextMap[`proj:${p}`]).find(Boolean) ??
         null;
+      const groupUserComments = Array.from(
+        new Set(groupActs.flatMap((a) => getActivityUserComments(a)))
+      );
       const finalProse = synthesizeHighEffortDevelopmentProse({
         displayProj,
         jiraKey,
@@ -931,7 +1239,9 @@ export class LocalRuleProvider implements AIProvider {
         nonSharedComponents,
         cleanCommitMessages,
         codeDiff,
-        chatActs
+        chatActs,
+        callActs,
+        userComments: groupUserComments
       });
 
       if (finalProse) {
@@ -949,30 +1259,52 @@ export class LocalRuleProvider implements AIProvider {
       }
     }
 
-    // 2. Evaluate Zoom conversations SEPARATELY per chatOrRepoName (Group vs 1-on-1 DM)
-    if (standaloneChatActs.length > 0) {
-      const conversations = new Map<string, Activity[]>();
-      for (const chatAct of standaloneChatActs) {
-        const chatKey = (chatAct.chatOrRepoName || 'Genel Sohbet').trim();
-        const list = conversations.get(chatKey) ?? [];
-        list.push(chatAct);
-        conversations.set(chatKey, list);
-      }
+    // 2. Evaluate Zoom conversations + correlated Zoom calls SEPARATELY per chatOrRepoName (Group vs 1-on-1 DM)
+    const contextlessCallSessions: CorrelatedZoomCallSession[] = [];
 
-      // Deduplicate generated prose if two chats genuinely discussed the exact same technical topic
+    if (standaloneZoomByChat.size > 0) {
       const generatedByText = new Map<string, GeneratedDraftItem>();
 
-      for (const [chatName, chatActs] of conversations.entries()) {
+      for (const [chatName, bucket] of standaloneZoomByChat.entries()) {
         const chatType = classifyZoomChatType(chatName);
-        const synthesized = synthesizeZoomConversationProse(chatName, chatType, chatActs);
+        const roomAllChats = allChatsByRoom.get(chatName) ?? bucket.chats;
+        const callSessions = correlateZoomCallsForChat(bucket.calls, roomAllChats);
+
+        const sessionsWithContext = callSessions.filter(
+          (s) => s.allContextMessages.length > 0 || s.userComments.length > 0
+        );
+        const sessionsWithoutContext = callSessions.filter(
+          (s) => s.allContextMessages.length === 0 && s.userComments.length === 0
+        );
+        contextlessCallSessions.push(...sessionsWithoutContext);
+
+        const synthesized = synthesizeZoomConversationProse(
+          chatName,
+          chatType,
+          bucket.chats,
+          sessionsWithContext,
+          jiraContextMap
+        );
         if (!synthesized) {
           continue;
         }
 
+        const combinedActsForEv = [
+          ...bucket.chats,
+          ...sessionsWithContext.flatMap((s) => [...s.callActivities, ...s.allContextMessages])
+        ];
         const chatEvIds = Array.from(
-          new Set(chatActs.flatMap((a) => (a.evidences ?? []).map((e) => e.id)))
+          new Set(combinedActsForEv.flatMap((a) => (a.evidences ?? []).map((e) => e.id)))
         );
-        const hasAmbiguous = chatActs.some((a) => a.timestampConfidence === 'ambiguous');
+        const anyExplicitUserComment = combinedActsForEv.some((a) => hasUserComments(a));
+        const hasAmbiguous =
+          !anyExplicitUserComment &&
+          sessionsWithContext.length === 0 &&
+          bucket.chats.some((a) => a.timestampConfidence === 'ambiguous');
+
+        const acceptedWorkItemLink = combinedActsForEv
+          .flatMap((a) => a.links ?? [])
+          .find((l) => l.userStatus === 'accepted' && (l.workItemId || l.projectId));
 
         const existingSameTopic = generatedByText.get(synthesized.text);
         if (existingSameTopic) {
@@ -981,8 +1313,8 @@ export class LocalRuleProvider implements AIProvider {
           );
         } else {
           const item: GeneratedDraftItem = {
-            workItemId: null,
-            projectId: null,
+            workItemId: acceptedWorkItemLink?.workItemId ?? null,
+            projectId: acceptedWorkItemLink?.projectId ?? null,
             category: synthesized.category,
             itemStatus: synthesized.itemStatus,
             text: synthesized.text,
@@ -1094,24 +1426,63 @@ export class LocalRuleProvider implements AIProvider {
       });
     }
 
-    // 4. Process standalone calls and manual notes
-    const callActs = standaloneOtherActs.filter((a) => a.sourceType === 'zoom_call');
-    if (callActs.length > 0) {
-      const callEvIds = Array.from(
-        new Set(callActs.flatMap((a) => (a.evidences ?? []).map((e) => e.id)))
-      );
-      results.push({
-        workItemId: null,
-        projectId: null,
-        category: 'meeting',
-        itemStatus: 'info',
-        text: 'Proje geliştirmeleri ve teknik konuların değerlendirilmesi amacıyla ekip içi görüşme gerçekleştirildi.',
-        isInsufficientEvidence: true,
-        insufficientReason:
-          'Arama kaydında yazılı özet bulunmadığından görüşme detayı ve süresi tahmin edilmemiştir.',
-        durationNote: null,
-        evidenceIds: callEvIds
-      });
+    // 4. Process remaining contextless answered calls (try ±90m Git proximity suggestion, else safe fallback) and manual notes
+    if (contextlessCallSessions.length > 0) {
+      const suggestedByProj = new Map<
+        string,
+        { projDisplay: string; projectId: string | null; diffMinutes: number; evidenceIds: Set<string> }
+      >();
+      const pureFallbackEvIds = new Set<string>();
+
+      for (const session of contextlessCallSessions) {
+        const nearbyDev = findNearbyDevelopmentContext(session.callActivities[0], activities, 90);
+        if (nearbyDev && nearbyDev.projectName) {
+          const projDisplay = formatCorporateProjectName(nearbyDev.projectName);
+          const existing = suggestedByProj.get(projDisplay);
+          if (existing) {
+            existing.diffMinutes = Math.min(existing.diffMinutes, nearbyDev.diffMinutes);
+            for (const eid of session.evidenceIds) existing.evidenceIds.add(eid);
+          } else {
+            suggestedByProj.set(projDisplay, {
+              projDisplay,
+              projectId: nearbyDev.projectId,
+              diffMinutes: nearbyDev.diffMinutes,
+              evidenceIds: new Set(session.evidenceIds)
+            });
+          }
+        } else {
+          for (const eid of session.evidenceIds) pureFallbackEvIds.add(eid);
+        }
+      }
+
+      for (const sug of suggestedByProj.values()) {
+        results.push({
+          workItemId: null,
+          projectId: sug.projectId,
+          category: 'meeting',
+          itemStatus: 'info',
+          text: `${sug.projDisplay} geliştirmeleri kapsamında teknik değerlendirme ve koordinasyon amacıyla ekip içi sesli/görüntülü görüşme gerçekleştirildi.`,
+          isInsufficientEvidence: true,
+          insufficientReason: `Sohbette yazılı mesaj bulunmadığından görüşme konusu yakın zamanlı (${Math.round(sug.diffMinutes)} dk) ${sug.projDisplay} geliştirme aktivitesinden önerilmiştir; süre türetilmemiştir.`,
+          durationNote: null,
+          evidenceIds: Array.from(sug.evidenceIds)
+        });
+      }
+
+      if (pureFallbackEvIds.size > 0) {
+        results.push({
+          workItemId: null,
+          projectId: null,
+          category: 'meeting',
+          itemStatus: 'info',
+          text: 'Proje geliştirmeleri ve teknik konuların değerlendirilmesi amacıyla ekip içi görüşme gerçekleştirildi.',
+          isInsufficientEvidence: true,
+          insufficientReason:
+            'Arama kaydında yazılı özet veya kullanıcı yorumu bulunmadığından görüşme detayı ve süresi tahmin edilmemiştir.',
+          durationNote: null,
+          evidenceIds: Array.from(pureFallbackEvIds)
+        });
+      }
     }
 
     const noteActs = standaloneOtherActs.filter(
@@ -1120,15 +1491,22 @@ export class LocalRuleProvider implements AIProvider {
     for (const act of noteActs) {
       const evidenceIds = (act.evidences ?? []).map((e) => e.id);
       const projLabel = act.projectName ? `${formatCorporateProjectName(act.projectName)} kapsamında ` : '';
-      const cleanSum = act.summary.replace(/^[-•*]\s*/, '').trim();
+      const actUserComments = getActivityUserComments(act);
+      const cleanSum =
+        actUserComments.length > 0
+          ? actUserComments.map((c) => convertUserNoteToCorporateClause(c)).join('; ')
+          : act.summary.replace(/^[-•*]\s*/, '').trim();
       results.push({
         workItemId: null,
         projectId: act.projectId,
         category: act.category,
         itemStatus: act.status,
         text: `${projLabel}${cleanSum.endsWith('.') ? cleanSum : `${cleanSum}.`}`,
-        isInsufficientEvidence: act.isTimeEstimated,
-        insufficientReason: act.isTimeEstimated ? 'Süre kullanıcı tarafından tahmini olarak girilmiştir.' : null,
+        isInsufficientEvidence: act.isTimeEstimated && actUserComments.length === 0,
+        insufficientReason:
+          act.isTimeEstimated && actUserComments.length === 0
+            ? 'Süre kullanıcı tarafından tahmini olarak girilmiştir.'
+            : null,
         durationNote: null,
         evidenceIds
       });
@@ -1150,10 +1528,8 @@ export function buildSanitizedAiPrompt(
   jiraContextMap: Record<string, string> = {},
   gitlabMrContextMap: Record<string, GitLabMrReviewContext> = {}
 ): string {
-  // Strictly filter to reportDate
-  const activities = rawActivities.filter(
-    (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
-  );
+  // Strictly filter to reportable activities of reportDate (excluding dismissed comments & unanswered calls)
+  const activities = filterReportableDateActivities(rawActivities, reportDate);
 
   // 1. Group development activities (git_commit, git_working_tree, file_change) by Jira key first (or project name if no Jira key)
   const devGroups = new Map<
@@ -1167,25 +1543,25 @@ export function buildSanitizedAiPrompt(
       changedComponents: Set<string>;
       changedFiles: Set<string>;
       codeDiffs: string[];
+      userComments: Set<string>;
       evidenceIds: Set<string>;
       status: ActivityStatus;
     }
   >();
 
-  const zoomConversationsMap = new Map<
+  const zoomRoomsMap = new Map<
     string,
     {
       chatName: string;
       chatType: 'group_channel' | 'direct_message';
       linkedJiraKey: string | null;
-      messages: Array<{ sender: string | null; time: string; text: string }>;
-      evidenceIds: Set<string>;
+      chatActs: Activity[];
+      callActs: Activity[];
     }
   >();
 
   const reviewedMergeRequests: Array<Record<string, unknown>> = [];
   const otherRecords: Array<Record<string, unknown>> = [];
-  const dayHasAnyCommit = activities.some((a) => a.sourceType === 'git_commit');
 
   for (const act of activities) {
     const acceptedLink = (act.links ?? []).find(
@@ -1197,8 +1573,6 @@ export function buildSanitizedAiPrompt(
       act.sourceType === 'file_change';
 
     if (isDevSource) {
-      // Uncommitted working tree modifications of this date are preserved as in_progress work
-
       const projName = act.projectName
         ? formatCorporateProjectName(act.projectName)
         : acceptedLink?.projectName
@@ -1221,6 +1595,7 @@ export function buildSanitizedAiPrompt(
           changedComponents: new Set<string>(),
           changedFiles: new Set<string>(),
           codeDiffs: [],
+          userComments: new Set<string>(),
           evidenceIds: new Set<string>(),
           status: act.sourceType === 'git_commit' ? 'completed' : 'in_progress'
         };
@@ -1235,6 +1610,9 @@ export function buildSanitizedAiPrompt(
       }
       if (acceptedLink?.workItemJiraKey) {
         grp.jiraKeys.add(acceptedLink.workItemJiraKey);
+      }
+      for (const uc of getActivityUserComments(act)) {
+        grp.userComments.add(uc.slice(0, 320));
       }
       for (const comp of extractMeaningfulComponentNames([act])) {
         grp.changedComponents.add(comp);
@@ -1252,39 +1630,31 @@ export function buildSanitizedAiPrompt(
           grp.codeDiffs.push(cd.trim().slice(0, 1400));
         }
       }
-    } else if (act.sourceType === 'zoom_chat') {
-      // Skip pure greeting/availability messages
-      if (isPureGreetingOrAvailabilityMessage(act.summary)) {
-        continue;
-      }
+    } else if (act.sourceType === 'zoom_chat' || act.sourceType === 'zoom_call') {
       const chatName = (act.chatOrRepoName || 'Genel Sohbet').trim();
-      let conv = zoomConversationsMap.get(chatName);
-      // Only attach linkedJiraKey to a Zoom conversation if that Jira key is verified in jiraContextMap
+      let room = zoomRoomsMap.get(chatName);
       const verifiedKey =
         acceptedLink?.workItemJiraKey && jiraContextMap[acceptedLink.workItemJiraKey] !== undefined
           ? acceptedLink.workItemJiraKey
           : null;
 
-      if (!conv) {
-        conv = {
+      if (!room) {
+        room = {
           chatName,
           chatType: classifyZoomChatType(chatName),
           linkedJiraKey: verifiedKey,
-          messages: [],
-          evidenceIds: new Set<string>()
+          chatActs: [],
+          callActs: []
         };
-        zoomConversationsMap.set(chatName, conv);
+        zoomRoomsMap.set(chatName, room);
       }
-      if (verifiedKey && !conv.linkedJiraKey) {
-        conv.linkedJiraKey = verifiedKey;
+      if (verifiedKey && !room.linkedJiraKey) {
+        room.linkedJiraKey = verifiedKey;
       }
-      conv.messages.push({
-        sender: act.sender,
-        time: act.rawTimestampText,
-        text: act.summary.slice(0, 260)
-      });
-      for (const ev of act.evidences ?? []) {
-        conv.evidenceIds.add(ev.id);
+      if (act.sourceType === 'zoom_chat') {
+        room.chatActs.push(act);
+      } else {
+        room.callActs.push(act);
       }
     } else if (act.sourceType === 'gitlab_mr_review') {
       const ev = (act.evidences ?? [])[0];
@@ -1301,6 +1671,7 @@ export function buildSanitizedAiPrompt(
         actions: Array.isArray(meta.actions) ? meta.actions : [],
         myComments: Array.isArray(meta.myComments) ? meta.myComments : [],
         reviewedFiles: Array.isArray(meta.reviewedFiles) ? meta.reviewedFiles : [],
+        userComments: getActivityUserComments(act),
         evidenceIds: (act.evidences ?? []).map((e) => e.id)
       });
     } else {
@@ -1312,6 +1683,7 @@ export function buildSanitizedAiPrompt(
         category: act.category,
         status: act.status,
         untrustedContent: act.summary.slice(0, 220),
+        userComments: getActivityUserComments(act),
         evidenceIds: (act.evidences ?? []).map((e) => e.id)
       });
     }
@@ -1354,17 +1726,90 @@ export function buildSanitizedAiPrompt(
       changedComponents: Array.from(g.changedComponents),
       changedFiles: Array.from(g.changedFiles).slice(0, 15),
       codeDiffSummary: g.codeDiffs.join('\n').slice(0, 1800) || null,
+      userComments: Array.from(g.userComments),
       evidenceIds: Array.from(g.evidenceIds)
     };
   });
 
-  const zoomConversations = Array.from(zoomConversationsMap.values()).map((c) => ({
-    chatName: c.chatName,
-    chatType: c.chatType,
-    linkedJiraKey: c.linkedJiraKey,
-    messages: c.messages.slice(0, 15),
-    evidenceIds: Array.from(c.evidenceIds)
-  }));
+  const zoomConversations = Array.from(zoomRoomsMap.values())
+    .map((room) => {
+      const meaningfulChats = room.chatActs.filter(
+        (a) =>
+          hasUserComments(a) ||
+          !isPureGreetingOrAvailabilityMessage(a.summary) ||
+          (a.evidences ?? []).some((e) => (e.links ?? []).length > 0)
+      );
+      const callSessions = correlateZoomCallsForChat(room.callActs, room.chatActs);
+      if (meaningfulChats.length === 0 && callSessions.length === 0) {
+        return null;
+      }
+
+      const allEvIds = new Set<string>();
+      for (const m of meaningfulChats) {
+        for (const ev of m.evidences ?? []) allEvIds.add(ev.id);
+      }
+      for (const s of callSessions) {
+        for (const eid of s.evidenceIds) allEvIds.add(eid);
+        for (const eid of s.contextEvidenceIds) allEvIds.add(eid);
+      }
+
+      const roomUserComments = Array.from(
+        new Set([
+          ...meaningfulChats.flatMap((m) => getActivityUserComments(m)),
+          ...callSessions.flatMap((s) => s.userComments)
+        ])
+      );
+
+      const calls = callSessions.map((s) => {
+        const hasContext = s.allContextMessages.length > 0 || s.userComments.length > 0;
+        const nearbyDev = !hasContext
+          ? findNearbyDevelopmentContext(s.callActivities[0], activities, 90)
+          : null;
+        return {
+          time: s.rawTimestampText,
+          occurredAtIso: s.occurredAtIso,
+          mediaType: s.mediaType,
+          direction: s.direction,
+          hasSufficientContext: hasContext,
+          preCallContextMessages: s.preCallMessages.slice(-8).map((m) => ({
+            sender: m.sender,
+            time: m.rawTimestampText,
+            text: m.summary.slice(0, 240)
+          })),
+          postCallFollowUpMessages: s.postCallMessages.slice(0, 6).map((m) => ({
+            sender: m.sender,
+            time: m.rawTimestampText,
+            text: m.summary.slice(0, 240),
+            links: (m.evidences ?? []).flatMap((e) => e.links)
+          })),
+          userComments: s.userComments,
+          nearbyProjectSuggestion: nearbyDev?.projectName
+            ? formatCorporateProjectName(nearbyDev.projectName)
+            : null,
+          evidenceIds: Array.from(new Set([...s.evidenceIds, ...s.contextEvidenceIds]))
+        };
+      });
+
+      return {
+        chatName: room.chatName,
+        chatType: room.chatType,
+        linkedJiraKey: room.linkedJiraKey,
+        jiraContext:
+          room.linkedJiraKey && jiraContextMap[room.linkedJiraKey]
+            ? jiraContextMap[room.linkedJiraKey]
+            : null,
+        userComments: roomUserComments,
+        messages: meaningfulChats.slice(0, 15).map((m) => ({
+          sender: m.sender,
+          time: m.rawTimestampText,
+          text: m.summary.slice(0, 260),
+          userComments: getActivityUserComments(m)
+        })),
+        calls,
+        evidenceIds: Array.from(allEvIds)
+      };
+    })
+    .filter((c): c is NonNullable<typeof c> => c !== null);
 
   const untrustedPayload = {
     developmentTasks,
@@ -1388,14 +1833,15 @@ export function buildSanitizedAiPrompt(
     '  1) Tespit/Analiz + 2) Teknik/Mimari Çözüm (Aynı cümle içinde birleştir): Hangi senaryoda neyin eksik/hatalı olduğunun tespit edilerek hangi bileşenlerde (örn. LogFiles, InfiniteGrid, ChatBotServiceImpl, TicketProgress vb.), prop yapılarında, validasyon şemalarında (nullable, countDigitsOnly vb.), hata yakalama mekanizmalarında veya `bam-shared-lib` ortak kütüphanesinde nasıl çözüldüğü.',
     '  3) Doğrulama, Test ve MR: Uçtan uca ekran/akış testlerinin veya birim testlerinin yapılarak proje ve/veya `bam-shared-lib` MR’larının açıldığı.',
     '',
-    'KRİTİK KURAL 2 — ZOOM SOHBETLERİNİN AYRI DEĞERLENDİRİLMESİ (GRUP vs ÖZEL MESAJLAŞMA):',
+    'KRİTİK KURAL 2 — ZOOM SOHBETLERİ VE SESLİ/GÖRÜNTÜLÜ GÖRÜŞME BAĞLAMI (GRUP vs ÖZEL MESAJLAŞMA):',
     '- `zoomConversations` listesindeki Grup/Kanal sohbetleri (`chatType: "group_channel"`) ile Özel Birebir mesajlaşmalar (`chatType: "direct_message"`) arasında zorlama bağlantı KURMA.',
     '- Her sohbeti kendi konusu ve bağlamı içinde AYRI değerlendir. Yalnızca iki sohbette gerçekten aynı Jira numarası veya birebir aynı teknik konu konuşuluyorsa birleştir.',
+    '- Bir sohbette `calls` dizisi doluysa, çağrı saatine ve eşleştirilmiş `preCallContextMessages` (görüşme öncesi mesajlar) ile `postCallFollowUpMessages` (görüşme sırası/sonrası paylaşılan mesaj ve linkler) kayıtlarına bakarak toplantının NE HAKKINDA yapıldığını çıkar. Sohbet ve görüşme için iki ayrı mükerrer madde yazmak yerine `category: "meeting"` olarak TEK bir bağlamsal toplantı/teknik değerlendirme maddesi üret (veya aynı konudaki Git geliştirmesiyle tek maddede birleştir) ve tüm `evidenceIds` kimliklerini koru.',
     '- Sohbetlerde kişi isimlerini ("Yasin", "Seda", "Bahar", "Enes" vb.) rapora yazma; konuşulan teknik konuyu ve varılan çözümü/yönlendirmeyi kurumsal mühendislik diliyle özetle.',
     '',
     'KRİTİK KURAL 3 — AKTİVİTELER ARASI NEDENSELLİK VE BİLEŞEN KÖPRÜLEME (HİKAYE KURGUSU):',
-    '- Zoom sohbetlerinde geçen bir teknik problem/tartışma ile Git kod geliştirmesi aynı bileşene veya konuya (`changedComponents`, dosya adları veya Jira anahtarı) aitse, bunları birbirinden kopuk iki ayrı madde yapmak yerine TEK bir akıcı mühendislik maddesinde birleştir:',
-    '  * Format: [Problem/Tespit (Zoom)] + [Teknik Çözüm (Git Diff/Commit)] + [Doğrulama ve MR (Git/Zoom)]',
+    '- Zoom sohbetlerinde veya sesli/görüntülü görüşmelerde (`calls`) geçen bir teknik problem/tartışma ile Git kod geliştirmesi aynı bileşene veya konuya (`changedComponents`, dosya adları veya Jira anahtarı) aitse, bunları birbirinden kopuk iki ayrı madde yapmak yerine TEK bir akıcı mühendislik maddesinde birleştir:',
+    '  * Format: [Sesli/Görüntülü Görüşme veya Problem Analizi (Zoom)] + [Teknik Çözüm (Git Diff/Commit)] + [Doğrulama ve MR (Git/Zoom)]',
     '- Zoom sohbetlerinde ekip arkadaşlarının bahsettiği ancak geliştiriciye atanmamış olan veya Git aktivitesi bulunmayan yabancı Jira biletlerini KESİNLİKLE geliştiricinin işi gibi gösterme ve madde metnine Jira numarası olarak bağlama.',
     '',
     'KRİTİK KURAL 4 — GITLAB MR REVIEW DÜZELTMELERİ (gitlabMrReview):',
@@ -1407,6 +1853,10 @@ export function buildSanitizedAiPrompt(
     '- Rapor maddesinde **MR numaralarını (`!142`, `!145` vb.) mutlaka paylaş**; yorum atılan MR\'larda hangi teknik konularda/dosyalarda (`myComments`, `reviewedFiles`) geri bildirim verildiğini kurumsal dille özetle ve onaylanan MR numaralarını açıkça belirt.',
     '- İncelenen MR\'larda ekip arkadaşlarının isimlerini yazma ve başkasının MR\'ına ait Jira biletini geliştiricinin kendi geliştirmesi gibi gösterme.',
     '',
+    'KRİTİK KURAL 6 — KULLANICININ AKTİVİTE YORUMLARI (userComments) BİRİNCİL DOĞRULUK VE BAĞLAM KAYNAĞIDIR:',
+    '- Görevlerde, sohbetlerde, sesli/görüntülü görüşmelerde veya diğer aktivitelerde yer alan `userComments` dizisi bizzat geliştiricinin ilgili aktivite üzerine bıraktığı açıklamadır.',
+    '- `userComments` dolu olduğunda aktiviteyi ÖNCELİKLE bu yorumun açıkladığı problem, toplantı gündemi, alınan mimari karar veya teknik çözüme göre değerlendir ve yüksek eforlu kurumsal mühendislik diline dönüştür (ör. belirsiz bir commit mesajı veya yazılı mesajı olmayan bir Zoom araması `userComments` ile açıklanmışsa `isInsufficientEvidence: false` olarak somut madde üret).',
+    '',
     'YAZIM FORMATI VE ÖRNEK ÜSLUP:',
     '- Maddelerin başına "[Proje - BAM-123]" gibi köşeli parantezler, Jira numaraları veya ham dosya uzantıları EKLEME.',
     '- Örnek yüksek eforlu maddeler:',
@@ -1417,7 +1867,7 @@ export function buildSanitizedAiPrompt(
     'İŞ KURALLARI:',
     '1. Her maddede kullanılan kanıtların `evidenceIds` kimliklerini eksiksiz koru.',
     '2. `status="in_progress"` olan devam eden geliştirmeleri "in_progress", tamamlanan commit geliştirmelerini "completed" olarak işaretle.',
-    '3. `sourceType="zoom_call"` olan arama kayıtlarından görüşme içeriği veya süre uydurma; `isInsufficientEvidence=true` yap.',
+    '3. Sesli/görüntülü görüşmelerde (`calls`) kesinlikle görüşme SÜRESİ (dakika/saat) uydurma. `hasSufficientContext: true` olan (öncesinde/sonrasında sohbet mesajı veya `userComments` bulunan) aramalarda toplantı konusunu bağlamdan çıkar ve `isInsufficientEvidence=false` yap; yalnızca `hasSufficientContext: false` olan bağlamsız aramalarda `isInsufficientEvidence=true` bırak.',
     `4. Tüm maddelerin toplam karakter sayısı ("- " önekleriyle birlikte) ${targetBudget} karakteri kesinlikle geçmemelidir; her madde hem problemi hem de uygulanan teknik çözümü içermelidir.`,
     '5. Yanıt olarak YALNIZCA geçerli bir JSON nesnesi döndür:',
     '{"items": [{"workItemId": string|null, "projectId": string|null, "category": "development"|"analysis"|"technical_discussion"|"meeting"|"research", "itemStatus": "completed"|"in_progress"|"decision"|"blocker"|"info", "text": string, "isInsufficientEvidence": boolean, "insufficientReason": string|null, "evidenceIds": string[]}]}',
@@ -1631,9 +2081,7 @@ export class GeminiCliProvider implements AIProvider {
       step: 'prompt_prep',
       message: `Güvenli AI promptu hazırlandı, agy / Gemini CLI sürecine (${effectiveModel || 'varsayılan model'}) gönderiliyor...`
     });
-    const activities = rawActivities.filter(
-      (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
-    );
+    const activities = filterReportableDateActivities(rawActivities, reportDate);
     if (activities.length === 0) return [];
 
     const prompt = promptOverride?.trim()
@@ -1968,9 +2416,7 @@ export class CodexCliProvider implements AIProvider {
       step: 'prompt_prep',
       message: `Codex CLI sürecine (${effectiveModel || 'varsayılan model'}) bağlanılıyor...`
     });
-    const activities = rawActivities.filter(
-      (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
-    );
+    const activities = filterReportableDateActivities(rawActivities, reportDate);
     if (activities.length === 0) return [];
 
     const prompt = promptOverride?.trim()
@@ -2174,9 +2620,7 @@ export class ClaudeCliProvider implements AIProvider {
       step: 'prompt_prep',
       message: `Claude CLI sürecine (${effectiveModel || 'varsayılan model'}) bağlanılıyor...`
     });
-    const activities = rawActivities.filter(
-      (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
-    );
+    const activities = filterReportableDateActivities(rawActivities, reportDate);
     if (activities.length === 0) return [];
 
     const prompt = promptOverride?.trim()
@@ -2336,9 +2780,7 @@ export class OllamaCliProvider implements AIProvider {
       step: 'prompt_prep',
       message: `Ollama CLI modeline (${effectiveModel}) bağlanılıyor...`
     });
-    const activities = rawActivities.filter(
-      (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
-    );
+    const activities = filterReportableDateActivities(rawActivities, reportDate);
     if (activities.length === 0) return [];
 
     const prompt = promptOverride?.trim()
@@ -2515,9 +2957,7 @@ export class OpenAiApiProvider implements AIProvider {
       step: 'ai_call',
       message: `OpenAI API uç noktasına (${model}) istek gönderiliyor...`
     });
-    const activities = rawActivities.filter(
-      (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
-    );
+    const activities = filterReportableDateActivities(rawActivities, reportDate);
     if (activities.length === 0) return [];
 
     const key = this.config.apiKeyResolver();
@@ -2705,9 +3145,7 @@ export class AnthropicApiProvider implements AIProvider {
       step: 'ai_call',
       message: `Anthropic Claude API uç noktasına (${model}) istek gönderiliyor...`
     });
-    const activities = rawActivities.filter(
-      (a) => a.occurredAtIso && a.occurredAtIso.slice(0, 10) === reportDate
-    );
+    const activities = filterReportableDateActivities(rawActivities, reportDate);
     if (activities.length === 0) return [];
 
     const key = this.config.apiKeyResolver();

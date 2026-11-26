@@ -155,6 +155,14 @@ export interface ActivityLink {
   createdAt: string;
 }
 
+export interface ActivityComment {
+  id: string;
+  activityId: string;
+  content: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Activity {
   id: string;
   projectId: string | null;
@@ -175,6 +183,7 @@ export interface Activity {
   createdAt: string;
   evidences?: Evidence[];
   links?: ActivityLink[];
+  comments?: ActivityComment[];
 }
 
 export interface WorkItem {

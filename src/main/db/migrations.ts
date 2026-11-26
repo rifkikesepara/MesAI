@@ -198,5 +198,20 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_evidences_source_record_id ON evidences(source_record_id);
       CREATE INDEX IF NOT EXISTS idx_activity_links_work_item_id ON activity_links(work_item_id);
     `
+  },
+  {
+    version: 5,
+    name: '005_add_activity_comments',
+    upSql: `
+      CREATE TABLE IF NOT EXISTS activity_comments (
+        id TEXT PRIMARY KEY,
+        activity_id TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (activity_id) REFERENCES activities(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_activity_comments_activity_id ON activity_comments(activity_id);
+    `
   }
 ];

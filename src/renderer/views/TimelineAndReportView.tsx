@@ -25,7 +25,8 @@ import {
   RefreshIcon,
   DownloadIcon,
   TrashIcon,
-  ExternalLinkIcon
+  ExternalLinkIcon,
+  MessageSquareIcon
 } from '../components/Icons';
 import { SkeletonActivityList, SkeletonReport } from '../components/Skeleton';
 import { VirtualList } from '../components/VirtualList';
@@ -54,6 +55,12 @@ export const TimelineView: React.FC<{
   const [noteStatus, setNoteStatus] = useState<ActivityStatus>('info');
   const [noteProjectId, setNoteProjectId] = useState<string>('');
   const [noteJiraKey, setNoteJiraKey] = useState('');
+
+  const [commentingActivityId, setCommentingActivityId] = useState<string | null>(null);
+  const [commentDraft, setCommentDraft] = useState<string>('');
+  const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
+  const [editingCommentDraft, setEditingCommentDraft] = useState<string>('');
+  const [savingComment, setSavingComment] = useState<boolean>(false);
 
   const loadActivities = async (showSkeleton = true) => {
     const scrollContainer = document.querySelector('.content-scroll') as HTMLElement | null;
@@ -151,6 +158,82 @@ export const TimelineView: React.FC<{
       await window.mesaiApi.updateActivityLink({ linkId, userStatus, projectId });
     } finally {
       await loadActivities(false);
+    }
+  };
+
+  const replaceUpdatedActivityInState = (updatedAct: Activity) => {
+    const scrollContainer = document.querySelector('.content-scroll') as HTMLElement | null;
+    const prevScrollTop = scrollContainer ? scrollContainer.scrollTop : window.scrollY;
+
+    setActivities((prev) => prev.map((a) => (a.id === updatedAct.id ? updatedAct : a)));
+
+    requestAnimationFrame(() => {
+      if (scrollContainer) {
+        scrollContainer.scrollTop = prevScrollTop;
+      } else {
+        window.scrollTo(0, prevScrollTop);
+      }
+    });
+  };
+
+  const handleCommentTextareaKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (e.nativeEvent.isComposing || e.keyCode === 229) {
+        return;
+      }
+      e.currentTarget.form?.requestSubmit();
+    }
+  };
+
+  const handleAddActivityComment = async (activityId: string, e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = commentDraft.trim();
+    if (!trimmed || savingComment) return;
+    setSavingComment(true);
+    try {
+      const updated = await window.mesaiApi.addActivityComment({
+        activityId,
+        content: trimmed
+      });
+      replaceUpdatedActivityInState(updated);
+      setCommentDraft('');
+      setCommentingActivityId(null);
+    } finally {
+      setSavingComment(false);
+    }
+  };
+
+  const handleUpdateActivityComment = async (commentId: string, e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = editingCommentDraft.trim();
+    if (!trimmed || savingComment) return;
+    setSavingComment(true);
+    try {
+      const updated = await window.mesaiApi.updateActivityComment({
+        commentId,
+        content: trimmed
+      });
+      replaceUpdatedActivityInState(updated);
+      setEditingCommentId(null);
+      setEditingCommentDraft('');
+    } finally {
+      setSavingComment(false);
+    }
+  };
+
+  const handleDeleteActivityComment = async (commentId: string) => {
+    if (savingComment) return;
+    setSavingComment(true);
+    try {
+      const updated = await window.mesaiApi.deleteActivityComment(commentId);
+      replaceUpdatedActivityInState(updated);
+      if (editingCommentId === commentId) {
+        setEditingCommentId(null);
+        setEditingCommentDraft('');
+      }
+    } finally {
+      setSavingComment(false);
     }
   };
 
@@ -443,6 +526,89 @@ export const TimelineView: React.FC<{
                 {act.summary}
               </div>
 
+              {/* User Activity Comments (Primary AI / Report Context) */}
+              {act.comments && act.comments.length > 0 && (
+                <div className="activity-comments-box">
+                  <div className="activity-comments-header">
+                    <MessageSquareIcon size={13} />
+                    <span>Kullanıcı Yorumu / AI Bağlam Notu ({act.comments.length})</span>
+                  </div>
+                  {act.comments.map((cm) =>
+                    editingCommentId === cm.id ? (
+                      <form
+                        key={cm.id}
+                        className="activity-comment-form"
+                        style={{ marginTop: 0 }}
+                        onSubmit={(e) => void handleUpdateActivityComment(cm.id, e)}
+                      >
+                        <label
+                          htmlFor={`edit-comment-${cm.id}`}
+                          className="activity-comment-label"
+                        >
+                          Yorumu Düzenle (Enter: Kaydet, Shift+Enter: Yeni Satır)
+                        </label>
+                        <textarea
+                          id={`edit-comment-${cm.id}`}
+                          className="textarea activity-comment-textarea"
+                          value={editingCommentDraft}
+                          onChange={(e) => setEditingCommentDraft(e.target.value)}
+                          onKeyDown={handleCommentTextareaKeyDown}
+                          required
+                        />
+                        <div style={{ display: 'flex', gap: '6px' }}>
+                          <button
+                            type="submit"
+                            className="btn btn-sm btn-primary"
+                            disabled={savingComment || !editingCommentDraft.trim()}
+                          >
+                            Kaydet
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-sm"
+                            onClick={() => {
+                              setEditingCommentId(null);
+                              setEditingCommentDraft('');
+                            }}
+                          >
+                            İptal
+                          </button>
+                        </div>
+                      </form>
+                    ) : (
+                      <div key={cm.id} className="activity-comment-item">
+                        <div className="activity-comment-body">
+                          <div>{cm.content}</div>
+                          <div className="activity-comment-meta">
+                            {cm.updatedAt.slice(0, 16).replace('T', ' ')}
+                          </div>
+                        </div>
+                        <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+                          <button
+                            type="button"
+                            className="btn btn-sm"
+                            onClick={() => {
+                              setEditingCommentId(cm.id);
+                              setEditingCommentDraft(cm.content);
+                            }}
+                          >
+                            ✎ Düzenle
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-danger"
+                            onClick={() => void handleDeleteActivityComment(cm.id)}
+                            title="Yorumu sil"
+                          >
+                            <TrashIcon size={12} />
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  )}
+                </div>
+              )}
+
               {/* Detected external URL links (from Zoom / Git / Jira) */}
               {(() => {
                 const detectedUrls = Array.from(
@@ -540,12 +706,13 @@ export const TimelineView: React.FC<{
                 </div>
               )}
 
-              {/* Evidence links */}
-              {act.evidences && act.evidences.length > 0 && (
-                <div style={{ marginTop: '8px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                  {act.evidences.map((ev) => (
+              {/* Evidence links & Comment action */}
+              <div style={{ marginTop: '8px', display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+                {act.evidences &&
+                  act.evidences.map((ev) => (
                     <button
                       key={ev.id}
+                      type="button"
                       className="btn btn-sm"
                       onClick={() => onInspectEvidence(ev)}
                       style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
@@ -554,7 +721,72 @@ export const TimelineView: React.FC<{
                       <span>Kanıtı Aç ({ev.sourceType} — {ev.rawTimestampText})</span>
                     </button>
                   ))}
-                </div>
+                <button
+                  type="button"
+                  className={`btn btn-sm ${commentingActivityId === act.id ? 'btn-primary' : ''}`}
+                  onClick={() => {
+                    if (commentingActivityId === act.id) {
+                      setCommentingActivityId(null);
+                      setCommentDraft('');
+                    } else {
+                      setCommentingActivityId(act.id);
+                      setCommentDraft('');
+                    }
+                  }}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}
+                >
+                  <MessageSquareIcon size={13} />
+                  <span>
+                    {commentingActivityId === act.id
+                      ? 'Yorum Alanını Kapat'
+                      : act.comments && act.comments.length > 0
+                        ? `Yorum Ekle (${act.comments.length})`
+                        : 'Yorum / Bağlam Ekle'}
+                  </span>
+                </button>
+              </div>
+
+              {commentingActivityId === act.id && (
+                <form
+                  className="activity-comment-form"
+                  onSubmit={(e) => void handleAddActivityComment(act.id, e)}
+                >
+                  <label
+                    htmlFor={`new-comment-${act.id}`}
+                    className="activity-comment-label"
+                  >
+                    Aktivite Yorumu / Rapor Bağlamı (AI ve rapor motoru bu açıklamayı esas alır • Enter: Kaydet, Shift+Enter: Yeni Satır)
+                  </label>
+                  <textarea
+                    id={`new-comment-${act.id}`}
+                    className="textarea activity-comment-textarea"
+                    placeholder="Örn: Bu görüşmede Fatura Kesim Süreci KDV yuvarlama hatasını değerlendirdik ve validasyonu servise taşımaya karar verdik. (Rapordan çıkarmak için 'Rapora ekleme' yazabilirsiniz.)"
+                    value={commentDraft}
+                    onChange={(e) => setCommentDraft(e.target.value)}
+                    onKeyDown={handleCommentTextareaKeyDown}
+                    autoFocus
+                    required
+                  />
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button
+                      type="submit"
+                      className="btn btn-sm btn-primary"
+                      disabled={savingComment || !commentDraft.trim()}
+                    >
+                      Yorumu Kaydet
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={() => {
+                        setCommentingActivityId(null);
+                        setCommentDraft('');
+                      }}
+                    >
+                      İptal
+                    </button>
+                  </div>
+                </form>
               )}
             </div>
           )}

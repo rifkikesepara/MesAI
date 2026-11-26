@@ -169,6 +169,37 @@ export function createRpcHandlers(deps: {
     return repo.getActivityById(act.id)!;
   });
 
+  handlers.set(IPC_CHANNELS.ACTIVITIES_ADD_COMMENT, async (input: unknown) => {
+    if (!input || typeof input !== 'object') {
+      throw new Error('Geçersiz yorum verisi.');
+    }
+    const obj = input as { activityId?: unknown; content?: unknown };
+    const activityId = assertNonEmptyString(obj.activityId, 'aktivite ID');
+    const content = assertNonEmptyString(obj.content, 'yorum metni');
+    const updated = repo.addActivityComment(activityId, content);
+    matcher.matchActivityById(updated.id);
+    return repo.getActivityById(updated.id)!;
+  });
+
+  handlers.set(IPC_CHANNELS.ACTIVITIES_UPDATE_COMMENT, async (input: unknown) => {
+    if (!input || typeof input !== 'object') {
+      throw new Error('Geçersiz yorum güncelleme verisi.');
+    }
+    const obj = input as { commentId?: unknown; content?: unknown };
+    const commentId = assertNonEmptyString(obj.commentId, 'yorum ID');
+    const content = assertNonEmptyString(obj.content, 'yorum metni');
+    const updated = repo.updateActivityComment(commentId, content);
+    matcher.matchActivityById(updated.id);
+    return repo.getActivityById(updated.id)!;
+  });
+
+  handlers.set(IPC_CHANNELS.ACTIVITIES_DELETE_COMMENT, async (commentId: unknown) => {
+    const id = assertNonEmptyString(commentId, 'yorum ID');
+    const updated = repo.deleteActivityComment(id);
+    matcher.matchActivityById(updated.id);
+    return repo.getActivityById(updated.id)!;
+  });
+
   handlers.set(IPC_CHANNELS.EVIDENCE_GET, async (evidenceId: unknown) => {
     const id = assertNonEmptyString(evidenceId, 'kanıt ID');
     return repo.getEvidenceById(id);
